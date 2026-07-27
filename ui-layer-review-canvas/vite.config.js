@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readCodexTurnStatus, sendPlanToCurrentThread } from './codex-thread-bridge.mjs';
+import { markTiming, mergeTiming } from './src/execution-timing.js';
 import { reconcileTurnStatus } from './src/job-state.js';
 
 const splitSkillPath = 'C:\\Users\\Amoiz\\.codex\\skills\\split-ui-design-layers-workbench-targeted\\SKILL.md';
@@ -16,6 +17,15 @@ async function readJsonBody(request) {
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+async function readExecutionReport(jobDirectory) {
+  try {
+    return JSON.parse(await readFile(path.join(jobDirectory, 'execution-report.json'), 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function layerReviewQueue() {
@@ -53,6 +63,7 @@ function layerReviewQueue() {
           }
 
           const plan = JSON.parse(await readFile(path.join(jobDirectory, 'layer-review-plan.json'), 'utf8'));
+          const executionReport = await readExecutionReport(jobDirectory);
           const files = await readdir(outputDirectory).catch(() => []);
           const imageNames = files
             .filter((fileName) => fileName.toLowerCase().endsWith('.png'))
@@ -68,11 +79,14 @@ function layerReviewQueue() {
           }]));
           const expectedCount = Array.isArray(plan.layers) ? plan.layers.length : 0;
           const resultReady = expectedCount > 0 && images.length >= expectedCount;
+          const planStatus = executionReport?.status === 'needs_confirmation'
+            ? 'needs_confirmation'
+            : plan.status || 'processing';
           let codexTurn = null;
           if (
             plan.codex_thread_id
             && plan.codex_turn_id
-            && !['completed', 'failed', 'send_failed'].includes(plan.status)
+            && !['completed', 'failed', 'send_failed', 'needs_confirmation'].includes(planStatus)
           ) {
             try {
               codexTurn = await readCodexTurnStatus(plan.codex_thread_id, plan.codex_turn_id);
@@ -81,7 +95,7 @@ function layerReviewQueue() {
             }
           }
           const reconciled = reconcileTurnStatus({
-            planStatus: plan.status || 'processing',
+            planStatus,
             turnStatus: codexTurn?.status || null,
             resultReady,
             imageCount: images.length,
@@ -110,6 +124,10 @@ function layerReviewQueue() {
             thread_id: plan.codex_thread_id || null,
             turn_id: plan.codex_turn_id || null,
             skill_name: path.basename(path.dirname(plan.execution?.skill_path || splitSkillPath)),
+            timing: mergeTiming(plan.execution_timing, executionReport?.timing),
+            execution_route: executionReport?.execution_route
+              || plan.layers?.[0]?.execution_route_hint
+              || null,
           }));
         } catch (error) {
           response.statusCode = error.code === 'ENOENT' ? 404 : 500;
@@ -167,11 +185,12 @@ function layerReviewQueue() {
           const jobPath = path.join(jobDirectory, 'layer-review-plan.json');
           const submittedAt = new Date().toISOString();
           const job = {
+            ...normalizedPayload,
             job_id: jobId,
             status: 'sending_to_codex',
             submitted_at: submittedAt,
             output_directory: outputDirectory,
-            ...normalizedPayload,
+            execution_timing: markTiming({}, 'submitted_at', submittedAt),
             execution: {
               skill_path: splitSkillPath,
               plan_is_authoritative: true,
@@ -195,20 +214,24 @@ function layerReviewQueue() {
             await writeFile(jobPath, JSON.stringify({ ...job, status: 'send_failed', error: error.message }, null, 2));
             throw error;
           }
+          const dispatchedAt = new Date().toISOString();
           await writeFile(jobPath, JSON.stringify({
             ...job,
             status: 'sent_to_codex',
             codex_thread_id: dispatch.threadId,
             codex_turn_id: dispatch.turnId,
+            execution_timing: markTiming(job.execution_timing, 'codex_turn_started_at', dispatchedAt),
           }, null, 2));
           void dispatch.completion.then(async (params) => {
             const turnStatus = params.turn?.status || 'completed';
             const latestJob = JSON.parse(await readFile(jobPath, 'utf8'));
+            const completedAt = new Date().toISOString();
             await writeFile(jobPath, JSON.stringify({
               ...latestJob,
               status: turnStatus === 'completed' ? 'completed' : 'failed',
               codex_turn_status: turnStatus,
-              codex_completed_at: new Date().toISOString(),
+              codex_completed_at: completedAt,
+              execution_timing: markTiming(latestJob.execution_timing, 'completed_at', completedAt),
             }, null, 2));
           }).catch(async (error) => {
             const latestJob = JSON.parse(await readFile(jobPath, 'utf8'));

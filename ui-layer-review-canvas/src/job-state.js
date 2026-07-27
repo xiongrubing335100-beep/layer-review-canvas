@@ -15,6 +15,12 @@ export function reconcileTurnStatus({
   if (terminalFailureStatuses.has(planStatus)) {
     return { status: 'failed', detail: null };
   }
+  if (planStatus === 'needs_confirmation') {
+    return {
+      status: 'needs_confirmation',
+      detail: 'Codex 需要确认拆分目标后才能继续',
+    };
+  }
   if (turnStatus === 'inProgress') {
     return { status: 'processing', detail: null };
   }

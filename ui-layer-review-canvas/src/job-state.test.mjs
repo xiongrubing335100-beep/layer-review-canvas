@@ -45,3 +45,15 @@ test('an active Codex turn remains processing', () => {
     detail: null,
   });
 });
+
+test('a confirmation request is not shown as processing', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'needs_confirmation',
+    turnStatus: 'completed',
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'needs_confirmation',
+    detail: 'Codex 需要确认拆分目标后才能继续',
+  });
+});
