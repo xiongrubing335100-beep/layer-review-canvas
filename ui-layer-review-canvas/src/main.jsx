@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { jobMatchesSource } from './job-state.js';
-import { classifyExecutionRoute, combinedRequirement, nextPaint } from './split-execution.js';
+import { classifyExecutionRoute, combinedRequirement, isNodeRunning, nextPaint } from './split-execution.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -610,7 +610,6 @@ function App() {
   const [brushSize, setBrushSize] = useState(24);
   const [showOriginalOnly, setShowOriginalOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [submittingNodeId, setSubmittingNodeId] = useState(null);
   const [localSubmissions, setLocalSubmissions] = useState({});
   const [jobs, setJobs] = useState(readStoredJobs);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -638,6 +637,7 @@ function App() {
   const linkPreviewPathRef = useRef(null);
   const canvasDragConsumedRef = useRef(false);
   const spacePanRef = useRef(false);
+  const runningNodeIdsRef = useRef(new Set());
 
   const hasSelectedLayer = nodes.some((node) => node.id === selectedId);
   const selected = nodes.find((node) => node.id === selectedId) ?? nodes[0] ?? emptySelectedNode;
@@ -658,6 +658,7 @@ function App() {
     () => jobs.filter((job) => jobMatchesSource(job, currentSource)),
     [currentSource, jobs],
   );
+  const selectedNodeRunning = isNodeRunning(selected.id, localSubmissions, jobsForCurrentSource);
   const sentNodeIds = useMemo(() => new Set(jobsForCurrentSource
     .filter((job) => !['failed', 'send_failed'].includes(job.status))
     .flatMap((job) => job.nodeIds || [])), [jobsForCurrentSource]);
@@ -949,6 +950,14 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem('layer-review-jobs', JSON.stringify(jobs));
   }, [jobs]);
+
+  useEffect(() => {
+    runningNodeIdsRef.current.forEach((nodeId) => {
+      if (!isNodeRunning(nodeId, localSubmissions, jobsForCurrentSource)) {
+        runningNodeIdsRef.current.delete(nodeId);
+      }
+    });
+  }, [jobsForCurrentSource, localSubmissions]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setClockNow(Date.now()), 1000);
@@ -1884,12 +1893,17 @@ function App() {
 
   const submitLayers = async (nodeIds, scope) => {
     if (!nodeIds.length) return;
+    const submittedNodeIds = nodeIds.filter((nodeId) => (
+      !runningNodeIdsRef.current.has(nodeId)
+      && !isNodeRunning(nodeId, localSubmissions, jobsForCurrentSource)
+    ));
+    if (!submittedNodeIds.length) return;
+    submittedNodeIds.forEach((nodeId) => runningNodeIdsRef.current.add(nodeId));
     if (scope === 'batch') setSubmitting(true);
-    else setSubmittingNodeId(nodeIds[0]);
     const localSubmittedAt = Date.now();
     setLocalSubmissions((current) => ({
       ...current,
-      ...Object.fromEntries(nodeIds.map((nodeId) => [nodeId, {
+      ...Object.fromEntries(submittedNodeIds.map((nodeId) => [nodeId, {
         id: `local-${nodeId}-${localSubmittedAt}`,
         nodeIds: [nodeId],
         status: 'sending_to_codex',
@@ -1899,7 +1913,7 @@ function App() {
       }])),
     }));
     await nextPaint();
-    const layerSnapshots = Object.fromEntries(nodeIds.map((nodeId) => {
+    const layerSnapshots = Object.fromEntries(submittedNodeIds.map((nodeId) => {
       const node = nodes.find((candidate) => candidate.id === nodeId);
       return [nodeId, {
         bounds: { ...node.bounds },
@@ -1908,7 +1922,7 @@ function App() {
     }));
     const submittedSourceSize = { ...sourceSize };
     try {
-      const plan = buildPlan(true, nodeIds);
+      const plan = buildPlan(true, submittedNodeIds);
       const cropDataUrls = await Promise.all(plan.layers.map((layer) => (
         cropRegionDataUrl(sourceImage, layer.source_region_percent, sourceSize)
       )));
@@ -1928,11 +1942,11 @@ function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setNodes((current) => current.map((node) => (
-        nodeIds.includes(node.id) ? { ...node, status: 'accepted' } : node
+        submittedNodeIds.includes(node.id) ? { ...node, status: 'accepted' } : node
       )));
       setJobs((current) => [...current, {
         id: result.job_id,
-        nodeIds,
+        nodeIds: submittedNodeIds,
         layerSnapshots,
         sourceSize: submittedSourceSize,
         sourceName,
@@ -1946,18 +1960,17 @@ function App() {
         timing: result.timing || {},
         executionRoute: result.execution_route || null,
       }]);
-      addActivity(`${nodeIds.length} 个拆分项已发送到当前 Codex 任务`);
-      setToast(scope === 'batch' ? `已批量发送 ${nodeIds.length} 项` : `${nodes.find((node) => node.id === nodeIds[0])?.name || '当前项'}已发送`);
+      addActivity(`${submittedNodeIds.length} 个拆分项已发送到当前 Codex 任务`);
+      setToast(scope === 'batch' ? `已批量发送 ${submittedNodeIds.length} 项` : `${nodes.find((node) => node.id === submittedNodeIds[0])?.name || '当前项'}已发送`);
     } catch (error) {
       setToast(`提交失败：${error.message}`);
     } finally {
       setLocalSubmissions((current) => {
         const next = { ...current };
-        nodeIds.forEach((nodeId) => delete next[nodeId]);
+        submittedNodeIds.forEach((nodeId) => delete next[nodeId]);
         return next;
       });
       if (scope === 'batch') setSubmitting(false);
-      else setSubmittingNodeId(null);
     }
   };
 
@@ -2674,9 +2687,9 @@ function App() {
           <button type="button" className="command-button command-button--quiet" onClick={() => approveNode(true)}>
             <Check size={17} /> 确认并下一个
           </button>
-          <button type="button" className="command-button command-button--wide" onClick={submitCurrent} disabled={submittingNodeId === selected.id}>
-            {submittingNodeId === selected.id ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}
-            {submittingNodeId === selected.id ? '拆分中' : latestSelectedResult?.image ? '重新拆分' : '拆分'}
+          <button type="button" className="command-button command-button--wide" onClick={submitCurrent} disabled={selectedNodeRunning}>
+            {selectedNodeRunning ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}
+            {selectedNodeRunning ? '拆分中' : latestSelectedResult?.image ? '重新拆分' : '拆分'}
           </button>
           {selected.status === 'accepted' ? <IconButton label="撤销当前确认" onClick={undoConfirmation}><Undo2 size={17} /></IconButton> : <span />}
         </div>

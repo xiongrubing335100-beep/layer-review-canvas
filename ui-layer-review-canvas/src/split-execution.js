@@ -1,7 +1,14 @@
 const repairIntent = /(移除|删除|去掉|去除).{0,8}(文字|数字|水印|内容)|补全.{0,12}(底板|空洞|遮挡|缺口)|修复.{0,8}(空洞|遮挡|缺口)/;
+const runningJobStatuses = new Set(['sending_to_codex', 'sent_to_codex', 'processing', 'partial', 'finalizing']);
 
 export function nextPaint() {
-  return new Promise((resolve) => requestAnimationFrame(resolve));
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+export function isNodeRunning(nodeId, localSubmissions = {}, jobs = []) {
+  return Boolean(localSubmissions[nodeId]) || jobs.some((job) => (
+    job.nodeIds?.includes(nodeId) && runningJobStatuses.has(job.status)
+  ));
 }
 
 export function combinedRequirement({

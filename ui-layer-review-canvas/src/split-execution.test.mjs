@@ -1,15 +1,41 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyExecutionRoute, combinedRequirement, nextPaint } from './split-execution.js';
+import { classifyExecutionRoute, combinedRequirement, isNodeRunning, nextPaint } from './split-execution.js';
 
-test('nextPaint resolves on the next animation frame', async () => {
+test('nextPaint waits for two animation frames before resolving', async () => {
   const original = globalThis.requestAnimationFrame;
-  globalThis.requestAnimationFrame = (callback) => callback(12);
+  const callbacks = [];
+  globalThis.requestAnimationFrame = (callback) => callbacks.push(callback);
   try {
-    assert.equal(await nextPaint(), 12);
+    let resolved = false;
+    const paint = nextPaint().then((timestamp) => {
+      resolved = true;
+      return timestamp;
+    });
+
+    assert.equal(callbacks.length, 1);
+    callbacks.shift()(12);
+    await Promise.resolve();
+    assert.equal(resolved, false);
+    assert.equal(callbacks.length, 1);
+
+    callbacks.shift()(24);
+    assert.equal(await paint, 24);
   } finally {
     globalThis.requestAnimationFrame = original;
   }
+});
+
+test('isNodeRunning blocks only local or pending work for the same node', () => {
+  const jobs = [
+    { nodeIds: ['pending-node'], status: 'processing' },
+    { nodeIds: ['completed-node'], status: 'completed' },
+  ];
+
+  assert.equal(isNodeRunning('local-node', { 'local-node': { status: 'sending_to_codex' } }, jobs), true);
+  assert.equal(isNodeRunning('pending-node', {}, jobs), true);
+  assert.equal(isNodeRunning('completed-node', {}, jobs), false);
+  assert.equal(isNodeRunning('other-node', {}, jobs), false);
 });
 
 test('keeps explicit user intent and appends refinement once', () => {
