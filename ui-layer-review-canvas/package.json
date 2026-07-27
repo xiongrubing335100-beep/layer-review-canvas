@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/*.test.mjs"
+    "test": "node --test src/*.test.mjs",
+    "benchmark:splits": "node scripts/report-split-performance.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
