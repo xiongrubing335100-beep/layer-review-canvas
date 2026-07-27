@@ -241,6 +241,43 @@ async function getBridge() {
   return bridgePromise;
 }
 
+export function buildWorkbenchPrompt({
+  jobId,
+  jobPath,
+  sourcePath,
+  outputDirectory,
+}) {
+  return [
+    '执行本地 UI 拆图工作台的已确认任务。',
+    `任务编号：${jobId}`,
+    `权威计划：${jobPath}`,
+    `原图路径：${sourcePath}`,
+    `唯一输出目录：${outputDirectory}`,
+    `严格调用：[$${splitSkillName}](${splitSkillPath})`,
+    '只处理计划 layers[]；在同一 turn 内规范化简短需求并执行。',
+    '遵守 execution_mode 与 execution_route_hint；不要全页诊断、增加图层或生成候选。',
+    '开始时发送一条简短进度，完成时交付 PNG；处理中不要重复发送耗时消息。',
+  ].join('\n');
+}
+
+export function buildWorkbenchTurnInput({
+  prompt,
+  plan,
+  sourcePath,
+  reviewCropPaths,
+}) {
+  const needsSource = plan.layers.some((layer) => (
+    layer.execution_mode === 'quality'
+    || layer.execution_route_hint === 'targeted_repair'
+    || layer.category === 'kvBackground'
+  ));
+  return [
+    { type: 'text', text: prompt, text_elements: [] },
+    ...(needsSource ? [{ type: 'localImage', path: sourcePath, detail: 'high' }] : []),
+    ...reviewCropPaths.map((path) => ({ type: 'localImage', path, detail: 'high' })),
+  ];
+}
+
 export async function probeCurrentThread(threadId = process.env.CODEX_THREAD_ID) {
   if (!threadId) throw new Error('未识别到当前 Codex 任务，请从该任务中启动工作台');
   const { client } = await getBridge();
@@ -290,46 +327,23 @@ export async function sendPlanToCurrentThread({
   const { client } = await getBridge();
   await client.request('thread/resume', { threadId, excludeTurns: true });
   const plan = JSON.parse(await readFile(jobPath, 'utf8'));
-  const layerSummary = (plan.layers || []).flatMap((layer, index) => [
-    `${index + 1}. ${layer.name}（${layer.category_label || layer.category}）`,
-    `   执行模式：${layer.execution_mode === 'quality' ? '高质量' : '快速'}`,
-    `   框选区域：x ${layer.source_region_pixels?.x}, y ${layer.source_region_pixels?.y}, ${layer.source_region_pixels?.width} × ${layer.source_region_pixels?.height}px`,
-    `   拆分与精修提示词：${layer.requirement || '按框选区域忠实拆分'}`,
-    layer.review_snapshot?.local_crop_path ? `   框选预览图：${layer.review_snapshot.local_crop_path}` : null,
-  ].filter(Boolean));
-  const prompt = [
-    '这是从本地无限画布拆图工作台提交的已确认拆分任务。',
-    `任务编号：${jobId}`,
-    `拆分计划：${jobPath}`,
-    `原始 UI 图片：${sourcePath}`,
-    `输出目录：${outputDirectory}`,
-    `必须调用的执行 Skill：[$${splitSkillName}](${splitSkillPath})`,
-    '',
-    '本次已确认拆分项与完整提示词：',
-    ...layerSummary,
-    '',
-    '开始执行后，先在当前 Codex 对话发送一条简短 commentary，明确正在拆分该任务；处理期间继续用 commentary 汇报当前图层和耗时，完成后在当前对话交付结果。',
-    '请调用并严格执行上述 Skill，再读取拆分计划和原图，在当前任务中完成拆分、修复、验收与最终交付。',
-    '该 Skill 只负责执行人工计划：工作台计划是唯一图层清单，禁止启动全页诊断或自动规划。',
-    '每个 layers[] 记录的 execution_mode 是硬约束：fast 走最短定向路径，quality 才启用完整补全、复检和最多一次定向重试。',
-    '严格使用计划内已确认的图层名称、框选区域、保留/排除标注和去背景设置，不要重新分析或生成另一套粗分类。',
-    '如果计划 task 是 refine_split_result，输入图片是已经拆分完成的透明 PNG：必须以该 PNG 为唯一编辑底图，只修改本次标注区域，未标注像素、已有透明通道、画布尺寸和原始位置都必须保持不变。',
-    '最终只产出计划 layers[] 中已经确认的拆分元素，每个确认项对应一个最终 PNG。不得增加未选择的背景板、普通文字层、装饰层、预览图、联系表或其他自动推断图层。',
-    '只有计划明确包含普通文字项时才输出一个共享普通文字层；只有计划明确包含背景项时才输出背景。艺术标题按计划保持独立。',
-    'UI 底板需要去字时必须补全被挖空的材质；被遮挡区域仅在计划明确要求时修复。',
-    '每个最终 PNG 必须按该项 source_region_pixels 精确裁切，宽高等于框选区域；不要补成原图全画布。原始 x/y 仅作为回放定位元数据保留。',
-    `唯一合法交付目录是：${outputDirectory}。必须直接写入该绝对路径，不得写入当前 Codex 工作目录或另建同名任务目录。`,
-    '不要停留在分析或方案说明，直接执行到所选元素 PNG 和逐层验收通过；manifest 放在工作目录，不要混入最终图片目录。',
-  ].join('\n');
+  const prompt = buildWorkbenchPrompt({
+    jobId,
+    jobPath,
+    sourcePath,
+    outputDirectory,
+  });
+  const input = buildWorkbenchTurnInput({
+    prompt,
+    plan,
+    sourcePath,
+    reviewCropPaths,
+  });
 
   const turn = await client.request('turn/start', {
     threadId,
     clientUserMessageId: randomUUID(),
-    input: [
-      { type: 'text', text: prompt, text_elements: [] },
-      { type: 'localImage', path: sourcePath, detail: 'high' },
-      ...reviewCropPaths.map((cropPath) => ({ type: 'localImage', path: cropPath, detail: 'high' })),
-    ],
+    input,
     responsesapiClientMetadata: { source: 'ui-layer-review-canvas', job_id: jobId },
   });
   const turnId = turn?.turn?.id || null;
