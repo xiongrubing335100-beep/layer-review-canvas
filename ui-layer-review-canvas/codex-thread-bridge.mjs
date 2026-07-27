@@ -270,7 +270,7 @@ export function buildWorkbenchTurnInput({
     layer.execution_mode === 'quality'
     || layer.execution_route_hint === 'targeted_repair'
     || layer.category === 'kvBackground'
-  ));
+  )) || plan.task === 'refine_split_result';
   return [
     { type: 'text', text: prompt, text_elements: [] },
     ...(needsSource ? [{ type: 'localImage', path: sourcePath, detail: 'high' }] : []),

@@ -43,3 +43,18 @@ test('targeted repair attaches source context and crop image', () => {
     ...base.reviewCropPaths,
   ]);
 });
+
+test('refinement attaches the existing transparent source without a crop', () => {
+  const input = buildWorkbenchTurnInput({
+    ...base,
+    prompt: 'run',
+    reviewCropPaths: [],
+    plan: {
+      task: 'refine_split_result',
+      layers: [{ execution_mode: 'fast' }],
+    },
+  });
+  assert.deepEqual(input.filter((item) => item.type === 'localImage').map((item) => item.path), [
+    base.sourcePath,
+  ]);
+});
