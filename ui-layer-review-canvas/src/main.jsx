@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { jobMatchesSource } from './job-state.js';
+import { classifyExecutionRoute, combinedRequirement } from './split-execution.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -93,13 +94,6 @@ const quickRequirements = [
   '补全被遮挡区域',
   '按框选尺寸输出透明 PNG',
 ];
-
-function combinedRequirement(requirement, refinementPrompt) {
-  const base = String(requirement || '').trim();
-  const refinement = String(refinementPrompt || '').trim();
-  if (!refinement) return base;
-  return [base, `精修补充：${refinement}`].filter(Boolean).join('\n\n');
-}
 
 function pngDownloadName(value, fallback) {
   const base = String(value || '')
@@ -1759,39 +1753,52 @@ function App() {
         source_uri: sourceImage.startsWith('blob:') ? null : sourceImage,
         embedded_data_url: includeSource ? sourceDataUrl || null : undefined,
       },
-      layers: planLayers.map((node, index) => ({
-        layer_index: index + 1,
-        id: node.id,
-        category: node.category,
-        category_label: categoryMeta[node.category].label,
-        name: node.name,
-        requirement: combinedRequirement(node.requirement, node.refinementPrompt),
-        refinement_requirement: String(node.refinementPrompt || '').trim() || null,
-        source_region_percent: node.bounds,
-        source_region_pixels: pixelBounds(node.bounds, sourceSize),
-        mask_annotations: marks
-          .filter((mark) => mark.layer_id === node.id)
-          .map((mark, annotationIndex) => annotationForPlan(mark, node.bounds, sourceSize, annotationIndex)),
-        mask_policy: {
-          selected_region: 'candidate_scope_only',
-          keep_region: 'force_include',
-          exclude_region: 'force_remove',
-          overlapping_keep_exclude: 'later_annotation_wins',
-          manual_boundary: 'highest_priority_edge_override',
-          remove_background: 'post_mask_alpha_output_only',
-        },
-        execution_mode: node.executionMode || 'fast',
-        remove_background: Boolean(node.removeBackground),
-        processing_route: categoryMeta[node.category].route,
-        workflow_position: { x: node.x, y: node.y },
-        output: {
-          crop_to_source_region: true,
-          width: pixelBounds(node.bounds, sourceSize).width,
-          height: pixelBounds(node.bounds, sourceSize).height,
-          original_source_x: pixelBounds(node.bounds, sourceSize).x,
-          original_source_y: pixelBounds(node.bounds, sourceSize).y,
-        },
-      })),
+      layers: planLayers.map((node, index) => {
+        const normalizedRequirement = combinedRequirement({
+          categoryDefault: categoryMeta[node.category].defaultRequirement,
+          requirement: node.requirement,
+          refinementPrompt: node.refinementPrompt,
+        });
+        return {
+          layer_index: index + 1,
+          id: node.id,
+          category: node.category,
+          category_label: categoryMeta[node.category].label,
+          name: node.name,
+          requirement: normalizedRequirement,
+          refinement_requirement: String(node.refinementPrompt || '').trim() || null,
+          execution_route_hint: classifyExecutionRoute({
+            category: node.category,
+            requirement: node.requirement,
+            refinementPrompt: node.refinementPrompt,
+            removeBackground: Boolean(node.removeBackground),
+          }),
+          source_region_percent: node.bounds,
+          source_region_pixels: pixelBounds(node.bounds, sourceSize),
+          mask_annotations: marks
+            .filter((mark) => mark.layer_id === node.id)
+            .map((mark, annotationIndex) => annotationForPlan(mark, node.bounds, sourceSize, annotationIndex)),
+          mask_policy: {
+            selected_region: 'candidate_scope_only',
+            keep_region: 'force_include',
+            exclude_region: 'force_remove',
+            overlapping_keep_exclude: 'later_annotation_wins',
+            manual_boundary: 'highest_priority_edge_override',
+            remove_background: 'post_mask_alpha_output_only',
+          },
+          execution_mode: node.executionMode || 'fast',
+          remove_background: Boolean(node.removeBackground),
+          processing_route: categoryMeta[node.category].route,
+          workflow_position: { x: node.x, y: node.y },
+          output: {
+            crop_to_source_region: true,
+            width: pixelBounds(node.bounds, sourceSize).width,
+            height: pixelBounds(node.bounds, sourceSize).height,
+            original_source_x: pixelBounds(node.bounds, sourceSize).x,
+            original_source_y: pixelBounds(node.bounds, sourceSize).y,
+          },
+        };
+      }),
       constraints: {
         output_scope: 'selected_layers_only',
         auto_add_layers: false,
