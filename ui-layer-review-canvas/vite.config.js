@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readCodexTurnStatus, sendPlanToCurrentThread } from './codex-thread-bridge.mjs';
-import { markTiming, mergeTiming } from './src/execution-timing.js';
+import { completionTimestamp, markTiming, mergeTiming } from './src/execution-timing.js';
 import { reconcileTurnStatus } from './src/job-state.js';
 
 const splitSkillPath = 'C:\\Users\\Amoiz\\.codex\\skills\\split-ui-design-layers-workbench-targeted\\SKILL.md';
@@ -79,8 +79,9 @@ function layerReviewQueue() {
           }]));
           const expectedCount = Array.isArray(plan.layers) ? plan.layers.length : 0;
           const resultReady = expectedCount > 0 && images.length >= expectedCount;
-          const planStatus = executionReport?.status === 'needs_confirmation'
-            ? 'needs_confirmation'
+          const reportStatus = executionReport?.status || null;
+          const planStatus = ['failed', 'needs_confirmation'].includes(reportStatus)
+            ? reportStatus
             : plan.status || 'processing';
           let codexTurn = null;
           if (
@@ -96,16 +97,23 @@ function layerReviewQueue() {
           }
           const reconciled = reconcileTurnStatus({
             planStatus,
+            reportStatus,
             turnStatus: codexTurn?.status || null,
             resultReady,
             imageCount: images.length,
           });
           const status = reconciled.status;
-          const completedAt = ['completed', 'failed'].includes(status)
-            ? plan.codex_completed_at
-              || codexTurn?.completedAt
-              || (imageStats.length ? new Date(Math.max(...imageStats.map((item) => item.mtimeMs))).toISOString() : new Date().toISOString())
-            : null;
+          const timing = mergeTiming(plan.execution_timing, executionReport?.timing);
+          const completedAt = completionTimestamp({
+            status,
+            timing,
+            planCompletedAt: plan.codex_completed_at,
+            turnCompletedAt: codexTurn?.completedAt,
+            imageCompletedAt: imageStats.length
+              ? new Date(Math.max(...imageStats.map((item) => item.mtimeMs))).toISOString()
+              : null,
+            fallbackCompletedAt: new Date().toISOString(),
+          });
 
           response.statusCode = 200;
           response.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -124,7 +132,7 @@ function layerReviewQueue() {
             thread_id: plan.codex_thread_id || null,
             turn_id: plan.codex_turn_id || null,
             skill_name: path.basename(path.dirname(plan.execution?.skill_path || splitSkillPath)),
-            timing: mergeTiming(plan.execution_timing, executionReport?.timing),
+            timing,
             execution_route: executionReport?.execution_route
               || plan.layers?.[0]?.execution_route_hint
               || null,

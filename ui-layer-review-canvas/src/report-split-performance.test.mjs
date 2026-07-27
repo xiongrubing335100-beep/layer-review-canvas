@@ -28,13 +28,39 @@ async function writeJson(cwd, relativePath, value) {
   await writeFile(destination, JSON.stringify(value));
 }
 
-async function writeCompletedJob(cwd, name, route, seconds) {
+const passingValidation = {
+  count: true,
+  dimensions: true,
+  alpha: true,
+  annotation_conformance: true,
+  obvious_exclusion: true,
+};
+
+async function writeCompletedJob(cwd, name, route, seconds, {
+  layerCount = 1,
+  report = true,
+  reportRoute = route,
+  reportTiming = true,
+  status = 'completed',
+  validationResults = passingValidation,
+} = {}) {
   await writeJson(cwd, `output/jobs/${name}/layer-review-plan.json`, {
     status: 'completed',
     submitted_at: '2026-01-01T00:00:00.000Z',
     codex_completed_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + seconds * 1000).toISOString(),
-    layers: [{ execution_route_hint: route }],
+    layers: Array.from({ length: layerCount }, () => ({ execution_route_hint: route })),
   });
+  if (report) {
+    await writeJson(cwd, `output/jobs/${name}/execution-report.json`, {
+      status,
+      execution_route: reportRoute,
+      timing: reportTiming ? {
+          submitted_at: '2026-01-01T00:00:00.000Z',
+          completed_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + seconds * 1000).toISOString(),
+        } : undefined,
+      validation_results: validationResults,
+    });
+  }
 }
 
 test('normal report exits zero when job history is missing', async () => {
@@ -63,6 +89,16 @@ test('gate rejects an invalid threshold', async () => {
   });
 });
 
+test('gate requires an explicit current-job id set', async () => {
+  await withFixture(async (cwd) => {
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--job-ids/);
+  });
+});
+
 test('gate fails when an expected simple route is missing', async () => {
   await withFixture(async (cwd) => {
     await writeCompletedJob(cwd, 'layer-job-direct', 'direct_crop', 50);
@@ -73,7 +109,7 @@ test('gate fails when an expected simple route is missing', async () => {
       },
     });
   }, (cwd) => {
-    const result = report(cwd, '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    const result = report(cwd, '--job-ids', 'layer-job-direct', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /alpha_extract/);
   });
@@ -90,12 +126,123 @@ test('gate passes when both simple routes improve by at least forty percent', as
       },
     });
   }, (cwd) => {
-    const result = report(cwd, '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    const result = report(cwd, '--job-ids', 'layer-job-direct,layer-job-alpha', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
     assert.equal(result.status, 0);
     assert.deepEqual(JSON.parse(result.stdout).improvements, {
       direct_crop: 50,
       alpha_extract: 50,
     });
+  });
+});
+
+test('gate uses exactly the requested current jobs', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-direct', 'direct_crop', 50);
+    await writeCompletedJob(cwd, 'layer-job-alpha', 'alpha_extract', 100);
+    await writeCompletedJob(cwd, 'layer-job-unrelated', 'direct_crop', 1);
+    await writeJson(cwd, 'baseline.json', {
+      summary: {
+        direct_crop: { medianSeconds: 100 },
+        alpha_extract: { medianSeconds: 200 },
+      },
+    });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-direct,layer-job-alpha', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout).samples.map((sample) => sample.jobId), [
+      'layer-job-alpha',
+      'layer-job-direct',
+    ]);
+  });
+});
+
+test('gate rejects a requested job id that is missing', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-direct', 'direct_crop', 50);
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-direct,layer-job-missing', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /layer-job-missing/);
+  });
+});
+
+test('gate rejects failed jobs', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-failed', 'direct_crop', 50, { status: 'failed' });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-failed', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /failed|completed/);
+  });
+});
+
+test('gate rejects skipped jobs with non-positive duration', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-zero', 'direct_crop', 0);
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-zero', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /positive duration/);
+  });
+});
+
+test('gate rejects multi-layer jobs', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-multiple', 'direct_crop', 50, { layerCount: 2 });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-multiple', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /exactly one layer/);
+  });
+});
+
+test('gate rejects a report route that differs from the planned route', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-mixed', 'direct_crop', 50, { reportRoute: 'alpha_extract' });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-mixed', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /route/);
+  });
+});
+
+test('gate rejects current jobs without execution reports', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-no-report', 'direct_crop', 50, { report: false });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-no-report', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /execution report/);
+  });
+});
+
+test('gate rejects current jobs without executor report timing', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-no-report-timing', 'direct_crop', 50, { reportTiming: false });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-no-report-timing', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /report timing/);
+  });
+});
+
+test('gate rejects current jobs without passing mandatory validation results', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-invalid', 'direct_crop', 50, {
+      validationResults: { ...passingValidation, alpha: false },
+    });
+    await writeJson(cwd, 'baseline.json', { summary: {} });
+  }, (cwd) => {
+    const result = report(cwd, '--job-ids', 'layer-job-invalid', '--baseline', 'baseline.json', '--require-fast-improvement', '40');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /validation/);
   });
 });
 

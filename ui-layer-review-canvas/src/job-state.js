@@ -1,4 +1,5 @@
 const terminalFailureStatuses = new Set(['failed', 'send_failed']);
+const authoritativeReportStatuses = new Set(['failed', 'needs_confirmation']);
 
 export function jobMatchesSource(job, source) {
   if (!job?.sourceSize?.width || !job?.sourceSize?.height) return false;
@@ -8,10 +9,12 @@ export function jobMatchesSource(job, source) {
 
 export function reconcileTurnStatus({
   planStatus,
+  reportStatus,
   turnStatus,
   resultReady,
   imageCount,
 }) {
+  if (authoritativeReportStatuses.has(reportStatus)) planStatus = reportStatus;
   if (terminalFailureStatuses.has(planStatus)) {
     return { status: 'failed', detail: null };
   }
@@ -52,4 +55,18 @@ export function reconcileTurnStatus({
     status: planStatus === 'sending_to_codex' ? 'sending_to_codex' : 'processing',
     detail: null,
   };
+}
+
+export function shouldPollJob(job) {
+  return !['failed', 'send_failed', 'needs_confirmation'].includes(job.status)
+    && (job.status !== 'completed' || !job.completedAt || !job.snapshotVerified);
+}
+
+export function elapsedEnd(job, clockNow) {
+  const reportCompletedAt = Date.parse(job.timing?.completed_at || '');
+  if (Number.isFinite(reportCompletedAt)) return reportCompletedAt;
+  if (job.status === 'needs_confirmation') {
+    return job.confirmationRequestedAt || job.completedAt || job.submittedAt;
+  }
+  return job.completedAt || clockNow;
 }

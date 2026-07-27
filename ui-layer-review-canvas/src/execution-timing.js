@@ -7,3 +7,19 @@ export function mergeTiming(jobTiming = {}, reportTiming = {}) {
     Object.entries({ ...jobTiming, ...reportTiming }).filter(([, value]) => Boolean(value)),
   );
 }
+
+export function completionTimestamp({
+  status,
+  timing = {},
+  planCompletedAt,
+  turnCompletedAt,
+  imageCompletedAt,
+  fallbackCompletedAt,
+}) {
+  if (!['completed', 'failed'].includes(status)) return null;
+  return timing.completed_at
+    || planCompletedAt
+    || turnCompletedAt
+    || imageCompletedAt
+    || fallbackCompletedAt;
+}

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { jobMatchesSource, reconcileTurnStatus } from './job-state.js';
+import * as jobState from './job-state.js';
+
+const { jobMatchesSource, reconcileTurnStatus } = jobState;
 
 test('jobs from another uploaded image do not bind to the current layer ids', () => {
   const currentSource = { name: '情报探索-4个副本.png', width: 750, height: 1624 };
@@ -56,4 +58,48 @@ test('a confirmation request is not shown as processing', () => {
     status: 'needs_confirmation',
     detail: 'Codex 需要确认拆分目标后才能继续',
   });
+});
+
+test('a failed executor report overrides an active turn and existing PNGs', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'sent_to_codex',
+    reportStatus: 'failed',
+    turnStatus: 'inProgress',
+    resultReady: true,
+    imageCount: 1,
+  }), {
+    status: 'failed',
+    detail: null,
+  });
+});
+
+test('a failed executor report overrides a completed turn and existing PNGs', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'completed',
+    reportStatus: 'failed',
+    turnStatus: 'completed',
+    resultReady: true,
+    imageCount: 1,
+  }), {
+    status: 'failed',
+    detail: null,
+  });
+});
+
+test('needs confirmation is terminal for polling until resubmission', () => {
+  assert.equal(jobState.shouldPollJob?.({
+    status: 'needs_confirmation',
+    completedAt: null,
+    snapshotVerified: false,
+  }), false);
+});
+
+test('elapsed time stops at report completion timing when available', () => {
+  const reportCompletedAt = '2026-07-27T00:00:05.000Z';
+  assert.equal(jobState.elapsedEnd?.({
+    status: 'needs_confirmation',
+    submittedAt: Date.parse('2026-07-27T00:00:00.000Z'),
+    confirmationRequestedAt: Date.parse('2026-07-27T00:00:09.000Z'),
+    timing: { completed_at: reportCompletedAt },
+  }, Date.parse('2026-07-27T00:00:12.000Z')), Date.parse(reportCompletedAt));
 });

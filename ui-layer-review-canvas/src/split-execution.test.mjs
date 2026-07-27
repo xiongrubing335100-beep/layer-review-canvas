@@ -80,3 +80,36 @@ test('chooses targeted repair only for explicit repair work', () => {
     removeBackground: true,
   }), 'targeted_repair');
 });
+
+test('classifies an empty requirement from its category default', () => {
+  assert.equal(classifyExecutionRoute({
+    categoryDefault: '移除普通文字并补全干净底板',
+    requirement: '   ',
+    refinementPrompt: '',
+    removeBackground: true,
+  }), 'targeted_repair');
+});
+
+test('does not turn a negated text-removal request into repair work', () => {
+  assert.equal(classifyExecutionRoute({
+    requirement: '不要移除文字，只保留当前组件',
+    refinementPrompt: '',
+    removeBackground: true,
+  }), 'alpha_extract');
+});
+
+test('recognizes colloquial text removal as repair work', () => {
+  assert.equal(classifyExecutionRoute({
+    requirement: '擦掉文字，补回下面的底板',
+    refinementPrompt: '',
+    removeBackground: false,
+  }), 'targeted_repair');
+});
+
+test('recognizes English text removal as repair work', () => {
+  assert.equal(classifyExecutionRoute({
+    requirement: 'remove text and reconstruct the clean base',
+    refinementPrompt: '',
+    removeBackground: false,
+  }), 'targeted_repair');
+});

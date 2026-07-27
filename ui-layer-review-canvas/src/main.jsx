@@ -41,7 +41,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { zipSync } from 'fflate';
-import { jobMatchesSource } from './job-state.js';
+import { elapsedEnd, jobMatchesSource, shouldPollJob } from './job-state.js';
 import { classifyExecutionRoute, combinedRequirement, isNodeRunning, nextPaint } from './split-execution.js';
 import './styles.css';
 
@@ -127,13 +127,6 @@ function readStoredJobs() {
 
 function jobStatus(status) {
   return jobStatusMeta[status] || jobStatusMeta.processing;
-}
-
-function elapsedEnd(job, clockNow) {
-  if (job.status === 'needs_confirmation') {
-    return job.confirmationRequestedAt || job.completedAt || job.submittedAt;
-  }
-  return job.completedAt || clockNow;
 }
 
 function splitProgress(status) {
@@ -965,10 +958,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const pendingJobs = jobs.filter((job) => (
-      !['failed', 'send_failed'].includes(job.status)
-      && (job.status !== 'completed' || !job.completedAt || !job.snapshotVerified)
-    ));
+    const pendingJobs = jobs.filter(shouldPollJob);
     if (!pendingJobs.length) return undefined;
 
     let cancelled = false;
@@ -1797,8 +1787,7 @@ function App() {
           refinement_requirement: String(node.refinementPrompt || '').trim() || null,
           execution_route_hint: classifyExecutionRoute({
             category: node.category,
-            requirement: node.requirement,
-            refinementPrompt: node.refinementPrompt,
+            requirement: normalizedRequirement,
             removeBackground: Boolean(node.removeBackground),
           }),
           source_region_percent: node.bounds,
