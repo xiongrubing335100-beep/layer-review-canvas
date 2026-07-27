@@ -1,5 +1,9 @@
 const repairIntent = /(移除|删除|去掉|去除).{0,8}(文字|数字|水印|内容)|补全.{0,12}(底板|空洞|遮挡|缺口)|修复.{0,8}(空洞|遮挡|缺口)/;
 
+export function nextPaint() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
 export function combinedRequirement({
   categoryDefault = '',
   requirement = '',

@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { jobMatchesSource } from './job-state.js';
-import { classifyExecutionRoute, combinedRequirement } from './split-execution.js';
+import { classifyExecutionRoute, combinedRequirement, nextPaint } from './split-execution.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -110,6 +110,7 @@ const jobStatusMeta = {
   processing: { label: 'Codex 处理中', tone: 'pending' },
   partial: { label: '结果生成中', tone: 'pending' },
   finalizing: { label: 'Codex 正在收尾', tone: 'pending' },
+  needs_confirmation: { label: '需要确认', tone: 'confirmation' },
   completed: { label: '拆分完成', tone: 'completed' },
   failed: { label: '处理失败', tone: 'failed' },
   send_failed: { label: '发送失败', tone: 'failed' },
@@ -126,6 +127,13 @@ function readStoredJobs() {
 
 function jobStatus(status) {
   return jobStatusMeta[status] || jobStatusMeta.processing;
+}
+
+function elapsedEnd(job, clockNow) {
+  if (job.status === 'needs_confirmation') {
+    return job.confirmationRequestedAt || job.completedAt || job.submittedAt;
+  }
+  return job.completedAt || clockNow;
 }
 
 function splitProgress(status) {
@@ -446,7 +454,13 @@ function StatusPill({ status, label }) {
 function LayerStatusPill({ node, result }) {
   if (!result) return <StatusPill status={node.status} />;
   const meta = jobStatus(result.job.status);
-  const label = meta.tone === 'completed' ? '结果已产出' : meta.tone === 'failed' ? '处理失败' : '处理中';
+  const label = meta.tone === 'completed'
+    ? '结果已产出'
+    : meta.tone === 'failed'
+      ? '处理失败'
+      : meta.tone === 'confirmation'
+        ? meta.label
+        : '处理中';
   return <span className={`status-pill status-pill--job-${meta.tone}`}>{label}</span>;
 }
 
@@ -977,6 +991,11 @@ function App() {
           turnId: update.turn_id || job.turnId,
           skillName: update.skill_name || job.skillName,
           statusDetail: update.status_detail || null,
+          timing: update.timing || job.timing || {},
+          executionRoute: update.execution_route || job.executionRoute || null,
+          confirmationRequestedAt: update.status === 'needs_confirmation'
+            ? job.confirmationRequestedAt || Date.now()
+            : job.confirmationRequestedAt,
         } : job;
       }));
     };
@@ -1879,6 +1898,7 @@ function App() {
         completedAt: null,
       }])),
     }));
+    await nextPaint();
     const layerSnapshots = Object.fromEntries(nodeIds.map((nodeId) => {
       const node = nodes.find((candidate) => candidate.id === nodeId);
       return [nodeId, {
@@ -1923,6 +1943,8 @@ function App() {
         threadId: result.thread_id || null,
         turnId: result.turn_id || null,
         skillName: result.skill_name || 'split-ui-design-layers-workbench-targeted',
+        timing: result.timing || {},
+        executionRoute: result.execution_route || null,
       }]);
       addActivity(`${nodeIds.length} 个拆分项已发送到当前 Codex 任务`);
       setToast(scope === 'batch' ? `已批量发送 ${nodeIds.length} 项` : `${nodes.find((node) => node.id === nodeIds[0])?.name || '当前项'}已发送`);
@@ -2439,7 +2461,7 @@ function App() {
             <div className={`job-strip job-strip--${jobStatus(activeSelectedJob.status).tone}`}>
               {jobStatus(activeSelectedJob.status).tone === 'pending' ? <LoaderCircle size={15} className="spin" /> : <CheckCircle2 size={15} />}
               <span>
-                <strong>{jobStatus(activeSelectedJob.status).label}，已用时 {formatElapsed(activeSelectedJob.submittedAt, activeSelectedJob.completedAt || clockNow)}</strong>
+                <strong>{jobStatus(activeSelectedJob.status).label}，已用时 {formatElapsed(activeSelectedJob.submittedAt, elapsedEnd(activeSelectedJob, clockNow))}</strong>
                 <small>
                   {activeSelectedJob.statusDetail || (
                     jobStatus(activeSelectedJob.status).tone === 'failed'
@@ -3066,7 +3088,7 @@ function App() {
                     <div className={`guided-result-panel__status guided-result-panel__status--${jobStatus(activeSelectedJob.status).tone}`}>
                       {jobStatus(activeSelectedJob.status).tone === 'pending' ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}
                       <span>{jobStatus(activeSelectedJob.status).label}</span>
-                      <small>{formatElapsed(activeSelectedJob.submittedAt, activeSelectedJob.completedAt || clockNow)}</small>
+                      <small>{formatElapsed(activeSelectedJob.submittedAt, elapsedEnd(activeSelectedJob, clockNow))}</small>
                     </div>
                   ) : (
                     <span className="guided-result-panel__idle-status">尚未发送</span>

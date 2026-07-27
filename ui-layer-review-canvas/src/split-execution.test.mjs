@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyExecutionRoute, combinedRequirement } from './split-execution.js';
+import { classifyExecutionRoute, combinedRequirement, nextPaint } from './split-execution.js';
+
+test('nextPaint resolves on the next animation frame', async () => {
+  const original = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) => callback(12);
+  try {
+    assert.equal(await nextPaint(), 12);
+  } finally {
+    globalThis.requestAnimationFrame = original;
+  }
+});
 
 test('keeps explicit user intent and appends refinement once', () => {
   assert.equal(combinedRequirement({
