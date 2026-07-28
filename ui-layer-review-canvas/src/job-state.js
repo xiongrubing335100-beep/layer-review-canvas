@@ -1,5 +1,5 @@
 const terminalFailureStatuses = new Set(['failed', 'send_failed']);
-const authoritativeReportStatuses = new Set(['failed', 'needs_confirmation']);
+const authoritativeReportStatuses = new Set(['completed', 'failed', 'needs_confirmation']);
 
 export function jobMatchesSource(job, source) {
   if (!job?.sourceSize?.width || !job?.sourceSize?.height) return false;

@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { buildBridgeWidgetHtml } from './src/mcp-bridge-resource.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
-const widgetUri = 'ui://layer-review/conversation-bridge.html';
+const widgetUri = 'ui://layer-review/workbench-v2.html';
 const widgetHtml = await buildBridgeWidgetHtml(
   path.join(rootDirectory, 'public', 'layer-review-bridge-widget.html'),
   path.join(rootDirectory, 'public', 'layer-review-bridge-widget.js'),
@@ -20,13 +20,13 @@ const widgetHtml = await buildBridgeWidgetHtml(
 
 function createLayerReviewBridgeServer() {
   const server = new McpServer({
-    name: 'layer-review-conversation-bridge',
-    version: '0.1.0',
+    name: 'layer-review-workbench',
+    version: '0.2.0',
   });
 
   registerAppResource(
     server,
-    'layer-review-conversation-bridge',
+    'layer-review-workbench',
     widgetUri,
     {},
     async () => ({
@@ -39,10 +39,11 @@ function createLayerReviewBridgeServer() {
             csp: {
               connectDomains: ['http://127.0.0.1:4173'],
               resourceDomains: [],
+              frameDomains: ['http://127.0.0.1:4173'],
             },
-            prefersBorder: true,
+            prefersBorder: false,
           },
-          'openai/widgetDescription': '把 Layer Review 工作台提交的拆分任务直接发送到当前 Codex 会话。',
+          'openai/widgetDescription': '在当前 Codex 任务中打开 Layer Review 工作台，并把已确认的拆分任务发送到当前任务。',
         },
       }],
     }),
@@ -50,10 +51,10 @@ function createLayerReviewBridgeServer() {
 
   registerAppTool(
     server,
-    'open_layer_review_conversation_bridge',
+    'open_layer_review_workbench',
     {
-      title: '打开 Layer Review 会话桥接',
-      description: 'Use this when the Layer Review workbench should send split tasks into the current Codex conversation instead of starting hidden background turns.',
+      title: '打开 Layer Review 工作台',
+      description: 'Open the Layer Review workbench inside the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
       inputSchema: {},
       outputSchema: {
         state: z.literal('ready'),
@@ -73,7 +74,7 @@ function createLayerReviewBridgeServer() {
     async () => ({
       content: [{
         type: 'text',
-        text: 'Layer Review 会话桥接已打开。请在工作台点击“拆分”。',
+        text: 'Layer Review 工作台已在当前 Codex 任务中打开。点击“拆分”会把任务发送到当前任务。',
       }],
       structuredContent: {
         state: 'ready',

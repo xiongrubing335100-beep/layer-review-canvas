@@ -60,6 +60,19 @@ test('a foreground split stays waiting until the bridge posts it to the conversa
   });
 });
 
+test('a completed execution report finishes a foreground split without a background turn', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'sent_to_codex',
+    reportStatus: 'completed',
+    turnStatus: null,
+    resultReady: true,
+    imageCount: 1,
+  }), {
+    status: 'completed',
+    detail: null,
+  });
+});
+
 test('a confirmation request is not shown as processing', () => {
   assert.deepEqual(reconcileTurnStatus({
     planStatus: 'needs_confirmation',
