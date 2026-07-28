@@ -42,6 +42,10 @@ import {
 } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { elapsedEnd, jobMatchesSource, shouldPollJob } from './job-state.js';
+import {
+  resolveWorkbenchUrl,
+  sendSplitPromptToCurrentTask,
+} from './mcp-workbench-host.js';
 import { classifyExecutionRoute, combinedRequirement, isNodeRunning, nextPaint } from './split-execution.js';
 import './styles.css';
 
@@ -172,7 +176,8 @@ function formatElapsed(start, end = Date.now()) {
 async function cropRegionDataUrl(source, bounds, sourceSize) {
   const image = new Image();
   image.decoding = 'async';
-  image.src = source;
+  image.crossOrigin = 'anonymous';
+  image.src = resolveWorkbenchUrl(source);
   await new Promise((resolve, reject) => {
     if (image.complete && image.naturalWidth) {
       resolve();
@@ -969,7 +974,9 @@ function App() {
     const refresh = async () => {
       const updates = await Promise.all(pendingJobs.map(async (job) => {
         try {
-          const response = await fetch(`/api/layer-review/jobs/${encodeURIComponent(job.id)}`, { cache: 'no-store' });
+          const response = await fetch(resolveWorkbenchUrl(
+            `/api/layer-review/jobs/${encodeURIComponent(job.id)}`,
+          ), { cache: 'no-store' });
           if (response.status === 404) return { job_id: job.id, status: 'failed', images: [] };
           if (!response.ok) return null;
           return await response.json();
@@ -1863,7 +1870,7 @@ function App() {
     setToast(`正在打包 ${downloadableResults.length} 张 PNG`);
     try {
       const entries = await Promise.all(downloadableResults.map(async ({ node, image, index }) => {
-        const response = await fetch(image.url, { cache: 'no-store' });
+        const response = await fetch(resolveWorkbenchUrl(image.url), { cache: 'no-store' });
         if (!response.ok) throw new Error(`${node.name} 下载失败（HTTP ${response.status}）`);
         const fileName = `${String(index + 1).padStart(2, '0')}-${pngDownloadName(image.name || node.name, node.id)}`;
         return [fileName, new Uint8Array(await response.arrayBuffer())];
@@ -1927,13 +1934,17 @@ function App() {
           embedded_crop_data_url: cropDataUrls[index],
         },
       }));
-      const response = await fetch('/api/layer-review/submit', {
+      const response = await fetch(resolveWorkbenchUrl('/api/layer-review/submit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(plan),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      const sentToCurrentTask = await sendSplitPromptToCurrentTask({
+        jobId: result.job_id,
+        prompt: result.prompt,
+      }).catch(() => false);
       setNodes((current) => current.map((node) => (
         submittedNodeIds.includes(node.id) ? { ...node, status: 'accepted' } : node
       )));
@@ -1943,7 +1954,7 @@ function App() {
         layerSnapshots,
         sourceSize: submittedSourceSize,
         sourceName,
-        status: result.status || 'sent_to_codex',
+        status: sentToCurrentTask ? 'sent_to_codex' : (result.status || 'awaiting_codex_message'),
         images: [],
         submittedAt: result.submitted_at ? new Date(result.submitted_at).getTime() : Date.now(),
         completedAt: null,
@@ -1953,8 +1964,12 @@ function App() {
         timing: result.timing || {},
         executionRoute: result.execution_route || null,
       }]);
-      addActivity(`${submittedNodeIds.length} 个拆分项已发送到当前 Codex 任务`);
-      setToast(scope === 'batch' ? `已批量发送 ${submittedNodeIds.length} 项` : `${nodes.find((node) => node.id === submittedNodeIds[0])?.name || '当前项'}已发送`);
+      addActivity(sentToCurrentTask
+        ? `${submittedNodeIds.length} 个拆分项已发送到当前 Codex 任务`
+        : `${submittedNodeIds.length} 个拆分项等待连接当前 Codex 任务`);
+      setToast(sentToCurrentTask
+        ? (scope === 'batch' ? `已批量发送 ${submittedNodeIds.length} 项` : `${nodes.find((node) => node.id === submittedNodeIds[0])?.name || '当前项'}已发送`)
+        : '工作台未连接当前任务，拆分信息已保留待发送');
     } catch (error) {
       setToast(`提交失败：${error.message}`);
     } finally {
@@ -2230,7 +2245,7 @@ function App() {
 
     setSubmittingResultEdit(true);
     try {
-      const imageResponse = await fetch(latestSelectedResult.image.url, { cache: 'no-store' });
+      const imageResponse = await fetch(resolveWorkbenchUrl(latestSelectedResult.image.url), { cache: 'no-store' });
       if (!imageResponse.ok) throw new Error(`无法读取拆分结果（HTTP ${imageResponse.status}）`);
       const embeddedSource = await blobToDataUrl(await imageResponse.blob());
       const resultRegion = pixelBounds(latestSelectedResult.bounds, latestSelectedResult.sourceSize);
@@ -2293,13 +2308,17 @@ function App() {
         },
       };
 
-      const response = await fetch('/api/layer-review/submit', {
+      const response = await fetch(resolveWorkbenchUrl('/api/layer-review/submit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      const sentToCurrentTask = await sendSplitPromptToCurrentTask({
+        jobId: result.job_id,
+        prompt: result.prompt,
+      }).catch(() => false);
       setJobs((current) => [...current, {
         id: result.job_id,
         nodeIds: [selected.id],
@@ -2311,7 +2330,7 @@ function App() {
         },
         sourceSize: { ...latestSelectedResult.sourceSize },
         sourceName,
-        status: result.status || 'sent_to_codex',
+        status: sentToCurrentTask ? 'sent_to_codex' : (result.status || 'awaiting_codex_message'),
         images: [],
         submittedAt: result.submitted_at ? new Date(result.submitted_at).getTime() : Date.now(),
         completedAt: null,
@@ -2321,8 +2340,12 @@ function App() {
         parentJobId: latestSelectedResult.job.id,
         editKind: 'result_refinement',
       }]);
-      addActivity(`${selected.name} 的拆分结果已提交二次精修`);
-      setToast('结果修整已提交，原结果版本已保留');
+      addActivity(sentToCurrentTask
+        ? `${selected.name} 的拆分结果已提交二次精修`
+        : `${selected.name} 的二次精修等待连接当前 Codex 任务`);
+      setToast(sentToCurrentTask
+        ? '结果修整已提交，原结果版本已保留'
+        : '工作台未连接当前任务，精修信息已保留待发送');
     } catch (error) {
       setToast(`结果修整提交失败：${error.message}`);
     } finally {

@@ -37,6 +37,23 @@ function layerReviewQueue() {
   return {
     name: 'layer-review-queue',
     configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
+        if (!pathname.startsWith('/api/layer-review/')) {
+          next();
+          return;
+        }
+        response.setHeader('Access-Control-Allow-Origin', '*');
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        if (request.method === 'OPTIONS') {
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        next();
+      });
+
       server.middlewares.use(async (request, response, next) => {
         const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
         const ackMatch = pathname.match(/^\/api\/layer-review\/foreground-dispatch\/([a-zA-Z0-9._-]+)\/ack$/);
@@ -257,14 +274,15 @@ function layerReviewQueue() {
             },
           };
           await writeFile(jobPath, JSON.stringify(job, null, 2));
+          const prompt = buildWorkbenchPrompt({
+            jobId,
+            jobPath,
+            sourcePath,
+            outputDirectory,
+          });
           await enqueueForegroundDispatch(jobDirectory, {
             jobId,
-            prompt: buildWorkbenchPrompt({
-              jobId,
-              jobPath,
-              sourcePath,
-              outputDirectory,
-            }),
+            prompt,
             submittedAt,
           });
           response.statusCode = 202;
@@ -274,6 +292,7 @@ function layerReviewQueue() {
             status: 'awaiting_codex_message',
             submitted_at: submittedAt,
             skill_name: path.basename(path.dirname(splitSkillPath)),
+            prompt,
           }));
         } catch (error) {
           response.statusCode = /正在|active|running/i.test(error.message) ? 409 : 500;
@@ -289,5 +308,9 @@ export default defineConfig({
   plugins: [react(), layerReviewQueue()],
   server: {
     host: '127.0.0.1',
+    cors: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
   },
 });

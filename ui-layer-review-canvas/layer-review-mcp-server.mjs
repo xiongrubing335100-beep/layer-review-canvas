@@ -9,14 +9,15 @@ import {
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { buildBridgeWidgetHtml } from './src/mcp-bridge-resource.js';
+import { buildWorkbenchWidgetHtml } from './src/mcp-bridge-resource.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
-const widgetUri = 'ui://layer-review/conversation-bridge-v3.html';
-const widgetHtml = await buildBridgeWidgetHtml(
-  path.join(rootDirectory, 'public', 'layer-review-bridge-widget.html'),
-  path.join(rootDirectory, 'public', 'layer-review-bridge-widget.js'),
-);
+const widgetUri = 'ui://layer-review/workbench-v4.html';
+const legacyWidgetUris = [
+  'ui://layer-review/conversation-bridge-v3.html',
+  'ui://layer-review/workbench-v2.html',
+];
+const widgetHtml = await buildWorkbenchWidgetHtml(path.join(rootDirectory, 'dist', 'index.html'));
 
 function createLayerReviewBridgeServer() {
   const server = new McpServer({
@@ -24,36 +25,35 @@ function createLayerReviewBridgeServer() {
     version: '0.3.0',
   });
 
-  registerAppResource(
-    server,
-    'layer-review-workbench',
-    widgetUri,
-    {},
-    async () => ({
-      contents: [{
-        uri: widgetUri,
-        mimeType: RESOURCE_MIME_TYPE,
-        text: widgetHtml,
-        _meta: {
-          ui: {
-            csp: {
-              connectDomains: ['http://127.0.0.1:4173'],
-              resourceDomains: [],
+  for (const [index, resourceUri] of [widgetUri, ...legacyWidgetUris].entries()) {
+    registerAppResource(
+      server,
+      `layer-review-workbench-${index}`,
+      resourceUri,
+      {},
+      async () => ({
+        contents: [{
+          uri: resourceUri,
+          mimeType: RESOURCE_MIME_TYPE,
+          text: widgetHtml,
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: ['http://127.0.0.1:4173'],
+                resourceDomains: [],
+              },
+              prefersBorder: false,
             },
-            prefersBorder: true,
+            'openai/widgetDescription': '完整的 Layer Review 拆图工作台；在当前 Codex 任务内直接提交拆分消息并接收 PNG。',
           },
-          'openai/widgetDescription': '连接右侧的 Layer Review 工作台，把已确认的拆分任务发送到当前 Codex 任务。',
-        },
-      }],
-    }),
-  );
+        }],
+      }),
+    );
+  }
 
-  registerAppTool(
-    server,
-    'connect_layer_review_workbench',
-    {
-      title: '连接 Layer Review 工作台',
-      description: 'Connect the Layer Review workbench to the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
+  const toolDefinition = {
+      title: '打开 Layer Review 工作台',
+      description: 'Open the full Layer Review workbench in the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
       inputSchema: {},
       outputSchema: {
         state: z.literal('ready'),
@@ -69,18 +69,20 @@ function createLayerReviewBridgeServer() {
         ui: { resourceUri: widgetUri },
         'openai/outputTemplate': widgetUri,
       },
-    },
-    async () => ({
+    };
+  const toolHandler = async () => ({
       content: [{
         type: 'text',
-        text: 'Layer Review 工作台已连接当前 Codex 任务。点击“拆分”会把任务发送到当前任务。',
+        text: 'Layer Review 工作台已在当前 Codex 任务中打开。点击“拆分”会直接发送到当前任务。',
       }],
       structuredContent: {
         state: 'ready',
         workbenchUrl: 'http://127.0.0.1:4173/',
       },
-    }),
-  );
+    });
+
+  registerAppTool(server, 'connect_layer_review_workbench', toolDefinition, toolHandler);
+  registerAppTool(server, 'open_layer_review_workbench', toolDefinition, toolHandler);
 
   return server;
 }
@@ -101,7 +103,7 @@ const httpServer = createServer(async (request, response) => {
   }
   if (request.method === 'GET' && url.pathname === '/') {
     response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    response.end('Layer Review conversation bridge');
+    response.end('Layer Review MCP App');
     return;
   }
   if (url.pathname === mcpPath && ['POST', 'GET', 'DELETE'].includes(request.method || '')) {
@@ -129,5 +131,5 @@ const httpServer = createServer(async (request, response) => {
 });
 
 httpServer.listen(port, '127.0.0.1', () => {
-  console.log(`Layer Review MCP bridge listening on http://127.0.0.1:${port}${mcpPath}`);
+  console.log(`Layer Review MCP App listening on http://127.0.0.1:${port}${mcpPath}`);
 });
