@@ -19,14 +19,14 @@ test('the MCP resource inlines the conversation bridge script', async (context) 
   assert.equal(html.includes('window.bridgeReady = true;'), true);
 });
 
-test('the real MCP resource embeds the Layer Review workbench', async () => {
+test('the real MCP resource stays a compact conversation bridge', async () => {
   const rootDirectory = path.resolve(import.meta.dirname, '..');
   const html = await buildBridgeWidgetHtml(
     path.join(rootDirectory, 'public', 'layer-review-bridge-widget.html'),
     path.join(rootDirectory, 'public', 'layer-review-bridge-widget.js'),
   );
 
-  assert.match(html, /data-workbench-frame/);
-  assert.match(html, /src="http:\/\/127\.0\.0\.1:4173\/"/);
   assert.match(html, /data-bridge-status/);
+  assert.doesNotMatch(html, /data-workbench-frame/);
+  assert.doesNotMatch(html, /requestDisplayMode/);
 });

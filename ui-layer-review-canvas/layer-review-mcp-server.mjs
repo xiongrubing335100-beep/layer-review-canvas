@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { buildBridgeWidgetHtml } from './src/mcp-bridge-resource.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
-const widgetUri = 'ui://layer-review/workbench-v2.html';
+const widgetUri = 'ui://layer-review/conversation-bridge-v3.html';
 const widgetHtml = await buildBridgeWidgetHtml(
   path.join(rootDirectory, 'public', 'layer-review-bridge-widget.html'),
   path.join(rootDirectory, 'public', 'layer-review-bridge-widget.js'),
@@ -21,7 +21,7 @@ const widgetHtml = await buildBridgeWidgetHtml(
 function createLayerReviewBridgeServer() {
   const server = new McpServer({
     name: 'layer-review-workbench',
-    version: '0.2.0',
+    version: '0.3.0',
   });
 
   registerAppResource(
@@ -39,11 +39,10 @@ function createLayerReviewBridgeServer() {
             csp: {
               connectDomains: ['http://127.0.0.1:4173'],
               resourceDomains: [],
-              frameDomains: ['http://127.0.0.1:4173'],
             },
-            prefersBorder: false,
+            prefersBorder: true,
           },
-          'openai/widgetDescription': '在当前 Codex 任务中打开 Layer Review 工作台，并把已确认的拆分任务发送到当前任务。',
+          'openai/widgetDescription': '连接右侧的 Layer Review 工作台，把已确认的拆分任务发送到当前 Codex 任务。',
         },
       }],
     }),
@@ -51,10 +50,10 @@ function createLayerReviewBridgeServer() {
 
   registerAppTool(
     server,
-    'open_layer_review_workbench',
+    'connect_layer_review_workbench',
     {
-      title: '打开 Layer Review 工作台',
-      description: 'Open the Layer Review workbench inside the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
+      title: '连接 Layer Review 工作台',
+      description: 'Connect the Layer Review workbench to the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
       inputSchema: {},
       outputSchema: {
         state: z.literal('ready'),
@@ -74,7 +73,7 @@ function createLayerReviewBridgeServer() {
     async () => ({
       content: [{
         type: 'text',
-        text: 'Layer Review 工作台已在当前 Codex 任务中打开。点击“拆分”会把任务发送到当前任务。',
+        text: 'Layer Review 工作台已连接当前 Codex 任务。点击“拆分”会把任务发送到当前任务。',
       }],
       structuredContent: {
         state: 'ready',

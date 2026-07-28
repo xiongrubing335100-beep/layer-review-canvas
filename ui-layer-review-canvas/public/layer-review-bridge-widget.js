@@ -109,9 +109,6 @@ async function poll() {
 async function start() {
   try {
     await connectHost();
-    if (window.openai?.requestDisplayMode) {
-      await window.openai.requestDisplayMode({ mode: 'fullscreen' }).catch(() => {});
-    }
     setStatus('会话桥接已就绪', '在工作台点击“拆分”，消息会直接出现在这里。');
     await poll();
     window.setInterval(poll, 1200);
