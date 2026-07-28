@@ -172,7 +172,21 @@ output/jobs/<jobId>/
 └─ final/
 ```
 
-`vite.config.js` 提供本地 API 中间件，`codex-thread-bridge.mjs` 负责启动 Codex app-server，并把计划发送给当前 Codex 会话。
+`vite.config.js` 提供本地 API 中间件。新任务不再通过 Codex app-server 的
+`turn/start` 启动隐藏后台回合，而是写入前台消息队列。`layer-review-mcp-server.mjs`
+提供 MCP App 会话桥接卡片，由卡片使用 `ui/message` 把拆分任务作为用户消息发送到
+当前 Codex 会话。`codex-thread-bridge.mjs` 仅继续兼容读取旧任务的 turn 状态和生成
+权威计划提示词。
+
+会话桥接：
+
+```text
+MCP: http://127.0.0.1:4174/mcp
+工具: open_layer_review_conversation_bridge
+```
+
+开始工作前需要同时运行工作台和桥接服务，并在当前 Codex 任务中打开一次
+Layer Review 会话桥接卡片。之后点击“拆分”会直接产生当前会话消息。
 
 默认执行 skill：
 
@@ -280,6 +294,7 @@ npm run build
 cd "C:\Users\Amoiz\Documents\New project 18\ui-layer-review-canvas"
 npm install
 npm run dev
+npm run mcp:bridge
 ```
 
 构建：

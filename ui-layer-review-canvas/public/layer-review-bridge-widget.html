@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: transparent;
+        color: var(--color-text-primary, #f2f2f2);
+      }
+      .bridge {
+        display: grid;
+        grid-template-columns: 12px 1fr;
+        gap: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--color-border-primary, #3a3a3a);
+        border-radius: 14px;
+        background: var(--color-background-secondary, #232323);
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        margin-top: 5px;
+        border-radius: 50%;
+        background: #61dba4;
+        box-shadow: 0 0 14px rgba(97, 219, 164, .45);
+      }
+      [data-tone="sending"] + .detail { color: #d8c58a; }
+      [data-tone="error"] { color: #ffb0a4; }
+      [data-tone="error"] ~ .detail { color: #ffb0a4; }
+      .status { font-size: 14px; font-weight: 650; line-height: 1.4; }
+      .detail {
+        margin-top: 3px;
+        color: var(--color-text-secondary, #a7a7a7);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="bridge" aria-live="polite">
+      <span class="dot"></span>
+      <div>
+        <div class="status" data-bridge-status>正在连接当前会话</div>
+        <div class="detail" data-bridge-detail>请稍候…</div>
+      </div>
+    </section>
+    <script type="module">/*__LAYER_REVIEW_BRIDGE_SCRIPT__*/</script>
+  </body>
+</html>

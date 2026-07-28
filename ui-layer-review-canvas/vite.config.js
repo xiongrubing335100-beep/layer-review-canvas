@@ -2,8 +2,13 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readCodexTurnStatus, sendPlanToCurrentThread } from './codex-thread-bridge.mjs';
+import { buildWorkbenchPrompt, readCodexTurnStatus } from './codex-thread-bridge.mjs';
 import { completionTimestamp, markTiming, mergeTiming } from './src/execution-timing.js';
+import {
+  acknowledgeForegroundDispatch,
+  enqueueForegroundDispatch,
+  readNextForegroundDispatch,
+} from './src/foreground-dispatch.js';
 import { reconcileTurnStatus } from './src/job-state.js';
 
 const splitSkillPath = 'C:\\Users\\Amoiz\\.codex\\skills\\split-ui-design-layers-workbench-targeted\\SKILL.md';
@@ -32,6 +37,52 @@ function layerReviewQueue() {
   return {
     name: 'layer-review-queue',
     configureServer(server) {
+      server.middlewares.use(async (request, response, next) => {
+        const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
+        const ackMatch = pathname.match(/^\/api\/layer-review\/foreground-dispatch\/([a-zA-Z0-9._-]+)\/ack$/);
+        const isQueueRead = pathname === '/api/layer-review/foreground-dispatch';
+        if (!isQueueRead && !ackMatch) {
+          next();
+          return;
+        }
+
+        response.setHeader('Access-Control-Allow-Origin', '*');
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        response.setHeader('Cache-Control', 'no-store');
+        if (request.method === 'OPTIONS') {
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+
+        try {
+          const jobsDirectory = path.resolve(process.cwd(), 'output', 'jobs');
+          if (isQueueRead && request.method === 'GET') {
+            response.statusCode = 200;
+            response.setHeader('Content-Type', 'application/json; charset=utf-8');
+            response.end(JSON.stringify({
+              dispatch: await readNextForegroundDispatch(jobsDirectory),
+            }));
+            return;
+          }
+          if (ackMatch && request.method === 'POST') {
+            const jobDirectory = path.join(jobsDirectory, ackMatch[1]);
+            await acknowledgeForegroundDispatch(jobDirectory, new Date().toISOString());
+            response.statusCode = 200;
+            response.setHeader('Content-Type', 'application/json; charset=utf-8');
+            response.end(JSON.stringify({ ok: true }));
+            return;
+          }
+          response.statusCode = 405;
+          response.end();
+        } catch (error) {
+          response.statusCode = error.code === 'ENOENT' ? 404 : 500;
+          response.setHeader('Content-Type', 'application/json; charset=utf-8');
+          response.end(JSON.stringify({ error: error.message }));
+        }
+      });
+
       server.middlewares.use(async (request, response, next) => {
         if (request.method !== 'GET') {
           next();
@@ -177,7 +228,6 @@ function layerReviewQueue() {
 
           delete normalizedPayload.source.embedded_data_url;
           normalizedPayload.source.local_path = sourcePath;
-          const reviewCropPaths = [];
           for (const [index, layer] of (normalizedPayload.layers || []).entries()) {
             const embeddedCrop = layer.review_snapshot?.embedded_crop_data_url;
             if (typeof embeddedCrop !== 'string') continue;
@@ -188,14 +238,13 @@ function layerReviewQueue() {
             await writeFile(cropPath, Buffer.from(match[1], 'base64'));
             delete layer.review_snapshot.embedded_crop_data_url;
             layer.review_snapshot.local_crop_path = cropPath;
-            reviewCropPaths.push(cropPath);
           }
           const jobPath = path.join(jobDirectory, 'layer-review-plan.json');
           const submittedAt = new Date().toISOString();
           const job = {
             ...normalizedPayload,
             job_id: jobId,
-            status: 'sending_to_codex',
+            status: 'awaiting_codex_message',
             submitted_at: submittedAt,
             output_directory: outputDirectory,
             execution_timing: markTiming({}, 'submitted_at', submittedAt),
@@ -208,54 +257,21 @@ function layerReviewQueue() {
             },
           };
           await writeFile(jobPath, JSON.stringify(job, null, 2));
-
-          let dispatch;
-          try {
-            dispatch = await sendPlanToCurrentThread({
+          await enqueueForegroundDispatch(jobDirectory, {
+            jobId,
+            prompt: buildWorkbenchPrompt({
               jobId,
               jobPath,
               sourcePath,
-              reviewCropPaths,
               outputDirectory,
-            });
-          } catch (error) {
-            await writeFile(jobPath, JSON.stringify({ ...job, status: 'send_failed', error: error.message }, null, 2));
-            throw error;
-          }
-          const dispatchedAt = new Date().toISOString();
-          await writeFile(jobPath, JSON.stringify({
-            ...job,
-            status: 'sent_to_codex',
-            codex_thread_id: dispatch.threadId,
-            codex_turn_id: dispatch.turnId,
-            execution_timing: markTiming(job.execution_timing, 'codex_turn_started_at', dispatchedAt),
-          }, null, 2));
-          void dispatch.completion.then(async (params) => {
-            const turnStatus = params.turn?.status || 'completed';
-            const latestJob = JSON.parse(await readFile(jobPath, 'utf8'));
-            const completedAt = new Date().toISOString();
-            await writeFile(jobPath, JSON.stringify({
-              ...latestJob,
-              status: turnStatus === 'completed' ? 'completed' : 'failed',
-              codex_turn_status: turnStatus,
-              codex_completed_at: completedAt,
-              execution_timing: markTiming(latestJob.execution_timing, 'completed_at', completedAt),
-            }, null, 2));
-          }).catch(async (error) => {
-            const latestJob = JSON.parse(await readFile(jobPath, 'utf8'));
-            await writeFile(jobPath, JSON.stringify({
-              ...latestJob,
-              codex_turn_status: 'unknown',
-              codex_monitor_error: error.message,
-            }, null, 2));
+            }),
+            submittedAt,
           });
           response.statusCode = 202;
           response.setHeader('Content-Type', 'application/json; charset=utf-8');
           response.end(JSON.stringify({
             job_id: jobId,
-            status: 'sent_to_codex',
-            thread_id: dispatch.threadId,
-            turn_id: dispatch.turnId,
+            status: 'awaiting_codex_message',
             submitted_at: submittedAt,
             skill_name: path.basename(path.dirname(splitSkillPath)),
           }));

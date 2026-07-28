@@ -106,6 +106,7 @@ function pngDownloadName(value, fallback) {
 
 const jobStatusMeta = {
   sending_to_codex: { label: '正在发送素材', tone: 'pending' },
+  awaiting_codex_message: { label: '等待发送到会话', tone: 'pending' },
   sent_to_codex: { label: 'Codex 已接收', tone: 'pending' },
   processing: { label: 'Codex 处理中', tone: 'pending' },
   partial: { label: '结果生成中', tone: 'pending' },
@@ -130,6 +131,9 @@ function jobStatus(status) {
 }
 
 function splitProgress(status) {
+  if (status === 'awaiting_codex_message') {
+    return { stage: '1 / 3', label: '正在发送到当前 Codex 会话', detail: '会话桥接收到任务后，会直接显示拆分消息。' };
+  }
   if (status === 'sending_to_codex') {
     return { stage: '1 / 3', label: '正在发送框选图与拆分提示词', detail: '素材发送成功后，Codex 会在当前任务中开始执行。' };
   }

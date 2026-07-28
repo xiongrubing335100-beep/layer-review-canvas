@@ -29,11 +29,13 @@ test('nextPaint waits for two animation frames before resolving', async () => {
 test('isNodeRunning blocks only local or pending work for the same node', () => {
   const jobs = [
     { nodeIds: ['pending-node'], status: 'processing' },
+    { nodeIds: ['bridge-node'], status: 'awaiting_codex_message' },
     { nodeIds: ['completed-node'], status: 'completed' },
   ];
 
   assert.equal(isNodeRunning('local-node', { 'local-node': { status: 'sending_to_codex' } }, jobs), true);
   assert.equal(isNodeRunning('pending-node', {}, jobs), true);
+  assert.equal(isNodeRunning('bridge-node', {}, jobs), true);
   assert.equal(isNodeRunning('completed-node', {}, jobs), false);
   assert.equal(isNodeRunning('other-node', {}, jobs), false);
 });

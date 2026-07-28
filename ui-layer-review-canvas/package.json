@@ -5,17 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mcp:bridge": "node layer-review-mcp-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test src/*.test.mjs",
     "benchmark:splits": "node scripts/report-split-performance.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@vitejs/plugin-react": "latest",
     "fflate": "^0.8.3",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "zod": "^3.25.76"
   }
 }

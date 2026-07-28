@@ -24,6 +24,12 @@ export function reconcileTurnStatus({
       detail: 'Codex 需要确认拆分目标后才能继续',
     };
   }
+  if (planStatus === 'awaiting_codex_message') {
+    return {
+      status: 'awaiting_codex_message',
+      detail: '等待 Codex 会话桥接发送',
+    };
+  }
   if (turnStatus === 'inProgress') {
     return { status: 'processing', detail: null };
   }

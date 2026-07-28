@@ -48,6 +48,18 @@ test('an active Codex turn remains processing', () => {
   });
 });
 
+test('a foreground split stays waiting until the bridge posts it to the conversation', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'awaiting_codex_message',
+    turnStatus: null,
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'awaiting_codex_message',
+    detail: '等待 Codex 会话桥接发送',
+  });
+});
+
 test('a confirmation request is not shown as processing', () => {
   assert.deepEqual(reconcileTurnStatus({
     planStatus: 'needs_confirmation',
