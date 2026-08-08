@@ -41,23 +41,37 @@ async function writeCompletedJob(cwd, name, route, seconds, {
   report = true,
   reportRoute = route,
   reportTiming = true,
+  machineTiming = false,
+  postprocessSeconds = null,
   status = 'completed',
   validationResults = passingValidation,
 } = {}) {
+  const submittedAt = Date.parse('2026-01-01T00:00:00.000Z');
+  const machineStart = machineTiming ? submittedAt + 10_000 : submittedAt;
+  const completedAt = machineStart + seconds * 1000;
+  const completedIso = new Date(completedAt).toISOString();
+  const timing = reportTiming ? {
+    submitted_at: new Date(submittedAt).toISOString(),
+    ...(machineTiming ? {
+      confirmation_accepted_at: new Date(machineStart).toISOString(),
+      ...(postprocessSeconds === null ? {} : {
+        postprocess_started_at: new Date(completedAt - (postprocessSeconds * 1000) - 1000).toISOString(),
+        rmbg_started_at: new Date(completedAt - 1000).toISOString(),
+      }),
+    } : {}),
+    completed_at: completedIso,
+  } : undefined;
   await writeJson(cwd, `output/jobs/${name}/layer-review-plan.json`, {
     status: 'completed',
-    submitted_at: '2026-01-01T00:00:00.000Z',
-    codex_completed_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + seconds * 1000).toISOString(),
+    submitted_at: new Date(submittedAt).toISOString(),
+    codex_completed_at: completedIso,
     layers: Array.from({ length: layerCount }, () => ({ execution_route_hint: route })),
   });
   if (report) {
     await writeJson(cwd, `output/jobs/${name}/execution-report.json`, {
       status,
       execution_route: reportRoute,
-      timing: reportTiming ? {
-          submitted_at: '2026-01-01T00:00:00.000Z',
-          completed_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + seconds * 1000).toISOString(),
-        } : undefined,
+      timing,
       validation_results: validationResults,
     });
   }
@@ -256,5 +270,64 @@ test('legacy jobs without reports or timing are skipped without crashing', async
     const result = report(cwd);
     assert.equal(result.status, 0);
     assert.deepEqual(JSON.parse(result.stdout).samples, []);
+  });
+});
+
+test('targeted gates use confirmation acceptance time and enforce P50, P90, and postprocess limits', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-targeted-a', 'targeted_repair', 100, {
+      machineTiming: true,
+      postprocessSeconds: 10,
+    });
+    await writeCompletedJob(cwd, 'layer-job-targeted-b', 'targeted_repair', 120, {
+      machineTiming: true,
+      postprocessSeconds: 12,
+    });
+    await writeCompletedJob(cwd, 'layer-job-targeted-c', 'targeted_repair', 140, {
+      machineTiming: true,
+      postprocessSeconds: 15,
+    });
+  }, (cwd) => {
+    const result = report(cwd,
+      '--job-ids', 'layer-job-targeted-a,layer-job-targeted-b,layer-job-targeted-c',
+      '--require-targeted-p50-seconds', '120',
+      '--require-targeted-p90-seconds', '136',
+      '--require-postprocess-seconds', '15',
+    );
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.summary.targeted_repair.p50Seconds, 120);
+    assert.equal(output.summary.targeted_repair.p90Seconds, 136);
+    assert.equal(output.summary.targeted_repair.maxPostprocessSeconds, 15);
+    assert.equal(output.samples[0].seconds, 100);
+  });
+});
+
+test('targeted gates reject missing confirmation timing', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-targeted-legacy', 'targeted_repair', 100);
+  }, (cwd) => {
+    const result = report(cwd,
+      '--job-ids', 'layer-job-targeted-legacy',
+      '--require-targeted-p50-seconds', '120',
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /timing is incomplete/);
+  });
+});
+
+test('targeted gates reject slow postprocess', async () => {
+  await withFixture(async (cwd) => {
+    await writeCompletedJob(cwd, 'layer-job-targeted-slow', 'targeted_repair', 100, {
+      machineTiming: true,
+      postprocessSeconds: 31,
+    });
+  }, (cwd) => {
+    const result = report(cwd,
+      '--job-ids', 'layer-job-targeted-slow',
+      '--require-postprocess-seconds', '30',
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /postprocess duration/);
   });
 });

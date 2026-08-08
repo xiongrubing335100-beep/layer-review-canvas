@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,82 +9,628 @@ import {
   RESOURCE_MIME_TYPE,
 } from '@modelcontextprotocol/ext-apps/server';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { buildWorkbenchWidgetHtml } from './src/mcp-bridge-resource.js';
+import {
+  buildBridgeWidgetHtml,
+  buildWorkbenchWidgetHtml,
+} from './src/mcp-bridge-resource.js';
+import {
+  activateConversationBridge,
+  markConversationBridgeHeartbeat,
+} from './src/conversation-bridge-presence.js';
+import {
+  acknowledgeDirectConversationMessage,
+  acknowledgeForegroundDispatch,
+  claimNextForegroundDispatch,
+  markDirectConversationMessageFailed,
+  markDirectConversationMessageSent,
+  markForegroundDispatchDelivered,
+  releaseForegroundDispatchClaim,
+} from './src/foreground-dispatch.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
-const widgetUri = 'ui://layer-review/workbench-v4.html';
-const legacyWidgetUris = [
-  'ui://layer-review/conversation-bridge-v3.html',
-  'ui://layer-review/workbench-v2.html',
-];
-const widgetHtml = await buildWorkbenchWidgetHtml(path.join(rootDirectory, 'dist', 'index.html'));
+const outputDirectory = path.join(rootDirectory, 'output');
+const jobsDirectory = path.join(rootDirectory, 'output', 'jobs');
+const workbenchOrigin = 'http://127.0.0.1:4173';
+const workbenchDomain = new URL(workbenchOrigin).origin;
+const widgetResourceDomains = [workbenchDomain, 'data:', 'blob:'];
+const widgetUri = 'ui://imvia-layer/workbench-v1.html';
+const bridgeWidgetUri = 'ui://imvia-layer/conversation-bridge-v20.html';
+const widgetHtml = await buildWorkbenchWidgetHtml(
+  path.join(rootDirectory, 'dist', 'index.html'),
+);
+const bridgeWidgetHtmlPath = path.join(rootDirectory, 'public', 'layer-review-bridge-widget.html');
+const bridgeWidgetScriptPath = path.join(rootDirectory, 'public', 'layer-review-bridge-widget.js');
+
+async function isWorkbenchRunning() {
+  try {
+    const response = await fetch('http://127.0.0.1:4173/', {
+      signal: AbortSignal.timeout(500),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isManagedWorkbenchRunning() {
+  try {
+    const owner = JSON.parse(await readFile(
+      path.join(rootDirectory, 'output', 'workbench-runtime', 'manager-owner.json'),
+      'utf8',
+    ));
+    return owner.version === 3
+      && processIsAlive(owner.pid)
+      && await isWorkbenchRunning()
+      && owner.workbench?.mode === 'embedded_app';
+  } catch {
+    return false;
+  }
+}
+
+async function ensureWorkbenchRunning() {
+  if (await isManagedWorkbenchRunning()) return;
+  if (await isWorkbenchRunning()) {
+    throw new Error('4173 端口上存在未受管理的旧工作台，请先关闭旧进程再重新打开');
+  }
+
+  const child = spawn(process.execPath, [
+    path.join(rootDirectory, 'scripts', 'start-workbench.mjs'),
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '4173',
+  ], {
+    cwd: rootDirectory,
+    detached: true,
+    env: process.env,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (await isManagedWorkbenchRunning()) return;
+  }
+
+  throw new Error('Imvia Layer workbench did not start on http://127.0.0.1:4173/.');
+}
+
+async function requestWorkbenchJson(pathname, options = {}, allowedStatuses = []) {
+  await ensureWorkbenchRunning();
+  const response = await fetch(`${workbenchOrigin}${pathname}`, {
+    ...options,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok && !allowedStatuses.includes(response.status)) {
+    throw new Error(body.error || `Imvia Layer 请求失败：HTTP ${response.status}`);
+  }
+  return body;
+}
+
+const appToolMeta = {
+  ui: {
+    resourceUri: widgetUri,
+    visibility: ['app'],
+  },
+};
+
+const bridgeToolMeta = {
+  ui: {
+    resourceUri: bridgeWidgetUri,
+    visibility: ['app'],
+  },
+};
 
 function createLayerReviewBridgeServer() {
   const server = new McpServer({
     name: 'layer-review-workbench',
-    version: '0.3.0',
+    version: '1.0.0',
   });
 
-  for (const [index, resourceUri] of [widgetUri, ...legacyWidgetUris].entries()) {
-    registerAppResource(
-      server,
-      `layer-review-workbench-${index}`,
-      resourceUri,
-      {},
-      async () => ({
-        contents: [{
-          uri: resourceUri,
-          mimeType: RESOURCE_MIME_TYPE,
-          text: widgetHtml,
-          _meta: {
-            ui: {
-              csp: {
-                connectDomains: ['http://127.0.0.1:4173'],
-                resourceDomains: [],
-              },
-              prefersBorder: false,
+  registerAppResource(
+    server,
+    'imvia-layer-native-canvas',
+    widgetUri,
+    {},
+    async () => ({
+      contents: [{
+        uri: widgetUri,
+        mimeType: RESOURCE_MIME_TYPE,
+        text: widgetHtml,
+        _meta: {
+          ui: {
+            prefersBorder: false,
+            csp: {
+              connectDomains: [workbenchDomain],
+              resourceDomains: widgetResourceDomains,
             },
-            'openai/widgetDescription': '完整的 Layer Review 拆图工作台；在当前 Codex 任务内直接提交拆分消息并接收 PNG。',
           },
-        }],
-      }),
-    );
-  }
+          'openai/widgetDescription': 'Imvia Layer 原生 fullscreen 图层画布。点击拆分后，任务消息会先直接出现在当前 Codex 会话。',
+          'openai/widgetCSP': {
+            connect_domains: [workbenchDomain],
+            resource_domains: widgetResourceDomains,
+          },
+        },
+      }],
+    }),
+  );
+  registerAppResource(
+    server,
+    'imvia-layer-legacy-conversation-bridge',
+    bridgeWidgetUri,
+    {},
+    async () => ({
+      contents: [{
+        uri: bridgeWidgetUri,
+        mimeType: RESOURCE_MIME_TYPE,
+        text: await buildBridgeWidgetHtml(
+          bridgeWidgetHtmlPath,
+          bridgeWidgetScriptPath,
+        ),
+        _meta: {
+          ui: {
+            prefersBorder: false,
+          },
+          'openai/widgetDescription': 'Imvia Layer 旧版会话桥接兼容卡片。',
+        },
+      }],
+    }),
+  );
 
   const toolDefinition = {
-      title: '打开 Layer Review 工作台',
-      description: 'Open the full Layer Review workbench in the current Codex task. Use this whenever the user asks to open or use the Layer Review workbench.',
-      inputSchema: {},
-      outputSchema: {
-        state: z.literal('ready'),
-        workbenchUrl: z.string(),
+    title: '打开 Imvia Layer 右侧工作台',
+    description: 'Use this when the user asks to open or use Imvia Layer. Return the workbench URL and mount the lightweight conversation bridge. The host must open the URL with codex_app__open_in_codex using placement right and target type browser. Do not render the full workbench as an inline or fullscreen MCP App. Split actions must appear in the current Codex conversation before execution.',
+    inputSchema: {},
+    outputSchema: {
+      state: z.literal('ready'),
+      workbenchUrl: z.string(),
+      workbenchSessionId: z.string(),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: {
+      ui: {
+        resourceUri: bridgeWidgetUri,
+        visibility: ['model', 'app'],
       },
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        openWorldHint: false,
-        idempotentHint: true,
-      },
-      _meta: {
-        ui: { resourceUri: widgetUri },
-        'openai/outputTemplate': widgetUri,
-      },
-    };
-  const toolHandler = async () => ({
+      'ui/resourceUri': bridgeWidgetUri,
+      'openai/outputTemplate': bridgeWidgetUri,
+      'openai/widgetAccessible': true,
+      'openai/toolInvocation/invoking': '正在打开 Imvia Layer 右侧工作台…',
+      'openai/toolInvocation/invoked': 'Imvia Layer 右侧工作台已打开',
+    },
+  };
+  const toolHandler = async () => {
+    const session = await requestWorkbenchJson('/api/layer-review/workbench-session');
+    return {
       content: [{
         type: 'text',
-        text: 'Layer Review 工作台已在当前 Codex 任务中打开。点击“拆分”会直接发送到当前任务。',
+        text: 'Imvia Layer 右侧工作台已就绪。请在当前任务中打开返回的工作台地址；点击拆分后，消息会先进入当前 Codex 会话，再由当前任务执行。',
       }],
       structuredContent: {
         state: 'ready',
-        workbenchUrl: 'http://127.0.0.1:4173/',
+        workbenchUrl: `${workbenchOrigin}/`,
+        workbenchSessionId: session.workbench_session_id,
       },
-    });
+    };
+  };
 
   registerAppTool(server, 'connect_layer_review_workbench', toolDefinition, toolHandler);
   registerAppTool(server, 'open_layer_review_workbench', toolDefinition, toolHandler);
+  registerAppTool(server, 'register_layer_review_conversation_bridge', {
+    title: '连接当前任务监听器',
+    description: 'Register the lightweight Imvia Layer listener for this Codex task.',
+    inputSchema: {
+      bridgeId: z.string(),
+      connectedAt: z.string(),
+      workbenchSessionId: z.string(),
+    },
+    outputSchema: {
+      active: z.boolean(),
+      bridgeId: z.string(),
+      connectedAt: z.string(),
+      lastSeen: z.string(),
+      workbenchSessionId: z.string(),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: bridgeToolMeta,
+  }, async ({ bridgeId, connectedAt, workbenchSessionId }) => {
+    const presence = await activateConversationBridge(
+      outputDirectory,
+      bridgeId,
+      connectedAt,
+      { workbenchSessionId },
+    );
+    return {
+      content: [],
+      structuredContent: presence,
+    };
+  });
+  registerAppTool(server, 'heartbeat_layer_review_conversation_bridge', {
+    title: '维持当前任务监听',
+    description: 'Refresh the Imvia Layer listener while this current-task App card remains mounted.',
+    inputSchema: {
+      bridgeId: z.string(),
+      workbenchSessionId: z.string(),
+    },
+    outputSchema: {
+      active: z.boolean(),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: bridgeToolMeta,
+  }, async ({ bridgeId, workbenchSessionId }) => {
+    const active = await markConversationBridgeHeartbeat(
+      outputDirectory,
+      bridgeId,
+      new Date().toISOString(),
+      { workbenchSessionId },
+    );
+    return {
+      content: [],
+      structuredContent: { active },
+    };
+  });
+  registerAppTool(server, 'get_layer_review_foreground_dispatch', {
+    title: '读取下一个拆分消息',
+    description: 'Claim the next Imvia Layer split request for the current Codex task.',
+    inputSchema: {
+      bridgeId: z.string(),
+      workbenchSessionId: z.string(),
+    },
+    outputSchema: {
+      active: z.boolean(),
+      dispatch: z.union([
+        z.object({
+          jobId: z.string(),
+          prompt: z.string(),
+          submittedAt: z.string(),
+          bridgeId: z.string(),
+          workbenchSessionId: z.string(),
+          claimToken: z.string(),
+          claimedAt: z.string(),
+          leaseExpiresAt: z.string(),
+        }),
+        z.null(),
+      ]),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: false,
+    },
+    _meta: bridgeToolMeta,
+  }, async ({ bridgeId, workbenchSessionId }) => {
+    const active = await markConversationBridgeHeartbeat(
+      outputDirectory,
+      bridgeId,
+      new Date().toISOString(),
+      { workbenchSessionId },
+    );
+    const dispatch = active
+      ? await claimNextForegroundDispatch(jobsDirectory, {
+          bridgeId,
+          workbenchSessionId,
+        })
+      : null;
+    return {
+      content: [],
+      structuredContent: { active, dispatch },
+    };
+  });
+  registerAppTool(server, 'mark_layer_review_foreground_dispatch_delivered', {
+    title: '记录宿主已接收拆分请求',
+    description: 'Record transport acceptance only; this does not confirm that the current Codex task displayed the message.',
+    inputSchema: {
+      jobId: z.string(),
+      bridgeId: z.string(),
+      workbenchSessionId: z.string(),
+      claimToken: z.string(),
+    },
+    outputSchema: {
+      ok: z.literal(true),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: bridgeToolMeta,
+  }, async ({
+    jobId,
+    bridgeId,
+    workbenchSessionId,
+    claimToken,
+  }) => {
+    const active = await markConversationBridgeHeartbeat(
+      outputDirectory,
+      bridgeId,
+      new Date().toISOString(),
+      { workbenchSessionId },
+    );
+    if (!active) throw new Error('当前会话监听已失效');
+    await markForegroundDispatchDelivered(path.join(jobsDirectory, jobId), {
+      bridgeId,
+      claimToken,
+    });
+    return {
+      content: [],
+      structuredContent: { ok: true },
+    };
+  });
+  registerAppTool(server, 'release_layer_review_foreground_dispatch_claim', {
+    title: '释放拆分消息',
+    description: 'Release a claimed Imvia Layer request after a delivery failure.',
+    inputSchema: {
+      jobId: z.string(),
+      bridgeId: z.string(),
+      workbenchSessionId: z.string(),
+      claimToken: z.string(),
+      error: z.string().optional(),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: bridgeToolMeta,
+  }, async ({
+    jobId,
+    bridgeId,
+    workbenchSessionId,
+    claimToken,
+    error,
+  }) => {
+    const active = await markConversationBridgeHeartbeat(
+      outputDirectory,
+      bridgeId,
+      new Date().toISOString(),
+      { workbenchSessionId },
+    );
+    if (!active) {
+      return {
+        content: [],
+        structuredContent: { ok: false },
+      };
+    }
+    const ok = await releaseForegroundDispatchClaim(
+      path.join(jobsDirectory, jobId),
+      {
+        bridgeId,
+        claimToken,
+        error,
+      },
+    );
+    return {
+      content: [],
+      structuredContent: { ok },
+    };
+  });
+  registerAppTool(server, 'submit_layer_review_job', {
+    title: '提交当前拆分任务',
+    description: 'Prepare one confirmed Imvia Layer job and return the compact prompt for the current conversation.',
+    inputSchema: {
+      plan: z.record(z.unknown()),
+      delivery: z.enum(['current_conversation', 'conversation_bridge']).optional(),
+    },
+    outputSchema: {
+      submission: z.object({
+        job_id: z.string(),
+        status: z.string(),
+        submitted_at: z.string(),
+        skill_name: z.string(),
+        delivery_channel: z.enum(['current_conversation', 'conversation_bridge', 'conversation_queue']),
+        prompt: z.string().optional(),
+        plan_path: z.string().optional(),
+        source_path: z.string().optional(),
+        output_directory: z.string().optional(),
+      }),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: false,
+    },
+    _meta: appToolMeta,
+  }, async ({ plan, delivery = 'conversation_bridge' }) => {
+    const prepared = await requestWorkbenchJson(
+      `/api/layer-review/submit?delivery=${encodeURIComponent(delivery)}`,
+      {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(plan),
+      },
+    );
+    return {
+      content: [],
+      structuredContent: { submission: prepared },
+    };
+  });
+  registerAppTool(server, 'get_layer_review_job', {
+    title: '读取拆分任务状态',
+    description: 'Read one Imvia Layer job and its returned PNG files.',
+    inputSchema: {
+      jobId: z.string(),
+    },
+    outputSchema: {
+      job: z.record(z.unknown()),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: appToolMeta,
+  }, async ({ jobId }) => {
+    const returnedJob = await requestWorkbenchJson(
+      `/api/layer-review/jobs/${encodeURIComponent(jobId)}`,
+      { cache: 'no-store' },
+      [404, 410],
+    );
+    const job = returnedJob.error
+      ? { job_id: jobId, status: 'failed', images: [] }
+      : returnedJob;
+    return {
+      content: [],
+      structuredContent: { job },
+    };
+  });
+  registerAppTool(server, 'mark_layer_review_message_sent', {
+    title: '记录当前会话已接收拆分消息',
+    description: 'Mark a follow-up message posted by the embedded workbench as accepted by the current conversation.',
+    inputSchema: {
+      jobId: z.string(),
+    },
+    outputSchema: {
+      ok: z.literal(true),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: appToolMeta,
+  }, async ({ jobId }) => {
+    await markDirectConversationMessageSent(path.join(jobsDirectory, jobId));
+    return {
+      content: [],
+      structuredContent: { ok: true },
+    };
+  });
+  registerAppTool(server, 'mark_layer_review_message_failed', {
+    title: '记录当前会话消息失败',
+    description: 'Record a failed attempt to post a split request to the current conversation.',
+    inputSchema: {
+      jobId: z.string(),
+      error: z.string().optional(),
+    },
+    outputSchema: {
+      ok: z.literal(true),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: appToolMeta,
+  }, async ({ jobId, error }) => {
+    await markDirectConversationMessageFailed(
+      path.join(jobsDirectory, jobId),
+      error,
+    );
+    return {
+      content: [],
+      structuredContent: { ok: true },
+    };
+  });
+  registerAppTool(server, 'cancel_layer_review_job', {
+    title: '取消待发送拆分任务',
+    description: 'Cancel one Imvia Layer job before Codex accepts it.',
+    inputSchema: {
+      jobId: z.string(),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+      status: z.string(),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: appToolMeta,
+  }, async ({ jobId }) => {
+    const result = await requestWorkbenchJson(
+      `/api/layer-review/foreground-dispatch/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    );
+    return {
+      content: [],
+      structuredContent: result,
+    };
+  });
+  registerAppTool(server, 'confirm_layer_review_foreground_dispatch', {
+    title: '确认当前任务已接收拆分消息',
+    description: 'Call this immediately after an Imvia Layer split request appears in the current Codex task.',
+    inputSchema: {
+      jobId: z.string(),
+    },
+    outputSchema: {
+      ok: z.literal(true),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+    },
+    _meta: {
+      ui: {
+        visibility: ['model', 'app'],
+      },
+    },
+  }, async ({ jobId }) => {
+    const jobDirectory = path.join(jobsDirectory, jobId);
+    try {
+      await acknowledgeForegroundDispatch(
+        jobDirectory,
+        new Date().toISOString(),
+        { confirmationSource: 'codex_model_tool' },
+      );
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await acknowledgeDirectConversationMessage(
+        jobDirectory,
+        new Date().toISOString(),
+        { confirmationSource: 'codex_model_tool' },
+      );
+    }
+    return {
+      content: [],
+      structuredContent: { ok: true },
+    };
+  });
 
   return server;
 }
@@ -103,7 +651,7 @@ const httpServer = createServer(async (request, response) => {
   }
   if (request.method === 'GET' && url.pathname === '/') {
     response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    response.end('Layer Review MCP App');
+    response.end('Imvia Layer MCP App');
     return;
   }
   if (url.pathname === mcpPath && ['POST', 'GET', 'DELETE'].includes(request.method || '')) {
@@ -130,6 +678,12 @@ const httpServer = createServer(async (request, response) => {
   response.writeHead(404).end('Not Found');
 });
 
-httpServer.listen(port, '127.0.0.1', () => {
-  console.log(`Layer Review MCP App listening on http://127.0.0.1:${port}${mcpPath}`);
-});
+if (process.argv.includes('--stdio')) {
+  const server = createLayerReviewBridgeServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+} else {
+  httpServer.listen(port, '127.0.0.1', () => {
+    console.log(`Imvia Layer MCP App listening on http://127.0.0.1:${port}${mcpPath}`);
+  });
+}

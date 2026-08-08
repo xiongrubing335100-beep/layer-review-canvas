@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as jobState from './job-state.js';
 
-const { jobMatchesSource, reconcileTurnStatus } = jobState;
+const { jobMatchesSource, reconcileTurnStatus, resolveExecutionReportStatus } = jobState;
 
 test('jobs from another uploaded image do not bind to the current layer ids', () => {
   const currentSource = { name: '情报探索-4个副本.png', width: 750, height: 1624 };
@@ -22,6 +22,44 @@ test('jobs from the current image remain visible', () => {
   };
 
   assert.equal(jobMatchesSource(currentJob, currentSource), true);
+});
+
+test('a reloaded image can recover history by its uploaded-source fingerprint', () => {
+  const source = {
+    imageId: 'new-document-id',
+    sourceFingerprint: 'screen.png:123:456:789',
+    sourceRevision: 1,
+    name: 'screen.png',
+    width: 750,
+    height: 1624,
+  };
+  const job = {
+    imageId: 'old-document-id',
+    sourceFingerprint: source.sourceFingerprint,
+    sourceRevision: 1,
+    sourceSize: { width: 750, height: 1624 },
+    sourceName: 'screen.png',
+  };
+
+  assert.equal(jobMatchesSource(job, source), true);
+});
+
+test('a different uploaded image does not match only because its dimensions agree', () => {
+  const source = {
+    imageId: 'new-document-id',
+    sourceFingerprint: 'new.png:123:456:789',
+    sourceRevision: 1,
+    width: 750,
+    height: 1624,
+  };
+  const job = {
+    imageId: 'old-document-id',
+    sourceFingerprint: 'old.png:123:456:789',
+    sourceRevision: 1,
+    sourceSize: { width: 750, height: 1624 },
+  };
+
+  assert.equal(jobMatchesSource(job, source), false);
 });
 
 test('a completed Codex turn without a PNG does not stay processing', () => {
@@ -56,7 +94,44 @@ test('a foreground split stays waiting until the bridge posts it to the conversa
     imageCount: 0,
   }), {
     status: 'awaiting_codex_message',
-    detail: '等待 Codex 会话桥接发送',
+    detail: '等待发送到当前 Codex 会话',
+  });
+});
+
+test('a queued split stays queued until the active conversation task finishes', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'queued',
+    reportStatus: null,
+    turnStatus: null,
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'queued',
+    detail: '当前 Codex 拆分完成后将自动发送',
+  });
+});
+
+test('a transport-submitted message is distinct from a queued split', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'submitted_to_conversation',
+    turnStatus: null,
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'submitted_to_conversation',
+    detail: '旧版宿主已接收，等待当前 Codex 任务确认',
+  });
+});
+
+test('host acceptance stays distinct from a message confirmed in the current task', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'host_accepted',
+    turnStatus: null,
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'host_accepted',
+    detail: '宿主已接收请求，等待当前 Codex 任务显示并确认',
   });
 });
 
@@ -71,6 +146,73 @@ test('a completed execution report finishes a foreground split without a backgro
     status: 'completed',
     detail: null,
   });
+});
+
+test('a completed execution report overrides a stale active Codex turn', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'sent_to_codex',
+    reportStatus: 'completed',
+    turnStatus: 'inProgress',
+    resultReady: true,
+    imageCount: 1,
+  }), {
+    status: 'completed',
+    detail: null,
+  });
+});
+
+test('a verified legacy report without a status is completed', () => {
+  assert.equal(resolveExecutionReportStatus({
+    timing: { completed_at: '2026-08-02T13:09:00.000Z' },
+    layers: [{
+      actual_output_path: 'final/ui-component.png',
+      validation: {
+        dimensions_pass: true,
+        annotation_conformance_pass: true,
+        obvious_exclusion_pass: true,
+        structure_integrity_pass: true,
+      },
+    }],
+    final_validation: {
+      only_requested_layer: true,
+      exact_output_size: true,
+      real_transparent_rgba_png: true,
+      final_png_count: 1,
+    },
+  }, {
+    expectedCount: 1,
+    resultReady: true,
+  }), 'completed');
+});
+
+test('an incomplete legacy report does not become completed from a PNG alone', () => {
+  assert.equal(resolveExecutionReportStatus({
+    timing: { completed_at: '2026-08-02T13:09:00.000Z' },
+    layers: [{ actual_output_path: 'final/ui-component.png', validation: {} }],
+    final_validation: { final_png_count: 1 },
+  }, {
+    expectedCount: 1,
+    resultReady: true,
+  }), null);
+});
+
+test('a completed executor report requires results and mandatory validation', () => {
+  const report = {
+    status: 'completed',
+    validation_results: {
+      count: true,
+      dimensions: true,
+      alpha: true,
+      annotation_conformance: true,
+      obvious_exclusion: true,
+    },
+  };
+  assert.equal(resolveExecutionReportStatus(report, { expectedCount: 1, resultReady: true }), 'completed');
+  assert.equal(resolveExecutionReportStatus(report, { expectedCount: 1, resultReady: false }), null);
+  assert.equal(resolveExecutionReportStatus({
+    ...report,
+    validation_results: { ...report.validation_results, alpha: false },
+  }, { expectedCount: 1, resultReady: true }), null);
 });
 
 test('a confirmation request is not shown as processing', () => {
@@ -115,6 +257,23 @@ test('needs confirmation is terminal for polling until resubmission', () => {
   assert.equal(jobState.shouldPollJob?.({
     status: 'needs_confirmation',
     completedAt: null,
+    snapshotVerified: false,
+  }), false);
+});
+
+test('a cancelled queued split is terminal and stops polling', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'cancelled',
+    turnStatus: null,
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'cancelled',
+    detail: null,
+  });
+  assert.equal(jobState.shouldPollJob?.({
+    status: 'cancelled',
+    completedAt: Date.now(),
     snapshotVerified: false,
   }), false);
 });

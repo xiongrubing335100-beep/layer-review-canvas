@@ -1,0 +1,68 @@
+import importlib.util
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image
+
+
+MODULE_PATH = Path(__file__).with_name("prepare-targeted-imagegen-canvas.py")
+SPEC = importlib.util.spec_from_file_location("prepare_targeted_imagegen_canvas", MODULE_PATH)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="prepare-imagegen-canvas-test-"))
+        self.job_id = "layer-job-test"
+        self.job = self.root / self.job_id
+        self.job.mkdir()
+        self.crop = self.job / "crop.png"
+        Image.new("RGBA", (588, 91), (100, 170, 250, 255)).save(self.crop)
+        preflight = {
+            "layers": [{
+                "id": "title-one",
+                "execution_route_hint": "codex_rgba",
+                "expected_output": {"width": 588, "height": 91},
+                "crop_path": str(self.crop),
+            }],
+        }
+        (self.job / "preflight.json").write_text(json.dumps(preflight), encoding="utf-8")
+
+    def tearDown(self):
+        for child in sorted(self.root.rglob("*"), reverse=True):
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+            elif child.exists():
+                child.rmdir()
+        self.root.rmdir()
+
+    def test_prepares_supported_landscape_canvas_and_reversible_mapping(self):
+        mapping_path, mapping = MODULE.prepare_canvas(
+            self.job_id,
+            "title-one",
+            jobs_root=self.root,
+        )
+
+        self.assertTrue(mapping_path.is_file())
+        self.assertEqual(mapping["canvas"], {"width": 1536, "height": 1024})
+        region = mapping["content_region"]
+        self.assertEqual(region["width"], 1536)
+        self.assertLessEqual(abs(region["width"] / region["height"] - 588 / 91), 0.03)
+        with Image.open(mapping["reference_path"]) as image:
+            self.assertEqual(image.size, (1536, 1024))
+
+    def test_rejects_non_codex_rgba_route(self):
+        preflight_path = self.job / "preflight.json"
+        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+        preflight["layers"][0]["execution_route_hint"] = "alpha_extract"
+        preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba"):
+            MODULE.prepare_canvas(self.job_id, "title-one", jobs_root=self.root)
+
+
+if __name__ == "__main__":
+    unittest.main()

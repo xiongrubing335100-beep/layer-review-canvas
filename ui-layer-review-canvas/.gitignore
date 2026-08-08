@@ -3,3 +3,8 @@ dist/
 output/
 .playwright-cli/
 .tmp/
+*.log
+__pycache__/
+.env
+.env.*
+!.env.example

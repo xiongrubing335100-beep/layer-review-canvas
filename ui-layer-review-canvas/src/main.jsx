@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  AlignHorizontalJustifyCenter,
+  AlignHorizontalJustifyEnd,
+  AlignHorizontalJustifyStart,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
   Brush,
   Check,
   CheckCircle2,
@@ -8,7 +13,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  Ellipsis,
   Eraser,
   Eye,
   FileJson,
@@ -16,15 +20,12 @@ import {
   Hand,
   ImagePlus,
   Layers3,
-  ListChecks,
   LoaderCircle,
   LocateFixed,
   Maximize2,
   Minimize2,
   Move,
-  Network,
   PanelLeft,
-  PanelRight,
   PencilLine,
   Plus,
   ScanSearch,
@@ -43,10 +44,40 @@ import {
 import { zipSync } from 'fflate';
 import { elapsedEnd, jobMatchesSource, shouldPollJob } from './job-state.js';
 import {
+  createImageDocument,
+  createImageId,
+  createProjectId,
+  clearStoredProjectImages,
+  writeStoredProjectState,
+} from './project-state.js';
+import { PAGE_HEARTBEAT_INTERVAL_MS } from './workbench-lifecycle.js';
+import {
+  cancelQueuedSplit,
+  getConversationBridgePresence,
+  getLayerReviewJob,
+  markLayerReviewMessageFailed,
+  markLayerReviewMessageSent,
   resolveWorkbenchUrl,
-  sendSplitPromptToCurrentTask,
+  submitLayerReviewPlan,
+  uploadMcpSourcePreview,
 } from './mcp-workbench-host.js';
-import { classifyExecutionRoute, combinedRequirement, isNodeRunning, nextPaint } from './split-execution.js';
+import { sendMcpAppFollowUpMessage } from './mcp-app-client.js';
+import {
+  buildExecutionPolicy,
+  buildRouteMetadata,
+  classifyExecutionRoute,
+  combinedRequirement,
+  isNodeRunning,
+  nextPaint,
+  transparencyStrategy,
+} from './split-execution.js';
+import { createInitialWorkbenchState } from './workbench-state.js';
+import { ModeSwitch } from './mode-switch.js';
+import { alignCanvasItems } from './canvas-alignment.js';
+import { arrangeImageDocuments } from './canvas-layout.js';
+import { canvasDeletionPlan, shouldHandleCanvasDelete } from './canvas-deletion.js';
+import { analyzeFastCategories } from './fast-category-analysis.js';
+import { resolvePanelVisibility } from './workbench-layout.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -109,17 +140,29 @@ function pngDownloadName(value, fallback) {
 }
 
 const jobStatusMeta = {
-  sending_to_codex: { label: '正在发送素材', tone: 'pending' },
-  awaiting_codex_message: { label: '等待发送到会话', tone: 'pending' },
+  queued: { label: '排队中', tone: 'pending' },
+  sending_to_codex: { label: '正在发送到当前会话', tone: 'pending' },
+  awaiting_codex_message: { label: '等待发送到当前会话', tone: 'pending' },
+  host_accepted: { label: '宿主已接收，等待会话确认', tone: 'pending' },
+  submitted_to_conversation: { label: '旧版宿主已接收，等待当前任务确认', tone: 'pending' },
   sent_to_codex: { label: 'Codex 已接收', tone: 'pending' },
   processing: { label: 'Codex 处理中', tone: 'pending' },
   partial: { label: '结果生成中', tone: 'pending' },
-  finalizing: { label: 'Codex 正在收尾', tone: 'pending' },
+  finalizing: { label: '正在验收', tone: 'pending' },
   needs_confirmation: { label: '需要确认', tone: 'confirmation' },
   completed: { label: '拆分完成', tone: 'completed' },
+  cancelled: { label: '已取消', tone: 'neutral' },
   failed: { label: '处理失败', tone: 'failed' },
   send_failed: { label: '发送失败', tone: 'failed' },
 };
+
+const cancelableDeliveryStatuses = new Set([
+  'queued',
+  'awaiting_codex_message',
+  'sending_to_codex',
+  'host_accepted',
+  'submitted_to_conversation',
+]);
 
 function readStoredJobs() {
   try {
@@ -135,17 +178,26 @@ function jobStatus(status) {
 }
 
 function splitProgress(status) {
+  if (status === 'queued') {
+    return { stage: '等待', label: '任务已排队', detail: '当前 Codex 拆分结束后，会话监听会自动发送这一项。' };
+  }
   if (status === 'awaiting_codex_message') {
-    return { stage: '1 / 3', label: '正在发送到当前 Codex 会话', detail: '会话桥接收到任务后，会直接显示拆分消息。' };
+    return { stage: '1 / 3', label: '等待发送到当前 Codex 会话', detail: '当前会话监听领取任务后会立即发送。' };
   }
   if (status === 'sending_to_codex') {
     return { stage: '1 / 3', label: '正在发送框选图与拆分提示词', detail: '素材发送成功后，Codex 会在当前任务中开始执行。' };
+  }
+  if (status === 'submitted_to_conversation') {
+    return { stage: '1 / 3', label: '旧版宿主已接收', detail: '等待拆分消息在当前 Codex 任务中显示并确认。' };
+  }
+  if (status === 'host_accepted') {
+    return { stage: '1 / 3', label: '宿主已接收消息请求', detail: '正在等待消息实际显示在当前会话并由 Codex 确认。' };
   }
   if (status === 'partial') {
     return { stage: '3 / 3', label: '正在回传拆分 PNG', detail: '已有部分结果生成，页面会继续自动更新。' };
   }
   if (status === 'finalizing') {
-    return { stage: '3 / 3', label: '结果已生成，Codex 正在收尾', detail: 'PNG 已回流，等待当前 Codex 会话执行结束。' };
+    return { stage: '3 / 3', label: '结果已生成，正在验收', detail: 'PNG 已回流，正在完成尺寸、透明度和终态报告验收。' };
   }
   return { stage: '2 / 3', label: 'Codex 正在拆分', detail: '已在当前任务中执行，完成后结果会自动回流。' };
 }
@@ -217,95 +269,6 @@ function defaultRemoveBackground(category) {
   return category !== 'kvBackground';
 }
 
-function createInitialNodes() {
-  return [
-    {
-      id: 'kv-title',
-      name: 'KV 主标题',
-      category: 'kvTitle',
-      status: 'candidate',
-      requirement: categoryMeta.kvTitle.defaultRequirement,
-      bounds: { x: 3, y: 2, width: 53, height: 16 },
-      x: 1010,
-      y: 112,
-    },
-    {
-      id: 'kv-element',
-      name: 'KV 主视觉元素',
-      category: 'kvElement',
-      status: 'candidate',
-      requirement: categoryMeta.kvElement.defaultRequirement,
-      bounds: { x: 48, y: 1, width: 49, height: 29 },
-      x: 650,
-      y: 150,
-    },
-    {
-      id: 'kv-background',
-      name: 'KV 完整背景',
-      category: 'kvBackground',
-      status: 'needs-repair',
-      requirement: categoryMeta.kvBackground.defaultRequirement,
-      bounds: { x: 0, y: 0, width: 100, height: 37 },
-      x: 1370,
-      y: 115,
-    },
-    {
-      id: 'ordinary-text',
-      name: '普通 UI 文字',
-      category: 'ordinaryText',
-      status: 'candidate',
-      requirement: categoryMeta.ordinaryText.defaultRequirement,
-      bounds: { x: 3, y: 37, width: 94, height: 61 },
-      x: 650,
-      y: 455,
-    },
-    {
-      id: 'ui-host-card',
-      name: '主播推荐卡',
-      category: 'uiComponent',
-      status: 'needs-repair',
-      requirement: categoryMeta.uiComponent.defaultRequirement,
-      bounds: { x: 3, y: 37, width: 94, height: 19 },
-      x: 1370,
-      y: 390,
-    },
-    {
-      id: 'ui-date-tabs',
-      name: '日期切换组件',
-      category: 'uiComponent',
-      status: 'needs-repair',
-      requirement: categoryMeta.uiComponent.defaultRequirement,
-      bounds: { x: 3, y: 63, width: 94, height: 7 },
-      x: 1370,
-      y: 590,
-    },
-    {
-      id: 'ui-ranking-list',
-      name: '榜单列表组件',
-      category: 'uiComponent',
-      status: 'needs-repair',
-      requirement: categoryMeta.uiComponent.defaultRequirement,
-      bounds: { x: 3, y: 72, width: 94, height: 25 },
-      x: 1370,
-      y: 790,
-    },
-    {
-      id: 'ui-floating-entry',
-      name: '侧边浮动入口',
-      category: 'uiComponent',
-      status: 'needs-repair',
-      requirement: categoryMeta.uiComponent.defaultRequirement,
-      bounds: { x: 80, y: 50, width: 17, height: 9 },
-      x: 1370,
-      y: 990,
-    },
-  ].map((node) => ({
-    ...node,
-    removeBackground: defaultRemoveBackground(node.category),
-    executionMode: 'fast',
-  }));
-}
-
 const emptySelectedNode = {
   id: '',
   name: '',
@@ -318,12 +281,14 @@ const emptySelectedNode = {
 };
 
 const initialActivity = [
-  { id: 1, title: '基础拆分栏目已建立', time: '刚刚' },
-  { id: 2, title: '等待框选与需求确认', time: '现在' },
+  { id: 1, title: '等待载入 UI 原图', time: '现在' },
 ];
 
 const overviewViewport = { x: 34, y: 74, scale: 0.72 };
+const initialWorkbenchState = createInitialWorkbenchState();
 const sourceNodeKey = 'source';
+const imageSourceNodeKey = (imageId) => `image:${imageId}:source`;
+const imageSplitNodeKey = (imageId, nodeId) => `image:${imageId}:split:${nodeId}`;
 const splitNodeKey = (id) => `split:${id}`;
 const resultNodeKey = (id) => `result:${id}`;
 const manualResultNodeKey = (id) => `manual-result:${id}`;
@@ -570,48 +535,57 @@ function blobToDataUrl(blob) {
   });
 }
 
-function ModeSwitch({ value, onChange }) {
-  return (
-    <div className="mode-switch" role="tablist" aria-label="复核模式">
-      <button type="button" className={value === 'guided' ? 'mode-switch__active' : ''} onClick={() => onChange('guided')}>
-        <ListChecks size={15} /> 框选拆分
-      </button>
-      <button type="button" className={value === 'canvas' ? 'mode-switch__active' : ''} onClick={() => onChange('canvas')}>
-        <Network size={15} /> 画布总览
-      </button>
-    </div>
-  );
+function defaultReviewMode() {
+  return 'guided';
 }
 
+const FROZEN_THEME = 'dark';
+
 function App() {
-  const [sourceImage, setSourceImage] = useState('/demo-source.png');
-  const [sourceDataUrl, setSourceDataUrl] = useState('');
-  const [sourceName, setSourceName] = useState('source.png');
-  const [sourceSize, setSourceSize] = useState({ width: 1500, height: 3664 });
-  const [nodes, setNodes] = useState(createInitialNodes);
-  const [selectedId, setSelectedId] = useState('kv-title');
-  const [reviewMode, setReviewMode] = useState('guided');
+  const [projectSeed] = useState(() => clearStoredProjectImages());
+  const [projectId] = useState(() => projectSeed.projectId || createProjectId());
+  const [activeImageId, setActiveImageId] = useState(projectSeed.activeImageId || '');
+  const [imageDocuments, setImageDocuments] = useState(() => Object.values(projectSeed.images || {}));
+  const [sourceImage, setSourceImage] = useState(initialWorkbenchState.sourceImage);
+  const [sourceDataUrl, setSourceDataUrl] = useState(initialWorkbenchState.sourceDataUrl);
+  const [sourceName, setSourceName] = useState(initialWorkbenchState.sourceName);
+  const [sourceSize, setSourceSize] = useState(initialWorkbenchState.sourceSize);
+  const [nodes, setNodes] = useState(initialWorkbenchState.nodes);
+  const [selectedId, setSelectedId] = useState(initialWorkbenchState.selectedId);
+  const [reviewMode, setReviewMode] = useState(defaultReviewMode);
   const [viewport, setViewport] = useState(overviewViewport);
   const [sourceNodePosition, setSourceNodePosition] = useState({ x: 110, y: 240 });
+  const [canvasLayoutVersion, setCanvasLayoutVersion] = useState(0);
   const [resultNodePositions, setResultNodePositions] = useState({});
   const [manualResultNodes, setManualResultNodes] = useState([]);
   const [manualEdges, setManualEdges] = useState([]);
   const [canvasSelectedKeys, setCanvasSelectedKeys] = useState([]);
   const [canvasGroups, setCanvasGroups] = useState([]);
+  const [hiddenCanvasResultKeys, setHiddenCanvasResultKeys] = useState([]);
   const [nodeInsertMenu, setNodeInsertMenu] = useState(null);
+  const [alignmentMenuOpen, setAlignmentMenuOpen] = useState(false);
+  const [sourceDropActive, setSourceDropActive] = useState(false);
   const [linkPreview, setLinkPreview] = useState(null);
   const [maskTool, setMaskTool] = useState(null);
   const [marks, setMarks] = useState([]);
   const [boundaryOpen, setBoundaryOpen] = useState(true);
   const [activity, setActivity] = useState(initialActivity);
   const [toast, setToast] = useState('');
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
+  const [conversationBridge, setConversationBridge] = useState({
+    online: false,
+    lastSeen: null,
+    checked: true,
+  });
+
+  const [isLeftOpen, setIsLeftOpen] = useState(false);
+  const [isRightOpen, setIsRightOpen] = useState(false);
+  const [categoryAnalysisStage, setCategoryAnalysisStage] = useState('idle');
   const [draftMark, setDraftMark] = useState(null);
   const [selectedMarkId, setSelectedMarkId] = useState(null);
   const [brushSize, setBrushSize] = useState(24);
   const [showOriginalOnly, setShowOriginalOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [cancellingJobId, setCancellingJobId] = useState(null);
   const [localSubmissions, setLocalSubmissions] = useState({});
   const [jobs, setJobs] = useState(readStoredJobs);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -638,10 +612,83 @@ function App() {
   const gestureRef = useRef(null);
   const linkPreviewPathRef = useRef(null);
   const canvasDragConsumedRef = useRef(false);
+  const canvasZoomInputRef = useRef(null);
+  const sourceFileInputRef = useRef(null);
+  const pendingSourceInsertRef = useRef(null);
+  const sourceDragDepthRef = useRef(0);
+  const categoryAnalysisRunRef = useRef(0);
   const spacePanRef = useRef(false);
   const runningNodeIdsRef = useRef(new Set());
+  const imageDocumentsRef = useRef(new Map(Object.values(projectSeed.images || {}).map((document) => [document.imageId, document])));
+  const projectHydrationRef = useRef(false);
+  const canvasLayoutSignatureRef = useRef('');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = FROZEN_THEME;
+    window.localStorage.setItem('imvia-layer-theme', FROZEN_THEME);
+  }, []);
+
+  const snapshotActiveImage = () => {
+    if (!activeImageId) return;
+    imageDocumentsRef.current.set(activeImageId, createImageDocument({
+      imageId: activeImageId,
+      sourceImage,
+      sourceDataUrl,
+      sourceName,
+      sourceSize,
+      sourceFingerprint: currentSourceFingerprint,
+      sourceRevision: currentSourceRevision,
+      nodes,
+      selectedId,
+      sourceNodePosition,
+      canvasLayoutVersion,
+      resultNodePositions,
+      manualResultNodes,
+      manualEdges,
+      marks,
+    }));
+    setImageDocuments([...imageDocumentsRef.current.values()]);
+  };
+
+  const restoreImageDocument = (document) => {
+    setActiveImageId(document?.imageId || '');
+    setSourceImage(document?.sourceDataUrl || document?.sourceImage || '');
+    setSourceDataUrl(document?.sourceDataUrl || '');
+    setSourceName(document?.sourceName || '');
+    setSourceSize(document?.sourceSize || { width: 0, height: 0 });
+    setNodes(document?.nodes || []);
+    setSelectedId(document?.selectedId || document?.nodes?.[0]?.id || '');
+    setSourceNodePosition(document?.sourceNodePosition || { x: 110, y: 240 });
+    setCanvasLayoutVersion(document?.canvasLayoutVersion || 0);
+    setResultNodePositions(document?.resultNodePositions || {});
+    setManualResultNodes(document?.manualResultNodes || []);
+    setManualEdges(document?.manualEdges || []);
+    setMarks(document?.marks || []);
+  };
+
+  const activateImageDocument = (imageId) => {
+    const document = imageDocumentsRef.current.get(imageId);
+    if (!document || document.imageId === activeImageId) return false;
+    snapshotActiveImage();
+    restoreImageDocument(document);
+    setCanvasSelectedKeys([]);
+    setReviewMode(defaultReviewMode());
+    setIsLeftOpen(Boolean(document.nodes?.length));
+    setIsRightOpen(Boolean(document.nodes?.length));
+    setToast(`已切换到 ${document.sourceName || '图片'}`);
+    return true;
+  };
 
   const hasSelectedLayer = nodes.some((node) => node.id === selectedId);
+  const hasSource = Boolean(sourceImage && sourceSize.width && sourceSize.height);
+  const panelVisibility = resolvePanelVisibility({
+    reviewMode,
+    hasSource,
+    hasSelectedLayer,
+    hasCanvasInspectorSelection: canvasSelectedKeys.length === 1,
+    isLeftOpen,
+    isRightOpen,
+  });
   const selected = nodes.find((node) => node.id === selectedId) ?? nodes[0] ?? emptySelectedNode;
   const selectedIndex = nodes.findIndex((node) => node.id === selected.id);
   const annotationModeActive = Boolean(boundaryOpen && maskTool && !showOriginalOnly);
@@ -651,18 +698,61 @@ function App() {
   const candidateSelectionBounds = boundsInsideContext(selected.bounds, visibleCandidateContext);
   const acceptedCount = nodes.filter((node) => node.status === 'accepted').length;
   const repairCount = nodes.filter((node) => node.status === 'needs-repair').length;
+  const currentDocument = imageDocumentsRef.current.get(activeImageId);
+  const currentSourceFingerprint = currentDocument?.sourceFingerprint || '';
+  const currentSourceRevision = currentDocument?.sourceRevision || 1;
   const currentSource = useMemo(() => ({
+    projectId,
+    imageId: activeImageId,
+    sourceFingerprint: currentSourceFingerprint,
+    sourceRevision: currentSourceRevision,
     name: sourceName,
     width: sourceSize.width,
     height: sourceSize.height,
-  }), [sourceName, sourceSize.height, sourceSize.width]);
+  }), [activeImageId, currentSourceFingerprint, currentSourceRevision, projectId, sourceName, sourceSize.height, sourceSize.width]);
+
+  useEffect(() => {
+    if (activeImageId) {
+      const document = imageDocumentsRef.current.get(activeImageId);
+      if (document) restoreImageDocument(document);
+      else setActiveImageId('');
+    }
+    projectHydrationRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!projectHydrationRef.current || !activeImageId) return;
+    imageDocumentsRef.current.set(activeImageId, createImageDocument({
+      imageId: activeImageId,
+      sourceImage,
+      sourceDataUrl,
+      sourceName,
+      sourceSize,
+      sourceFingerprint: currentSourceFingerprint,
+      sourceRevision: currentSourceRevision,
+      nodes,
+      selectedId,
+      sourceNodePosition,
+      canvasLayoutVersion,
+      resultNodePositions,
+      manualResultNodes,
+      manualEdges,
+      marks,
+    }));
+    writeStoredProjectState({
+      version: 1,
+      projectId,
+      activeImageId,
+      images: Object.fromEntries(imageDocumentsRef.current.entries()),
+    });
+  }, [activeImageId, canvasLayoutVersion, currentSourceFingerprint, currentSourceRevision, manualEdges, manualResultNodes, marks, nodes, projectId, resultNodePositions, selectedId, sourceDataUrl, sourceImage, sourceName, sourceSize]);
   const jobsForCurrentSource = useMemo(
     () => jobs.filter((job) => jobMatchesSource(job, currentSource)),
     [currentSource, jobs],
   );
   const selectedNodeRunning = isNodeRunning(selected.id, localSubmissions, jobsForCurrentSource);
   const sentNodeIds = useMemo(() => new Set(jobsForCurrentSource
-    .filter((job) => !['failed', 'send_failed'].includes(job.status))
+    .filter((job) => !['failed', 'send_failed', 'cancelled'].includes(job.status))
     .flatMap((job) => job.nodeIds || [])), [jobsForCurrentSource]);
   const batchReadyNodeIds = nodes
     .filter((node) => node.status === 'accepted' && !sentNodeIds.has(node.id))
@@ -714,6 +804,7 @@ function App() {
         280,
       );
       const resultId = `${result.job.id}-${node.id}`;
+      if (hiddenCanvasResultKeys.includes(resultNodeKey(resultId))) return [];
       const position = resultNodePositions[resultId] || { x: 1760, y: nextY };
       const item = {
         ...result,
@@ -727,9 +818,108 @@ function App() {
       nextY += previewHeight + 92;
       return [item];
     });
-  }, [nodeResults, nodes, resultNodePositions]);
+  }, [hiddenCanvasResultKeys, nodeResults, nodes, resultNodePositions]);
+  const inactiveImageDocuments = useMemo(
+    () => imageDocuments.filter((document) => document.imageId !== activeImageId && (document.sourceDataUrl || document.sourceImage)),
+    [activeImageId, imageDocuments],
+  );
+  const inactiveCanvasNodes = useMemo(
+    () => inactiveImageDocuments.flatMap((document) => {
+      const sourcePosition = document.sourceNodePosition || { x: 110, y: 240 };
+      const offsetX = sourcePosition.x - 110;
+      const offsetY = sourcePosition.y - 240;
+      const useAbsolutePositions = document.canvasLayoutVersion === 1;
+      return (document.nodes || []).map((node) => {
+        const region = pixelBounds(node.bounds, document.sourceSize);
+        const preview = fitCanvasPreviewSize(region.width, region.height);
+        return {
+          key: imageSplitNodeKey(document.imageId, node.id),
+          kind: 'image-split',
+          imageId: document.imageId,
+          linkedNodeId: node.id,
+          node,
+          x: useAbsolutePositions ? node.x : node.x + offsetX,
+          y: useAbsolutePositions ? node.y : node.y + offsetY,
+          width: preview.width,
+          height: preview.height + 32,
+          portY: preview.height / 2 + 32,
+          preview,
+        };
+      });
+    }),
+    [inactiveImageDocuments],
+  );
+  const inactiveResultNodes = useMemo(
+    () => inactiveImageDocuments.flatMap((document) => {
+      const documentSource = {
+        projectId,
+        imageId: document.imageId,
+        sourceFingerprint: document.sourceFingerprint,
+        sourceRevision: document.sourceRevision,
+        name: document.sourceName,
+        width: document.sourceSize.width,
+        height: document.sourceSize.height,
+      };
+      const latestByNode = new Map();
+      jobs
+        .filter((job) => jobMatchesSource(job, documentSource))
+        .forEach((job) => (job.nodeIds || []).forEach((nodeId) => latestByNode.set(nodeId, job)));
+      let nextIndex = 0;
+      return (document.nodes || []).flatMap((node) => {
+        const job = latestByNode.get(node.id);
+        if (!job) return [];
+        const jobNodeIndex = job.nodeIds.indexOf(node.id);
+        const nodeKey = normalizedFileKey(node.id);
+        const image = job.images?.find((item) => normalizedFileKey(item.name).includes(nodeKey))
+          || (job.nodeIds.length === 1 ? job.images?.[0] : job.images?.[jobNodeIndex]);
+        const snapshot = jobLayerSnapshot(job, node, document.sourceSize);
+        const region = pixelBounds(snapshot.bounds, snapshot.sourceSize);
+        const { width: previewWidth, height: previewHeight } = fitCanvasPreviewSize(
+          region.width,
+          region.height,
+          260,
+          280,
+        );
+        const resultId = `${job.id}-${node.id}`;
+        const savedPosition = document.resultNodePositions?.[resultId];
+        const position = savedPosition || {
+          x: node.x + previewWidth + 110,
+          y: node.y + nextIndex * 12,
+        };
+        nextIndex += 1;
+        return [{
+          ...snapshot,
+          id: resultId,
+          imageId: document.imageId,
+          node,
+          job,
+          image,
+          x: position.x,
+          y: position.y,
+          previewWidth,
+          previewHeight,
+        }];
+      });
+    }),
+    [inactiveImageDocuments, jobs, projectId],
+  );
   const canvasItems = useMemo(() => [
-    {
+    ...inactiveImageDocuments.map((document, index) => {
+      const width = 220;
+      const height = Math.round(width * document.sourceSize.height / Math.max(1, document.sourceSize.width));
+      const position = document.sourceNodePosition || { x: 110 + index * 300, y: 240 };
+      return {
+        key: imageSourceNodeKey(document.imageId),
+        kind: 'image-source',
+        imageId: document.imageId,
+        x: position.x,
+        y: position.y,
+        width,
+        height: height + 32,
+        portY: height / 2 + 32,
+      };
+    }),
+    ...(hasSource ? [{
       key: sourceNodeKey,
       kind: 'source',
       x: sourceNodePosition.x,
@@ -737,7 +927,19 @@ function App() {
       width: sourcePreviewWidth,
       height: sourcePreviewHeight + 32,
       portY: sourcePreviewHeight / 2 + 32,
-    },
+    }] : []),
+    ...inactiveCanvasNodes,
+    ...inactiveResultNodes.map((resultNode) => ({
+      key: resultNodeKey(resultNode.id),
+      kind: 'result',
+      imageId: resultNode.imageId,
+      linkedNodeId: resultNode.node.id,
+      x: resultNode.x,
+      y: resultNode.y,
+      width: resultNode.previewWidth,
+      height: resultNode.previewHeight + 32,
+      portY: resultNode.previewHeight / 2 + 32,
+    })),
     ...nodes.map((node) => {
       const region = pixelBounds(node.bounds, sourceSize);
       const preview = fitCanvasPreviewSize(region.width, region.height);
@@ -772,7 +974,7 @@ function App() {
       height: 128,
       portY: 80,
     })),
-  ], [manualResultNodes, nodes, resultNodes, sourceNodePosition, sourcePreviewHeight, sourceSize]);
+  ], [activeImageId, hasSource, inactiveCanvasNodes, inactiveImageDocuments, inactiveResultNodes, manualResultNodes, nodes, resultNodes, sourceNodePosition, sourcePreviewHeight, sourceSize]);
   const canvasItemMap = useMemo(
     () => new Map(canvasItems.map((item) => [item.key, item])),
     [canvasItems],
@@ -821,6 +1023,30 @@ function App() {
     )));
   };
 
+  const arrangeAllImageDocuments = ({ silent = false } = {}) => {
+    snapshotActiveImage();
+    const documents = [...imageDocumentsRef.current.values()]
+      .filter((document) => document.sourceDataUrl || document.sourceImage);
+    if (!documents.length) return false;
+    const arrangedDocuments = arrangeImageDocuments(documents);
+    imageDocumentsRef.current = new Map(arrangedDocuments.map((document) => [document.imageId, document]));
+    setImageDocuments(arrangedDocuments);
+    const activeDocument = imageDocumentsRef.current.get(activeImageId);
+    if (activeDocument) restoreImageDocument(activeDocument);
+    setCanvasSelectedKeys([]);
+    canvasLayoutSignatureRef.current = arrangedDocuments.map((document) => document.imageId).join('|');
+    if (!silent) setToast(`已按原图整理 ${arrangedDocuments.length} 个分组`);
+    window.setTimeout(() => fitCanvasOverview(), 0);
+    return true;
+  };
+
+  useEffect(() => {
+    if (reviewMode !== 'canvas' || imageDocuments.length < 2 || categoryAnalysisStage === 'active') return;
+    const signature = imageDocuments.map((document) => document.imageId).join('|');
+    if (canvasLayoutSignatureRef.current === signature) return;
+    arrangeAllImageDocuments({ silent: true });
+  }, [categoryAnalysisStage, imageDocuments, reviewMode]);
+
   useEffect(() => {
     if (!toast) return undefined;
     const timeout = window.setTimeout(() => setToast(''), 3000);
@@ -865,6 +1091,7 @@ function App() {
     const handleCanvasShortcut = (event) => {
       if (event.key === 'Escape') {
         setNodeInsertMenu(null);
+        setAlignmentMenuOpen(false);
         return;
       }
       if (
@@ -879,6 +1106,19 @@ function App() {
     window.addEventListener('keydown', handleCanvasShortcut);
     return () => window.removeEventListener('keydown', handleCanvasShortcut);
   }, [allCanvasKeys, reviewMode]);
+
+  useEffect(() => {
+    if (canvasSelectedKeys.length < 2) setAlignmentMenuOpen(false);
+  }, [canvasSelectedKeys.length]);
+
+  useEffect(() => {
+    if (
+      canvasZoomInputRef.current
+      && document.activeElement !== canvasZoomInputRef.current
+    ) {
+      canvasZoomInputRef.current.value = String(Math.round(viewport.scale * 100));
+    }
+  }, [viewport.scale]);
 
   useEffect(() => {
     if (reviewMode !== 'canvas') return undefined;
@@ -943,13 +1183,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    setJobs((current) => {
-      const matching = current.filter((job) => jobMatchesSource(job, currentSource));
-      return matching.length === current.length ? current : matching;
-    });
-  }, [currentSource]);
-
-  useEffect(() => {
     window.localStorage.setItem('layer-review-jobs', JSON.stringify(jobs));
   }, [jobs]);
 
@@ -967,6 +1200,65 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const refreshBridgePresence = async () => {
+      try {
+        const presence = await getConversationBridgePresence();
+        if (cancelled) return;
+        setConversationBridge({
+          online: Boolean(presence?.online),
+          lastSeen: presence?.last_seen || null,
+          checked: true,
+        });
+      } catch {
+        if (cancelled) return;
+        setConversationBridge((current) => ({
+          ...current,
+          online: false,
+          checked: true,
+        }));
+      }
+    };
+
+    refreshBridgePresence();
+    const interval = window.setInterval(refreshBridgePresence, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    const pageId = window.crypto.randomUUID();
+    const leaseUrl = resolveWorkbenchUrl('/api/layer-review/page-lease');
+    const sendLease = (event = 'heartbeat') => fetch(leaseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageId, event }),
+      cache: 'no-store',
+      keepalive: true,
+    }).catch(() => {});
+    const markClosing = () => {
+      const payload = JSON.stringify({ pageId, event: 'close' });
+      if (!window.navigator.sendBeacon?.(
+        leaseUrl,
+        new Blob([payload], { type: 'application/json' }),
+      )) {
+        sendLease('close');
+      }
+    };
+
+    sendLease();
+    const interval = window.setInterval(sendLease, PAGE_HEARTBEAT_INTERVAL_MS);
+    window.addEventListener('pagehide', markClosing);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('pagehide', markClosing);
+      markClosing();
+    };
+  }, []);
+
+  useEffect(() => {
     const pendingJobs = jobs.filter(shouldPollJob);
     if (!pendingJobs.length) return undefined;
 
@@ -974,21 +1266,24 @@ function App() {
     const refresh = async () => {
       const updates = await Promise.all(pendingJobs.map(async (job) => {
         try {
-          const response = await fetch(resolveWorkbenchUrl(
-            `/api/layer-review/jobs/${encodeURIComponent(job.id)}`,
-          ), { cache: 'no-store' });
-          if (response.status === 404) return { job_id: job.id, status: 'failed', images: [] };
-          if (!response.ok) return null;
-          return await response.json();
+          return await getLayerReviewJob(job.id);
         } catch {
           return null;
         }
       }));
       if (cancelled) return;
-      setJobs((current) => current.map((job) => {
+      const discardedIds = new Set(
+        updates.filter((item) => item?.status === 'discarded').map((item) => item.job_id),
+      );
+      setJobs((current) => current.filter((job) => !discardedIds.has(job.id)).map((job) => {
+        if (job.status === 'cancelled') return job;
         const update = updates.find((item) => item?.job_id === job.id);
         return update ? {
           ...job,
+          projectId: update.project_id || job.projectId,
+          imageId: update.image_id || job.imageId,
+          sourceFingerprint: update.source_fingerprint || job.sourceFingerprint,
+          sourceRevision: update.source_revision || job.sourceRevision,
           status: update.status,
           images: update.images || [],
           layerSnapshots: update.layer_snapshots || job.layerSnapshots,
@@ -1011,7 +1306,7 @@ function App() {
     };
 
     refresh();
-    const interval = window.setInterval(refresh, 3000);
+    const interval = window.setInterval(refresh, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -1169,6 +1464,49 @@ function App() {
     setActivity((current) => [{ id: Date.now(), title, time: '刚刚' }, ...current].slice(0, 5));
   };
 
+  const deleteOriginalCanvas = () => {
+    categoryAnalysisRunRef.current += 1;
+    const activeTask = jobs.find((job) => (
+      job.imageId === activeImageId
+      && !['completed', 'failed', 'send_failed', 'cancelled', 'discarded'].includes(job.status)
+    ));
+    if (activeTask) {
+      setToast('当前图片仍有排队或执行中的任务，完成后才能删除');
+      return;
+    }
+    if (activeImageId) {
+      imageDocumentsRef.current.delete(activeImageId);
+      setImageDocuments([...imageDocumentsRef.current.values()]);
+      setActiveImageId('');
+    }
+    if (sourceImage.startsWith('blob:')) URL.revokeObjectURL(sourceImage);
+    setSourceImage('');
+    setSourceDataUrl('');
+    setSourceName('');
+    setSourceSize({ width: 0, height: 0 });
+    setNodes([]);
+    setSelectedId('');
+    setSourceNodePosition({ x: 110, y: 240 });
+    setResultNodePositions({});
+    setManualResultNodes([]);
+    setManualEdges([]);
+    setCanvasSelectedKeys([]);
+    setCanvasGroups([]);
+    setHiddenCanvasResultKeys([]);
+    setNodeInsertMenu(null);
+    setAlignmentMenuOpen(false);
+    setMarks([]);
+    setCandidateContext(null);
+    setResultViewer(null);
+    setResultEditing(false);
+    setIsLeftOpen(false);
+    setIsRightOpen(false);
+    setCategoryAnalysisStage('idle');
+    setActivity(initialActivity);
+    runningNodeIdsRef.current.clear();
+    setToast('原始画布已删除');
+  };
+
   const dismissJob = (job) => {
     setJobs((current) => current.filter((item) => item.id !== job.id));
     setLocalSubmissions((current) => Object.fromEntries(
@@ -1176,6 +1514,32 @@ function App() {
     ));
     addActivity('已移除失效的拆分任务状态');
     setToast('任务状态已从工作台移除');
+  };
+
+  const cancelPendingJob = async (job) => {
+    if (!cancelableDeliveryStatuses.has(job.status) || cancellingJobId) return;
+    setCancellingJobId(job.id);
+    try {
+      await cancelQueuedSplit(job.id);
+      const cancelledAt = Date.now();
+      setJobs((current) => current.map((item) => (
+        item.id === job.id
+          ? {
+              ...item,
+              status: 'cancelled',
+              statusDetail: '待接收任务已取消',
+              completedAt: cancelledAt,
+            }
+          : item
+      )));
+      (job.nodeIds || []).forEach((nodeId) => runningNodeIdsRef.current.delete(nodeId));
+      addActivity('已取消尚未被 Codex 接收的拆分任务');
+      setToast('待接收任务已取消');
+    } catch (error) {
+      setToast(`取消失败：${error.message}`);
+    } finally {
+      setCancellingJobId(null);
+    }
   };
 
   const updateSelected = (patch) => {
@@ -1186,6 +1550,7 @@ function App() {
 
   const selectNode = (node, focusCanvas = false) => {
     setSelectedId(node.id);
+    if (reviewMode === 'guided') setIsRightOpen(true);
     if (reviewMode === 'canvas') setCanvasSelectedKeys([splitNodeKey(node.id)]);
     if (focusCanvas) window.setTimeout(() => centerOn(node), 0);
   };
@@ -1229,78 +1594,19 @@ function App() {
     setToast(`已选择全部 ${allCanvasKeys.length} 个节点`);
   };
 
-  const arrangeCanvasNodes = () => {
-    const keys = canvasSelectedKeys.length > 1 ? canvasSelectedKeys : allCanvasKeys;
-    const items = keys.map((key) => canvasItemMap.get(key)).filter(Boolean);
-    if (!items.length) return;
-    const positions = {};
-    const startX = keys.length === allCanvasKeys.length
-      ? 120
-      : Math.min(...items.map((item) => item.x));
-    const startY = keys.length === allCanvasKeys.length
-      ? 120
-      : Math.min(...items.map((item) => item.y));
-    const columnGap = 180;
-    const rowGap = 92;
-    const resultSiblingGap = 44;
-    const sourceItem = items.find((item) => item.kind === 'source');
-    const splitItems = items.filter((item) => item.kind === 'split');
-    const resultItems = items.filter((item) => item.kind === 'result' || item.kind === 'manual-result');
-    const maxSplitWidth = Math.max(0, ...splitItems.map((item) => item.width));
-    const splitX = sourceItem ? startX + sourceItem.width + columnGap : startX;
-    const resultX = splitItems.length ? splitX + maxSplitWidth + columnGap : splitX;
-    const positionedResults = new Set();
-    const splitPortYs = [];
-    let nextRowY = startY;
-
-    splitItems.forEach((splitItem) => {
-      const children = resultItems.filter((item) => item.linkedNodeId === splitItem.linkedNodeId);
-      const childrenHeight = children.reduce((height, item) => height + item.height, 0)
-        + Math.max(0, children.length - 1) * resultSiblingGap;
-      const rowHeight = Math.max(splitItem.height, childrenHeight);
-      const splitY = nextRowY + (rowHeight - splitItem.height) / 2;
-      positions[splitItem.key] = { x: splitX, y: splitY };
-      splitPortYs.push(splitY + splitItem.portY);
-
-      let childY = nextRowY + (rowHeight - childrenHeight) / 2;
-      children.forEach((child) => {
-        positions[child.key] = { x: resultX, y: childY };
-        positionedResults.add(child.key);
-        childY += child.height + resultSiblingGap;
-      });
-      nextRowY += rowHeight + rowGap;
-    });
-
-    const orphanResults = resultItems.filter((item) => !positionedResults.has(item.key));
-    let orphanY = splitItems.length ? nextRowY : startY;
-    orphanResults.forEach((item) => {
-      positions[item.key] = { x: resultX, y: orphanY };
-      orphanY += item.height + rowGap;
-    });
-
-    if (sourceItem) {
-      const targetPortY = splitPortYs.length
-        ? (splitPortYs[0] + splitPortYs[splitPortYs.length - 1]) / 2
-        : startY + sourceItem.portY;
-      positions[sourceItem.key] = { x: startX, y: targetPortY - sourceItem.portY };
-    }
-
-    const arrangedY = Object.values(positions).map((position) => position.y);
-    const minArrangedY = arrangedY.length ? Math.min(...arrangedY) : startY;
-    if (minArrangedY < startY) {
-      const offsetY = startY - minArrangedY;
-      Object.values(positions).forEach((position) => {
-        position.y += offsetY;
-      });
+  const alignCanvasSelection = (alignment, label) => {
+    const items = canvasSelectedKeys
+      .map((key) => canvasItemMap.get(key))
+      .filter(Boolean);
+    const positions = alignCanvasItems(items, alignment);
+    if (!Object.keys(positions).length) {
+      setToast('请先选择至少两个节点');
+      return;
     }
     applyCanvasPositions(positions);
-    setCanvasSelectedKeys(keys);
-    addActivity(`已整理 ${items.length} 个画布节点`);
-    setToast(`已整理 ${items.length} 个节点`);
-    const arrangedItems = canvasItems.map((item) => (
-      positions[item.key] ? { ...item, ...positions[item.key] } : item
-    ));
-    window.setTimeout(() => fitCanvasOverview(arrangedItems), 0);
+    setAlignmentMenuOpen(false);
+    addActivity(`${items.length} 个节点已${label}`);
+    setToast(`已${label} ${items.length} 个节点`);
   };
 
   const groupCanvasSelection = () => {
@@ -1328,6 +1634,8 @@ function App() {
   const openNodeInsertMenuAt = (anchorKey = null, side = 'right', dropX = null, dropY = null) => {
     const anchor = anchorKey ? canvasItemMap.get(anchorKey) : null;
     const rect = canvasRef.current?.getBoundingClientRect();
+    const commandDockRect = canvasRef.current?.querySelector('.canvas-command-controls')?.getBoundingClientRect();
+    const menuHeight = hasSource ? 356 : 74;
     let x;
     let y;
     const hasDropPoint = Number.isFinite(dropX) && Number.isFinite(dropY);
@@ -1337,14 +1645,23 @@ function App() {
     } else if (anchor) {
       x = side === 'left' ? anchor.x - 218 : anchor.x + anchor.width + 42;
       y = anchor.y + Math.min(72, anchor.portY - 18);
+    } else if (rect && commandDockRect) {
+      const dockLeft = commandDockRect.left - rect.left;
+      const dockTop = commandDockRect.top - rect.top;
+      const screenX = dockLeft;
+      const screenY = dockTop - menuHeight - 10;
+      x = (screenX - viewport.x) / viewport.scale;
+      y = (screenY - viewport.y) / viewport.scale;
     } else {
       x = rect ? (rect.width / 2 - viewport.x) / viewport.scale - 95 : 920;
       y = rect ? (rect.height - 320 - viewport.y) / viewport.scale : 420;
     }
     if (rect) {
-      const menuHeight = 126 + categoryOrder.length * 48;
       const screenX = clamp(viewport.x + x * viewport.scale, 12, Math.max(12, rect.width - 264));
-      const screenY = clamp(viewport.y + y * viewport.scale, 12, Math.max(12, rect.height - menuHeight - 84));
+      const maxScreenY = commandDockRect && !anchor && !hasDropPoint
+        ? commandDockRect.top - rect.top - menuHeight - 10
+        : rect.height - menuHeight - 84;
+      const screenY = clamp(viewport.y + y * viewport.scale, 12, Math.max(12, maxScreenY));
       x = (screenX - viewport.x) / viewport.scale;
       y = (screenY - viewport.y) / viewport.scale;
     }
@@ -1400,8 +1717,8 @@ function App() {
     const anchorNode = anchor?.linkedNodeId
       ? nodes.find((node) => node.id === anchor.linkedNodeId)
       : null;
-    const targetWidth = kind === 'split' ? 260 : 250;
-    const targetPortY = kind === 'split' ? 91 : 80;
+    const targetWidth = kind === 'source' ? sourcePreviewWidth : kind === 'split' ? 260 : 250;
+    const targetPortY = kind === 'source' ? sourcePreviewHeight / 2 + 32 : kind === 'split' ? 91 : 80;
     const x = nodeInsertMenu.insertPoint
       ? nodeInsertMenu.side === 'left'
         ? nodeInsertMenu.insertPoint.x - targetWidth
@@ -1416,10 +1733,24 @@ function App() {
       : anchor
         ? anchor.y
         : nodeInsertMenu.y + 110;
+    if (kind === 'source') {
+      pendingSourceInsertRef.current = {
+        position: { x, y },
+        keepCanvas: reviewMode === 'canvas',
+      };
+      setNodeInsertMenu(null);
+      sourceFileInputRef.current?.click();
+      return;
+    }
     let key;
     let linkedNodeId = '';
 
-    if (kind === 'split') {
+    if (kind === 'source') {
+      setSourceNodePosition({ x, y });
+      key = sourceNodeKey;
+      setSelectedId('');
+      addActivity('原图节点已定位到画布');
+    } else if (kind === 'split') {
       const category = requestedCategory
         || anchorNode?.category
         || (hasSelectedLayer ? selected.category : 'uiComponent');
@@ -1461,7 +1792,7 @@ function App() {
       addActivity('拆分结果节点已从画布添加');
     }
 
-    if (anchor && key) {
+    if (anchor && key && anchor.key !== key) {
       const from = nodeInsertMenu.side === 'left' ? key : anchor.key;
       const to = nodeInsertMenu.side === 'left' ? anchor.key : key;
       setManualEdges((current) => [...current, {
@@ -1472,7 +1803,7 @@ function App() {
     }
     setCanvasSelectedKeys(key ? [key] : []);
     setNodeInsertMenu(null);
-    setToast(kind === 'split' ? '已添加拆分节点' : '已添加拆分结果节点');
+    setToast(kind === 'source' ? '已添加原图节点' : kind === 'split' ? '已添加拆分节点' : '已添加拆分结果节点');
   };
 
   const startPan = (event) => {
@@ -1484,6 +1815,7 @@ function App() {
       setSelectedId('');
       setCanvasSelectedKeys([]);
       setNodeInsertMenu(null);
+      setAlignmentMenuOpen(false);
     }
     if (!spacePanRef.current) return;
     event.preventDefault();
@@ -1614,6 +1946,15 @@ function App() {
     }));
   };
 
+  const commitCanvasZoom = (event) => {
+    const requested = Number(event.currentTarget.value);
+    const percent = Number.isFinite(requested)
+      ? Math.round(clamp(requested, 22, 135))
+      : Math.round(viewport.scale * 100);
+    event.currentTarget.value = String(percent);
+    setViewport((current) => ({ ...current, scale: percent / 100 }));
+  };
+
   const handleWheel = (event) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
@@ -1652,10 +1993,15 @@ function App() {
     setToast('已撤销当前确认');
   };
 
-  const addLayer = (category) => {
+  const addLayer = (category, { select = true } = {}) => {
+    if (!hasSource) {
+      setToast('请先上传 UI 原图');
+      return;
+    }
     const categoryNodes = nodes.filter((node) => node.category === category);
     const count = categoryNodes.length + 1;
-    const id = `${category.replace(/([A-Z])/g, '-$1').toLowerCase()}-${Date.now()}`;
+    const imageKey = String(activeImageId || 'image').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12);
+    const id = `${imageKey}-${category.replace(/([A-Z])/g, '-$1').toLowerCase()}-${Date.now()}`;
     const lastNode = categoryNodes[categoryNodes.length - 1];
     const categoryX = {
       kvTitle: 1010,
@@ -1692,10 +2038,21 @@ function App() {
       y: Math.max(112, ...categoryNodes.map((node) => node.y)) + 190,
     };
     setNodes((current) => [...current, next]);
-    setSelectedId(id);
-    if (reviewMode === 'canvas') setCanvasSelectedKeys([splitNodeKey(id)]);
+    if (select) {
+      setSelectedId(id);
+      if (reviewMode === 'guided') setIsRightOpen(true);
+      if (reviewMode === 'canvas') setCanvasSelectedKeys([splitNodeKey(id)]);
+    }
     addActivity(`${next.name} 已添加`);
     setToast(`已添加新的${categoryMeta[category].label}，请框选区域`);
+  };
+
+  const startManualLayering = () => {
+    categoryAnalysisRunRef.current += 1;
+    setCategoryAnalysisStage('manual');
+    setIsLeftOpen(true);
+    setIsRightOpen(false);
+    addLayer('uiComponent', { select: false });
   };
 
   const deleteSelected = () => {
@@ -1714,6 +2071,72 @@ function App() {
     addActivity(`${selected.name} 已删除`);
     setToast(`${selected.name} 已删除`);
   };
+
+  const deleteCanvasSelection = () => {
+    if (!canvasSelectedKeys.length) return;
+    const plan = canvasDeletionPlan(canvasSelectedKeys);
+    if (plan.sourceImageIds?.length) {
+      const deletingActiveImage = plan.sourceImageIds.includes(activeImageId);
+      const hasRunningTask = jobs.some((job) => (
+        plan.sourceImageIds.includes(job.imageId)
+        && !['completed', 'failed', 'send_failed', 'cancelled', 'discarded'].includes(job.status)
+      ));
+      if (hasRunningTask) {
+        setToast('该图片仍有排队或执行中的任务，完成后才能删除');
+        return;
+      }
+      if (deletingActiveImage) {
+        deleteOriginalCanvas();
+        return;
+      }
+      plan.sourceImageIds.forEach((imageId) => imageDocumentsRef.current.delete(imageId));
+      setImageDocuments([...imageDocumentsRef.current.values()]);
+      setCanvasSelectedKeys([]);
+      setToast(`已删除 ${plan.sourceImageIds.length} 张原图`);
+      return;
+    }
+    if (plan.deleteSource) {
+      deleteOriginalCanvas();
+      return;
+    }
+
+    const splitIds = new Set(plan.splitNodeIds);
+    const manualResultIds = new Set(plan.manualResultIds);
+    const deletedKeys = [
+      ...plan.splitNodeIds.map(splitNodeKey),
+      ...plan.resultKeys,
+      ...plan.manualResultIds.map(manualResultNodeKey),
+    ];
+    const remainingNodes = nodes.filter((node) => !splitIds.has(node.id));
+
+    setNodes(remainingNodes);
+    setMarks((current) => current.filter((mark) => !splitIds.has(mark.layer_id)));
+    setManualResultNodes((current) => current.filter((node) => !manualResultIds.has(node.id)));
+    setHiddenCanvasResultKeys((current) => [...new Set([...current, ...plan.resultKeys])]);
+    setManualEdges((current) => current.filter(
+      (edge) => !deletedKeys.includes(edge.from) && !deletedKeys.includes(edge.to),
+    ));
+    setCanvasGroups((current) => current
+      .map((group) => ({ ...group, keys: group.keys.filter((key) => !deletedKeys.includes(key)) }))
+      .filter((group) => group.keys.length > 1));
+    setCanvasSelectedKeys([]);
+    setNodeInsertMenu(null);
+    setAlignmentMenuOpen(false);
+    if (splitIds.has(selectedId)) setSelectedId(remainingNodes[0]?.id ?? '');
+    addActivity(`${deletedKeys.length} 个画布节点已删除`);
+    setToast(`已删除 ${deletedKeys.length} 个画布节点`);
+  };
+
+  useEffect(() => {
+    if (reviewMode !== 'canvas') return undefined;
+    const handleCanvasDelete = (event) => {
+      if (!canvasSelectedKeys.length || !shouldHandleCanvasDelete(event)) return;
+      event.preventDefault();
+      deleteCanvasSelection();
+    };
+    window.addEventListener('keydown', handleCanvasDelete);
+    return () => window.removeEventListener('keydown', handleCanvasDelete);
+  }, [canvasSelectedKeys, nodes, reviewMode, selectedId, sourceImage]);
 
   const openResultViewer = (image, node, bounds = node.bounds, resultSourceSize = sourceSize) => {
     setResultViewer({
@@ -1775,18 +2198,46 @@ function App() {
     return {
       version: '0.7',
       task: 'split_ui_design_layers_with_manual_regions',
+      project_id: projectId,
+      image_id: activeImageId,
+      source_fingerprint: currentSourceFingerprint || null,
+      source_revision: currentSourceRevision,
       source: {
         file_name: sourceName,
         canvas: sourceSize,
+        image_id: activeImageId,
+        source_fingerprint: currentSourceFingerprint || null,
+        source_revision: currentSourceRevision,
         coordinate_space: 'source_pixels',
         source_uri: sourceImage.startsWith('blob:') ? null : sourceImage,
         embedded_data_url: includeSource ? sourceDataUrl || null : undefined,
       },
       layers: planLayers.map((node, index) => {
         const normalizedRequirement = combinedRequirement({
+          category: node.category,
           categoryDefault: categoryMeta[node.category].defaultRequirement,
           requirement: node.requirement,
           refinementPrompt: node.refinementPrompt,
+          removeBackground: Boolean(node.removeBackground),
+        });
+        const executionMode = node.executionMode || 'fast';
+        const executionRoute = classifyExecutionRoute({
+          category: node.category,
+          requirement: normalizedRequirement,
+          removeBackground: Boolean(node.removeBackground),
+        });
+        const sourceRegionPixels = pixelBounds(node.bounds, sourceSize);
+        const routeMetadata = buildRouteMetadata({
+          category: node.category,
+          requirement: normalizedRequirement,
+          executionMode,
+          executionRoute,
+          removeBackground: Boolean(node.removeBackground),
+          sourceRegionPixels,
+        });
+        const transparency = transparencyStrategy({
+          category: node.category,
+          removeBackground: Boolean(node.removeBackground),
         });
         return {
           layer_index: index + 1,
@@ -1796,13 +2247,9 @@ function App() {
           name: node.name,
           requirement: normalizedRequirement,
           refinement_requirement: String(node.refinementPrompt || '').trim() || null,
-          execution_route_hint: classifyExecutionRoute({
-            category: node.category,
-            requirement: normalizedRequirement,
-            removeBackground: Boolean(node.removeBackground),
-          }),
+          execution_route_hint: executionRoute,
           source_region_percent: node.bounds,
-          source_region_pixels: pixelBounds(node.bounds, sourceSize),
+          source_region_pixels: sourceRegionPixels,
           mask_annotations: marks
             .filter((mark) => mark.layer_id === node.id)
             .map((mark, annotationIndex) => annotationForPlan(mark, node.bounds, sourceSize, annotationIndex)),
@@ -1814,16 +2261,33 @@ function App() {
             manual_boundary: 'highest_priority_edge_override',
             remove_background: 'post_mask_alpha_output_only',
           },
-          execution_mode: node.executionMode || 'fast',
+          execution_mode: executionMode,
+          execution_policy: buildExecutionPolicy({
+            executionMode,
+            executionRoute,
+          }),
+          ...routeMetadata,
           remove_background: Boolean(node.removeBackground),
+          remove_background_processor: transparency === 'codex_rgba' ? {
+            engine: 'codex_rgba',
+            model: 'imagegen_alpha_matte',
+            stage: 'codex_final_split',
+            input: 'prepared_source_locked_canvas',
+            output: 'source_rgb_with_model_authored_alpha',
+          } : transparency === 'rembg' ? {
+            engine: 'rembg',
+            model: 'isnet-general-use',
+            stage: 'after_codex_final_split_before_delivery',
+            input: 'codex_final_split_result',
+          } : null,
           processing_route: categoryMeta[node.category].route,
           workflow_position: { x: node.x, y: node.y },
           output: {
             crop_to_source_region: true,
-            width: pixelBounds(node.bounds, sourceSize).width,
-            height: pixelBounds(node.bounds, sourceSize).height,
-            original_source_x: pixelBounds(node.bounds, sourceSize).x,
-            original_source_y: pixelBounds(node.bounds, sourceSize).y,
+            width: sourceRegionPixels.width,
+            height: sourceRegionPixels.height,
+            original_source_x: sourceRegionPixels.x,
+            original_source_y: sourceRegionPixels.y,
           },
         };
       }),
@@ -1844,6 +2308,7 @@ function App() {
         repair_scope: 'only_occluded_or_text_removed_holes',
         background: includesBackground ? 'selected_original_clean_plate' : 'not_requested',
         remove_background_output: 'cropped_rgba_with_real_alpha',
+        remove_background_processor: 'category_routed_codex_rgba_or_rembg',
       },
     };
   };
@@ -1905,6 +2370,10 @@ function App() {
       ...current,
       ...Object.fromEntries(submittedNodeIds.map((nodeId) => [nodeId, {
         id: `local-${nodeId}-${localSubmittedAt}`,
+        projectId,
+        imageId: activeImageId,
+        sourceFingerprint: currentSourceFingerprint || null,
+        sourceRevision: currentSourceRevision,
         nodeIds: [nodeId],
         status: 'sending_to_codex',
         images: [],
@@ -1921,6 +2390,8 @@ function App() {
       }];
     }));
     const submittedSourceSize = { ...sourceSize };
+    let submissionResult = null;
+    let followUpPosted = false;
     try {
       const plan = buildPlan(true, submittedNodeIds);
       const cropDataUrls = await Promise.all(plan.layers.map((layer) => (
@@ -1934,27 +2405,28 @@ function App() {
           embedded_crop_data_url: cropDataUrls[index],
         },
       }));
-      const response = await fetch(resolveWorkbenchUrl('/api/layer-review/submit'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(plan),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      const sentToCurrentTask = await sendSplitPromptToCurrentTask({
-        jobId: result.job_id,
-        prompt: result.prompt,
-      }).catch(() => false);
+      const result = await submitLayerReviewPlan(plan);
+      submissionResult = result;
+      if (result.delivery_channel === 'current_conversation') {
+        await sendMcpAppFollowUpMessage(result.prompt);
+        followUpPosted = true;
+        await markLayerReviewMessageSent(result.job_id);
+      }
       setNodes((current) => current.map((node) => (
         submittedNodeIds.includes(node.id) ? { ...node, status: 'accepted' } : node
       )));
       setJobs((current) => [...current, {
         id: result.job_id,
+        projectId,
+        imageId: activeImageId,
+        sourceFingerprint: currentSourceFingerprint || null,
+        sourceRevision: currentSourceRevision,
         nodeIds: submittedNodeIds,
         layerSnapshots,
         sourceSize: submittedSourceSize,
         sourceName,
-        status: sentToCurrentTask ? 'sent_to_codex' : (result.status || 'awaiting_codex_message'),
+        status: result.status || 'awaiting_codex_message',
+        statusDetail: null,
         images: [],
         submittedAt: result.submitted_at ? new Date(result.submitted_at).getTime() : Date.now(),
         completedAt: null,
@@ -1964,13 +2436,23 @@ function App() {
         timing: result.timing || {},
         executionRoute: result.execution_route || null,
       }]);
-      addActivity(sentToCurrentTask
-        ? `${submittedNodeIds.length} 个拆分项已发送到当前 Codex 任务`
-        : `${submittedNodeIds.length} 个拆分项等待连接当前 Codex 任务`);
-      setToast(sentToCurrentTask
-        ? (scope === 'batch' ? `已批量发送 ${submittedNodeIds.length} 项` : `${nodes.find((node) => node.id === submittedNodeIds[0])?.name || '当前项'}已发送`)
-        : '工作台未连接当前任务，拆分信息已保留待发送');
+      const queued = result.status === 'queued';
+      addActivity(queued
+        ? `${submittedNodeIds.length} 个拆分项已加入队列`
+        : result.delivery_channel === 'current_conversation'
+          ? `${submittedNodeIds.length} 个拆分项已发送到当前会话`
+          : `${submittedNodeIds.length} 个拆分项已交给会话监听，等待当前任务确认`);
+      setToast(
+        queued
+          ? `${submittedNodeIds.length} 个拆分项已加入队列`
+          : scope === 'batch'
+            ? `${submittedNodeIds.length} 个拆分项已提交`
+            : `${nodes.find((node) => node.id === submittedNodeIds[0])?.name || '当前项'}已提交`,
+      );
     } catch (error) {
+      if (submissionResult?.job_id && !followUpPosted) {
+        await markLayerReviewMessageFailed(submissionResult.job_id, error).catch(() => {});
+      }
       setToast(`提交失败：${error.message}`);
     } finally {
       setLocalSubmissions((current) => {
@@ -1981,6 +2463,10 @@ function App() {
       if (scope === 'batch') setSubmitting(false);
     }
   };
+
+  const sourceFingerprintFor = (file, dataUrl) => (
+    `${file.name}:${file.size}:${file.lastModified || 0}:${String(dataUrl || '').length}`
+  );
 
   const submitAccepted = () => {
     if (!batchReadyNodeIds.length) {
@@ -2242,8 +2728,9 @@ function App() {
       setToast('先在拆分结果上标注需要修整的区域');
       return;
     }
-
     setSubmittingResultEdit(true);
+    let submissionResult = null;
+    let followUpPosted = false;
     try {
       const imageResponse = await fetch(resolveWorkbenchUrl(latestSelectedResult.image.url), { cache: 'no-store' });
       if (!imageResponse.ok) throw new Error(`无法读取拆分结果（HTTP ${imageResponse.status}）`);
@@ -2254,6 +2741,10 @@ function App() {
       const payload = {
         version: '0.7',
         task: 'refine_split_result',
+        project_id: projectId,
+        image_id: activeImageId,
+        source_fingerprint: currentSourceFingerprint || null,
+        source_revision: currentSourceRevision,
         parent_job_id: latestSelectedResult.job.id,
         review_source_size: latestSelectedResult.sourceSize,
         source: {
@@ -2308,19 +2799,19 @@ function App() {
         },
       };
 
-      const response = await fetch(resolveWorkbenchUrl('/api/layer-review/submit'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      const sentToCurrentTask = await sendSplitPromptToCurrentTask({
-        jobId: result.job_id,
-        prompt: result.prompt,
-      }).catch(() => false);
+      const result = await submitLayerReviewPlan(payload);
+      submissionResult = result;
+      if (result.delivery_channel === 'current_conversation') {
+        await sendMcpAppFollowUpMessage(result.prompt);
+        followUpPosted = true;
+        await markLayerReviewMessageSent(result.job_id);
+      }
       setJobs((current) => [...current, {
         id: result.job_id,
+        projectId,
+        imageId: activeImageId,
+        sourceFingerprint: currentSourceFingerprint || null,
+        sourceRevision: currentSourceRevision,
         nodeIds: [selected.id],
         layerSnapshots: {
           [selected.id]: {
@@ -2330,7 +2821,8 @@ function App() {
         },
         sourceSize: { ...latestSelectedResult.sourceSize },
         sourceName,
-        status: sentToCurrentTask ? 'sent_to_codex' : (result.status || 'awaiting_codex_message'),
+        status: result.status || 'awaiting_codex_message',
+        statusDetail: null,
         images: [],
         submittedAt: result.submitted_at ? new Date(result.submitted_at).getTime() : Date.now(),
         completedAt: null,
@@ -2340,67 +2832,234 @@ function App() {
         parentJobId: latestSelectedResult.job.id,
         editKind: 'result_refinement',
       }]);
-      addActivity(sentToCurrentTask
-        ? `${selected.name} 的拆分结果已提交二次精修`
-        : `${selected.name} 的二次精修等待连接当前 Codex 任务`);
-      setToast(sentToCurrentTask
-        ? '结果修整已提交，原结果版本已保留'
-        : '工作台未连接当前任务，精修信息已保留待发送');
+      addActivity(result.delivery_channel === 'current_conversation'
+        ? `${selected.name} 的二次精修已发送到当前会话`
+        : `${selected.name} 的二次精修已交给会话监听，等待当前任务确认`);
+      setToast('结果修整已提交，原结果版本已保留');
     } catch (error) {
+      if (submissionResult?.job_id && !followUpPosted) {
+        await markLayerReviewMessageFailed(submissionResult.job_id, error).catch(() => {});
+      }
       setToast(`结果修整提交失败：${error.message}`);
     } finally {
       setSubmittingResultEdit(false);
     }
   };
 
-  const resetPlan = () => {
-    const nextNodes = sourceImage === '/demo-source.png' ? createInitialNodes() : [];
-    setNodes(nextNodes);
-    setSelectedId(nextNodes[0]?.id || '');
-    setSourceNodePosition({ x: 110, y: 240 });
+  const runFastCategoryAnalysis = async (image, runId) => {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    if (categoryAnalysisRunRef.current !== runId) return;
+
+    const sampleScale = Math.min(1, 160 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, Math.round(image.naturalWidth * sampleScale));
+    canvas.height = Math.max(2, Math.round(image.naturalHeight * sampleScale));
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      setCategoryAnalysisStage('cancelled');
+      setToast('当前浏览器无法读取图片像素，请改用手动添加');
+      return;
+    }
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const suggestions = analyzeFastCategories(context.getImageData(0, 0, canvas.width, canvas.height));
+    if (categoryAnalysisRunRef.current !== runId) return;
+
+    const createdAt = Date.now();
+    const defaultNames = {
+      kvTitle: 'KV 标题',
+      kvElement: 'KV 元素',
+      kvBackground: 'KV 背景',
+      ordinaryText: '普通文字',
+      uiComponent: 'UI 组件',
+    };
+    const categoryX = {
+      kvTitle: 1010,
+      kvElement: 650,
+      kvBackground: 1370,
+      ordinaryText: 650,
+      uiComponent: 1370,
+    };
+    const imageKey = String(activeImageId || 'image').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12);
+    const analyzedNodes = suggestions.map(({ category, bounds }, index) => ({
+      id: `${imageKey}-${category.replace(/([A-Z])/g, '-$1').toLowerCase()}-${createdAt + index}`,
+      name: `${defaultNames[category]} 1`,
+      category,
+      status: ['kvBackground', 'uiComponent'].includes(category) ? 'needs-repair' : 'candidate',
+      isCustom: false,
+      removeBackground: defaultRemoveBackground(category),
+      executionMode: 'fast',
+      requirement: categoryMeta[category].defaultRequirement,
+      refinementPrompt: '',
+      bounds,
+      x: categoryX[category],
+      y: 220 + index * 190,
+    }));
+    setCanvasLayoutVersion(0);
+    setNodes(analyzedNodes);
+    setSelectedId(analyzedNodes[0]?.id || '');
+    setCategoryAnalysisStage('complete');
+    setIsLeftOpen(true);
+    setIsRightOpen(Boolean(analyzedNodes.length));
+    addActivity(`快速识别完成，已生成 ${analyzedNodes.length} 个候选拆分项`);
+    setToast(`已快速识别 ${analyzedNodes.length} 个候选项，可继续调整框选`);
+  };
+
+  const startFastCategoryAnalysis = (imageSource = sourceImage) => {
+    if (!imageSource) return;
+    const runId = categoryAnalysisRunRef.current + 1;
+    categoryAnalysisRunRef.current = runId;
+    setCategoryAnalysisStage('active');
+    const image = new window.Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => runFastCategoryAnalysis(image, runId);
+    image.onerror = () => {
+      if (categoryAnalysisRunRef.current !== runId) return;
+      setCategoryAnalysisStage('cancelled');
+      setToast('图片读取失败，请重新上传或手动添加');
+    };
+    image.src = imageSource;
+  };
+
+  const cancelFastCategoryAnalysis = () => {
+    categoryAnalysisRunRef.current += 1;
+    setCategoryAnalysisStage('cancelled');
+  };
+
+  const loadSourceFile = async (file, options = {}) => {
+    if (!file) return;
+    const pendingInsert = pendingSourceInsertRef.current;
+    pendingSourceInsertRef.current = null;
+    const sourceNodePositionForDocument = pendingInsert?.position || options.position || { x: 110, y: 240 };
+    const keepCanvas = pendingInsert?.keepCanvas ?? options.keepCanvas ?? false;
+    snapshotActiveImage();
+    const nextImageId = createImageId();
+    const runId = categoryAnalysisRunRef.current + 1;
+    categoryAnalysisRunRef.current = runId;
+    const nextDocument = createImageDocument({
+      imageId: nextImageId,
+      sourceName: file.name,
+      sourceNodePosition: sourceNodePositionForDocument,
+      sourceRevision: 1,
+    });
+    imageDocumentsRef.current.set(nextImageId, nextDocument);
+    setImageDocuments([...imageDocumentsRef.current.values()]);
+    setActiveImageId(nextImageId);
+    setSourceName(file.name);
+    setNodes([]);
+    setSelectedId('');
+    setSourceNodePosition(sourceNodePositionForDocument);
     setResultNodePositions({});
     setManualResultNodes([]);
     setManualEdges([]);
     setCanvasSelectedKeys([]);
     setCanvasGroups([]);
+    setHiddenCanvasResultKeys([]);
     setNodeInsertMenu(null);
     setMarks([]);
-    setJobs([]);
-    setLocalSubmissions({});
-    setReviewMode('guided');
-    addActivity(nextNodes.length ? '基础拆分栏目已刷新' : '拆分栏目已清空');
-    setToast(nextNodes.length ? '拆分栏目已刷新' : '拆分栏目已清空');
+    setCandidateContext(null);
+    setReviewMode(keepCanvas ? 'canvas' : defaultReviewMode());
+    setIsLeftOpen(false);
+    setIsRightOpen(false);
+    setCategoryAnalysisStage('active');
+    try {
+      const [dataUrl, previewUrl] = await Promise.all([
+        blobToDataUrl(file),
+        uploadMcpSourcePreview(file),
+      ]);
+      const imageSource = previewUrl || dataUrl;
+      const sourceFingerprint = sourceFingerprintFor(file, dataUrl);
+      const document = createImageDocument({
+        imageId: nextImageId,
+        sourceImage: imageSource,
+        sourceDataUrl: dataUrl,
+        sourceName: file.name,
+        sourceNodePosition: sourceNodePositionForDocument,
+        sourceFingerprint,
+        sourceRevision: 1,
+      });
+      imageDocumentsRef.current.set(nextImageId, document);
+      setImageDocuments([...imageDocumentsRef.current.values()]);
+      setSourceDataUrl(dataUrl);
+      const image = new window.Image();
+      image.crossOrigin = 'anonymous';
+      image.onload = () => {
+        const nextSize = { width: image.naturalWidth, height: image.naturalHeight };
+        setSourceSize(nextSize);
+        imageDocumentsRef.current.set(nextImageId, createImageDocument({
+          ...document,
+          sourceSize: nextSize,
+        }));
+        setImageDocuments([...imageDocumentsRef.current.values()]);
+        runFastCategoryAnalysis(image, runId);
+      };
+      image.onerror = () => {
+        if (categoryAnalysisRunRef.current !== runId) return;
+        setCategoryAnalysisStage('cancelled');
+        setToast('图片读取失败，请重新上传');
+      };
+      image.src = imageSource;
+      setSourceImage(imageSource);
+    } catch {
+      if (categoryAnalysisRunRef.current !== runId) return;
+      setCategoryAnalysisStage('cancelled');
+      setToast('图片读取失败，请重新上传');
+    }
+    addActivity(`已载入 ${file.name}`);
+    setToast('原图已载入，正在本地快速识别');
   };
 
   const handleFile = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const objectUrl = URL.createObjectURL(file);
-    setSourceImage(objectUrl);
-    setSourceName(file.name);
-    setNodes([]);
-    setSelectedId('');
-    setSourceNodePosition({ x: 110, y: 240 });
-    setResultNodePositions({});
-    setManualResultNodes([]);
-    setManualEdges([]);
-    setCanvasSelectedKeys([]);
-    setCanvasGroups([]);
-    setNodeInsertMenu(null);
-    setMarks([]);
-    setJobs([]);
-    setLocalSubmissions({});
-    setCandidateContext(null);
-    setReviewMode('guided');
-    const reader = new FileReader();
-    reader.onload = () => setSourceDataUrl(String(reader.result || ''));
-    reader.readAsDataURL(file);
-    const image = new window.Image();
-    image.onload = () => setSourceSize({ width: image.naturalWidth, height: image.naturalHeight });
-    image.src = objectUrl;
-    addActivity(`已载入 ${file.name}`);
-    setToast('原图已载入，请按实际内容添加拆分项');
+    loadSourceFile(file);
     event.target.value = '';
+  };
+
+  const handleSourceDragEnter = (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+    event.preventDefault();
+    sourceDragDepthRef.current += 1;
+    setSourceDropActive(true);
+  };
+
+  const handleSourceDragOver = (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleSourceDragLeave = (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+    event.preventDefault();
+    sourceDragDepthRef.current = Math.max(0, sourceDragDepthRef.current - 1);
+    if (!sourceDragDepthRef.current) setSourceDropActive(false);
+  };
+
+  const handleSourceDrop = (event) => {
+    event.preventDefault();
+    sourceDragDepthRef.current = 0;
+    setSourceDropActive(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (file.type && !file.type.startsWith('image/')) {
+      setToast('请拖入 PNG、JPG 或 WebP 图片');
+      return;
+    }
+    loadSourceFile(file);
+  };
+
+  const openSourceFilePicker = () => {
+    sourceFileInputRef.current?.click();
+  };
+
+  const openSourcePickerFromEmptyCanvas = (event) => {
+    if (
+      hasSource
+      || event.target.closest(
+        '.canvas-bottom-controls, .canvas-command-controls, .canvas-empty-node-picker__option, .node-type-menu',
+      )
+    ) return;
+    openSourceFilePicker();
   };
 
   const renderAnnotationMark = (mark, draft = false) => {
@@ -2458,6 +3117,15 @@ function App() {
   );
 
   const renderRequestPanel = () => {
+    if (!hasSource) {
+      return (
+        <div className="canvas-summary canvas-summary--empty">
+          <ImagePlus size={22} />
+          <strong>尚未载入原图</strong>
+          <span>上传 UI 图片后，才能建立拆分项。</span>
+        </div>
+      );
+    }
     if (!hasSelectedLayer) {
       return (
         <div className="canvas-summary canvas-summary--empty">
@@ -2497,8 +3165,16 @@ function App() {
                       ? '任务已结束，可移除状态或重新拆分'
                       : activeSelectedJob.images?.length
                         ? `${activeSelectedJob.images.length} 张结果已回流`
+                        : activeSelectedJob.status === 'queued'
+                          ? '当前任务完成后将按提交顺序自动发送'
+                        : activeSelectedJob.status === 'awaiting_codex_message'
+                          ? '等待当前会话监听领取拆分任务'
                         : activeSelectedJob.status === 'sending_to_codex'
                           ? '正在提交框选预览、拆分提示词与执行计划'
+                        : activeSelectedJob.status === 'host_accepted'
+                          ? '宿主已接收请求，等待当前 Codex 任务显示并确认'
+                        : activeSelectedJob.status === 'submitted_to_conversation'
+                            ? '旧版宿主已接收，等待当前 Codex 任务确认'
                           : `开始于 ${formatClock(activeSelectedJob.submittedAt)}，正在当前任务中执行`
                   )}
                 </small>
@@ -2507,11 +3183,18 @@ function App() {
                 <button
                   type="button"
                   className="job-strip__dismiss"
-                  aria-label="移除当前任务状态"
-                  data-tooltip="移除当前任务状态"
-                  onClick={() => dismissJob(activeSelectedJob)}
+                  aria-label={cancelableDeliveryStatuses.has(activeSelectedJob.status) ? '取消待接收任务' : '移除当前任务状态'}
+                  data-tooltip={cancelableDeliveryStatuses.has(activeSelectedJob.status) ? '取消待接收任务' : '移除当前任务状态'}
+                  onClick={() => (
+                    cancelableDeliveryStatuses.has(activeSelectedJob.status)
+                      ? cancelPendingJob(activeSelectedJob)
+                      : dismissJob(activeSelectedJob)
+                  )}
+                  disabled={cancellingJobId === activeSelectedJob.id}
                 >
-                  <X size={13} />
+                  {cancellingJobId === activeSelectedJob.id
+                    ? <LoaderCircle size={13} className="spin" />
+                    : <X size={13} />}
                 </button>
               ) : null}
             </div>
@@ -2714,6 +3397,82 @@ function App() {
   };
 
   const renderCanvasSummary = () => {
+    if (singleSelectedCanvasItem?.kind === 'source') {
+      return (
+        <div className="canvas-summary">
+          <div className="request-category">
+            <span><ImagePlus size={17} />原图节点</span>
+            <span className="status-pill status-pill--accepted">已载入</span>
+          </div>
+          <div className="canvas-summary__section">
+            <span>节点状态</span>
+            <p>当前工作流的原始 UI 图片，是所有拆分节点的上游来源。</p>
+          </div>
+          <div className="region-readout">
+            <span>
+              <small>原图尺寸</small>
+              <strong>{sourceSize.width} x {sourceSize.height}</strong>
+              <em>位置 {Math.round(singleSelectedCanvasItem.x)}, {Math.round(singleSelectedCanvasItem.y)}</em>
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    if (
+      singleSelectedCanvasItem?.kind === 'result'
+      || singleSelectedCanvasItem?.kind === 'manual-result'
+    ) {
+      const resultItem = resultNodes.find(
+        (item) => resultNodeKey(item.id) === singleSelectedCanvasItem.key,
+      );
+      const resultPixels = resultItem
+        ? pixelBounds(resultItem.bounds, resultItem.sourceSize)
+        : null;
+      const complete = Boolean(resultItem?.image);
+      return (
+        <div className="canvas-summary">
+          <div className="request-category">
+            <span><ImagePlus size={17} />拆分结果节点</span>
+            <span className={`status-pill ${complete ? 'status-pill--job-completed' : 'status-pill--job-pending'}`}>
+              {complete ? '结果已产出' : '等待结果'}
+            </span>
+          </div>
+          <div className="canvas-summary__section">
+            <span>节点状态</span>
+            <p>{complete ? '已接收拆分 PNG，可继续预览或编辑结果。' : '该节点等待上游拆分节点产出 PNG。'}</p>
+          </div>
+          <div className="region-readout">
+            <span>
+              <small>{resultPixels ? '输出尺寸' : '画布位置'}</small>
+              <strong>{resultPixels ? `${resultPixels.width} x ${resultPixels.height}` : `${Math.round(singleSelectedCanvasItem.x)}, ${Math.round(singleSelectedCanvasItem.y)}`}</strong>
+              <em>{resultPixels ? `位置 ${resultPixels.x}, ${resultPixels.y}` : '尚未生成图片'}</em>
+            </span>
+          </div>
+          {hasSelectedLayer ? (
+            <div className={`canvas-summary__actions ${complete ? '' : 'canvas-summary__actions--single'}`}>
+              <button
+                type="button"
+                className="command-button command-button--quiet canvas-summary__edit"
+                onClick={() => openGuidedEditor(selected.id)}
+              >
+                <ScanSearch size={16} /> 编辑拆分
+              </button>
+              {complete ? (
+                <button
+                  type="button"
+                  className="command-button canvas-summary__edit"
+                  onClick={() => openGuidedEditor(selected.id, true)}
+                >
+                  <PencilLine size={16} /> 编辑结果
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
     if (!hasSelectedLayer) {
       return (
         <div className="canvas-summary canvas-summary--empty">
@@ -2799,25 +3558,46 @@ function App() {
 
   return (
     <main className="app-shell">
+      <input
+        ref={sourceFileInputRef}
+        className="source-file-input"
+        type="file"
+        accept="image/*"
+        onChange={handleFile}
+        aria-label="上传原图"
+      />
       <header className="topbar">
         <div className="product-identity">
           <div className="brand-lockup">
-            <div className="brand-mark"><Layers3 size={19} /></div>
-            <div><strong>Layer Review</strong><span>交互式图层验收</span></div>
+            <div className="brand-mark"><img src="/imvia-logo.png" alt="" /></div>
+            <div><strong>Imvia Layer</strong><span>交互式图层验收</span></div>
           </div>
-          <div className="project-context" title={sourceName}>
+          <div
+            className={`conversation-bridge-indicator ${
+              conversationBridge.online
+                ? 'conversation-bridge-indicator--online'
+                : 'conversation-bridge-indicator--offline'
+            }`}
+            title={conversationBridge.lastSeen || ''}
+          >
+            <span className="conversation-bridge-indicator__dot" />
+            <span className="conversation-bridge-indicator__label">
+              {conversationBridge.checked
+                ? (conversationBridge.online ? '当前会话消息通道已连接' : '请从当前会话打开插件')
+                : '检测当前会话消息通道'}
+            </span>
+          </div>
+          <div className="project-context" title={sourceName || '未选择图片'}>
             <span>当前项目</span>
-            <strong>{sourceName}</strong>
-            <small>{acceptedCount} / {nodes.length} 已确认</small>
+            <strong>{sourceName || '未选择图片'}</strong>
+            {hasSource ? <small>{`${acceptedCount} / ${nodes.length} 已确认`}</small> : null}
           </div>
         </div>
 
         <ModeSwitch value={reviewMode} onChange={(mode) => {
-          if (mode === 'guided' && !hasSelectedLayer) setSelectedId(nodes[0]?.id ?? '');
           setReviewMode(mode);
           if (mode === 'canvas') {
             setIsLeftOpen(false);
-            setIsRightOpen(true);
             setCanvasSelectedKeys(hasSelectedLayer ? [splitNodeKey(selected.id)] : []);
             window.scrollTo({ top: 0, left: 0 });
             window.setTimeout(() => {
@@ -2827,34 +3607,39 @@ function App() {
               }
               fitCanvasOverview();
             }, 220);
+          } else {
+            setIsLeftOpen(Boolean(nodes.length));
+            setIsRightOpen(hasSelectedLayer);
           }
         }} />
 
         <div className="topbar-actions">
-          <button className="command-button command-button--quiet refresh-button" type="button" onClick={resetPlan}>
-            <ScanSearch size={16} /> {sourceImage === '/demo-source.png' ? '恢复默认栏目' : '清空拆分栏目'}
-          </button>
-          <button
-            className="command-button command-button--quiet download-all-button"
-            type="button"
-            onClick={downloadAllResults}
-            disabled={!downloadableResults.length || downloadingAll}
-            aria-label={`下载全部拆分 PNG${downloadableResults.length ? `，共 ${downloadableResults.length} 张` : '，暂无可下载结果'}`}
-          >
-            {downloadingAll ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-            <span>{downloadingAll ? '打包中' : `下载全部 PNG${downloadableResults.length ? ` ${downloadableResults.length}` : ''}`}</span>
-          </button>
           <div ref={topbarMenuRef} className={`topbar-more ${topbarMenuOpen ? 'topbar-more--open' : ''}`}>
             <IconButton
-              label="更多操作"
+              label="下载与导出"
               aria-haspopup="menu"
               aria-expanded={topbarMenuOpen}
               onClick={() => setTopbarMenuOpen((current) => !current)}
             >
-              <Ellipsis size={18} />
+              {downloadingAll ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}
             </IconButton>
             {topbarMenuOpen ? (
-              <div className="topbar-menu" role="menu" aria-label="更多操作">
+              <div className="topbar-menu" role="menu" aria-label="下载与导出">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!downloadableResults.length || downloadingAll}
+                  onClick={() => {
+                    setTopbarMenuOpen(false);
+                    downloadAllResults();
+                  }}
+                >
+                  <Download size={17} />
+                  <span>
+                    <strong>下载全部 PNG</strong>
+                    <small>{downloadableResults.length ? `${downloadableResults.length} 张拆分结果` : '暂无可下载结果'}</small>
+                  </span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -2865,10 +3650,7 @@ function App() {
                   }}
                 >
                   <FileJson size={17} />
-                  <span>
-                    <strong>导出拆分计划</strong>
-                    <small>下载 JSON 配置</small>
-                  </span>
+                  <span><strong>下载拆分计划</strong><small>JSON 配置</small></span>
                 </button>
               </div>
             ) : null}
@@ -2885,26 +3667,36 @@ function App() {
         className={[
           'workspace',
           `workspace--${reviewMode}`,
-          reviewMode === 'canvas' && !isLeftOpen ? 'workspace--left-collapsed' : '',
-          reviewMode === 'canvas' && !isRightOpen ? 'workspace--right-collapsed' : '',
+          !panelVisibility.left ? 'workspace--left-collapsed' : '',
+          !panelVisibility.right ? 'workspace--right-collapsed' : '',
         ].filter(Boolean).join(' ')}
       >
-        <aside className={`sidebar sidebar--left ${reviewMode === 'canvas' && !isLeftOpen ? 'sidebar--collapsed' : ''}`}>
+        <aside className={`sidebar sidebar--left ${!panelVisibility.left ? 'sidebar--collapsed' : ''}`}>
           <div className="panel-title-row">
             <div>
               <span className="eyebrow">拆分栏目</span>
-              <h1>{sourceName}</h1>
+              <h1>{sourceName || '未选择图片'}</h1>
             </div>
-            {reviewMode === 'canvas' ? <IconButton label="收起图层面板" onClick={() => setIsLeftOpen(false)}><PanelLeft size={17} /></IconButton> : null}
           </div>
 
-          <div className="source-meta">
-            <div className="source-meta__thumbnail"><img src={sourceImage} alt="当前原图" /></div>
-            <div className="source-meta__copy"><strong>原始画布</strong><span>{sourceSize.width} x {sourceSize.height} RGBA</span></div>
-            <label className="icon-button source-meta__upload" aria-label="重新载入原图" data-tooltip="重新载入原图">
-              <Upload size={16} /><input type="file" accept="image/*" onChange={handleFile} />
+          {hasSource ? (
+            <div className="source-meta">
+              <div className="source-meta__thumbnail"><img src={sourceImage} alt="当前原图" /></div>
+              <div className="source-meta__copy"><strong>原始画布</strong><span>{sourceSize.width} x {sourceSize.height} RGBA</span></div>
+              <label className="icon-button source-meta__upload" aria-label="重新载入原图" data-tooltip="重新载入原图">
+                <Upload size={16} /><input type="file" accept="image/*" onChange={handleFile} />
+              </label>
+              <button type="button" className="icon-button source-meta__delete" aria-label="删除原始画布" data-tooltip="删除原始画布" onClick={deleteOriginalCanvas}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ) : (
+            <label className="source-empty-upload">
+              <ImagePlus size={20} />
+              <span><strong>上传 UI 原图</strong><small>PNG、JPG 或 WebP</small></span>
+              <input type="file" accept="image/*" onChange={handleFile} />
             </label>
-          </div>
+          )}
 
           <div className="review-progress"><span style={{ width: `${nodes.length ? (acceptedCount / nodes.length) * 100 : 0}%` }} /></div>
           <div className="review-progress__copy"><span>{acceptedCount} 个已确认</span><strong>{nodes.length - acceptedCount} 个待处理</strong></div>
@@ -2920,7 +3712,6 @@ function App() {
                   <div className="layer-group__heading">
                     <span><CategoryIcon size={13} />{meta.label}</span>
                     <div className="layer-group__actions">
-                      <small>{group.items.length}</small>
                       <button
                         type="button"
                         className={`delete-layer-button ${canDeleteSelected ? 'delete-layer-button--active' : ''}`}
@@ -2931,7 +3722,7 @@ function App() {
                       >
                         <Trash2 size={13} />
                       </button>
-                      <button type="button" className="add-layer-button add-layer-button--icon" aria-label={`添加${meta.label}`} data-tooltip={`添加${meta.label}`} onClick={() => addLayer(group.category)}><Plus size={13} /></button>
+                      <button type="button" disabled={!hasSource} className="add-layer-button add-layer-button--icon" aria-label={`添加${meta.label}`} data-tooltip={hasSource ? `添加${meta.label}` : '请先上传 UI 原图'} onClick={() => addLayer(group.category)}><Plus size={13} /></button>
                     </div>
                   </div>
                   <div className="layer-list">
@@ -2990,7 +3781,10 @@ function App() {
                 <div
                   ref={guidedImageRef}
                   className="guided-source-image"
-                  style={{ aspectRatio: `${sourceSize.width} / ${sourceSize.height}` }}
+                  style={{
+                    aspectRatio: `${sourceSize.width} / ${sourceSize.height}`,
+                    maxWidth: `min(100%, ${Math.max(96, Math.round((sourceSize.width / sourceSize.height) * 330))}px)`,
+                  }}
                   onPointerDown={(event) => startSelection(event, 'draw')}
                 >
                   <img src={sourceImage} alt="原图位置" draggable="false" />
@@ -3044,11 +3838,9 @@ function App() {
                       <i className="selection-handle selection-handle--se" onPointerDown={(event) => startCandidateSelection(event, 'se')} />
                     </span>
                   )}
-                  {boundaryOpen || !annotationModeActive ? (
+                  {boundaryOpen && annotationModeActive ? (
                     <span className="annotation-mode-indicator">
-                      {!annotationModeActive
-                        ? '拖动框选，或拖动边框与四角调整'
-                        : showOriginalOnly
+                      {showOriginalOnly
                         ? '标注已隐藏'
                         : maskTool === 'foreground'
                           ? '拖动绘制保留框'
@@ -3114,11 +3906,26 @@ function App() {
                     </>
                   ) : null}
                   {activeSelectedJob ? (
-                    <div className={`guided-result-panel__status guided-result-panel__status--${jobStatus(activeSelectedJob.status).tone}`}>
-                      {jobStatus(activeSelectedJob.status).tone === 'pending' ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}
-                      <span>{jobStatus(activeSelectedJob.status).label}</span>
-                      <small>{formatElapsed(activeSelectedJob.submittedAt, elapsedEnd(activeSelectedJob, clockNow))}</small>
-                    </div>
+                    <>
+                      {cancelableDeliveryStatuses.has(activeSelectedJob.status) ? (
+                        <button
+                          type="button"
+                          className="guided-result-panel__cancel"
+                          onClick={() => cancelPendingJob(activeSelectedJob)}
+                          disabled={cancellingJobId === activeSelectedJob.id}
+                        >
+                          {cancellingJobId === activeSelectedJob.id
+                            ? <LoaderCircle size={14} className="spin" />
+                            : <X size={14} />}
+                          <span>{cancellingJobId === activeSelectedJob.id ? '取消中' : '取消发送'}</span>
+                        </button>
+                      ) : null}
+                      <div className={`guided-result-panel__status guided-result-panel__status--${jobStatus(activeSelectedJob.status).tone}`}>
+                        {jobStatus(activeSelectedJob.status).tone === 'pending' ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}
+                        <span>{jobStatus(activeSelectedJob.status).label}</span>
+                        <small>{formatElapsed(activeSelectedJob.submittedAt, elapsedEnd(activeSelectedJob, clockNow))}</small>
+                      </div>
+                    </>
                   ) : (
                     <span className="guided-result-panel__idle-status">尚未发送</span>
                   )}
@@ -3270,60 +4077,166 @@ function App() {
             </section>
           </section>
           ) : (
-            <section className="guided-viewport guided-viewport--empty">
-              <div className="guided-empty-state">
-                <ImagePlus size={28} />
-                <strong>原图已载入，尚未建立拆分项</strong>
-                <span>工作台不会再根据旧演示图自动填充列表。请从左侧对应分类的“+”开始添加。</span>
-                <button type="button" onClick={() => addLayer('uiComponent')}>
-                  <Plus size={16} /> 新增拆分项
-                </button>
-              </div>
+            <section
+              className={`guided-viewport guided-viewport--empty ${sourceDropActive ? 'guided-viewport--drop-active' : ''}`}
+              onDragEnter={handleSourceDragEnter}
+              onDragOver={handleSourceDragOver}
+              onDragLeave={handleSourceDragLeave}
+              onDrop={handleSourceDrop}
+            >
+              {hasSource ? (
+                <div className={`guided-empty-state guided-analysis-state guided-analysis-state--${categoryAnalysisStage}`}>
+                  <div className="guided-analysis-state__visual" aria-hidden="true">
+                    {categoryAnalysisStage === 'cancelled' ? <X size={26} /> : categoryAnalysisStage === 'manual' ? <Layers3 size={28} /> : <WandSparkles size={28} />}
+                  </div>
+                  <small className="guided-analysis-state__eyebrow">自动分层类目分析</small>
+                  <strong>
+                    {categoryAnalysisStage === 'cancelled'
+                      ? '自动识别已取消'
+                      : categoryAnalysisStage === 'manual'
+                        ? '从左侧选择分层类目'
+                        : '正在识别可拆分的 UI 类目'}
+                  </strong>
+                  <span>
+                    {categoryAnalysisStage === 'cancelled'
+                      ? '你可以重新开始识别，或改用手动方式建立拆分项。'
+                      : categoryAnalysisStage === 'manual'
+                        ? '已添加一个 UI 组件项。选择左侧具体项后，右侧才会显示拆分设置。'
+                        : '识别标题、视觉元素、背景、普通文字和 UI 组件；也可以随时转为手动添加。'}
+                  </span>
+                  {categoryAnalysisStage === 'active' ? <span className="guided-analysis-state__scan" aria-hidden="true" /> : null}
+                  <div className="guided-analysis-state__actions">
+                    {categoryAnalysisStage === 'active' ? (
+                      <button
+                        type="button"
+                        className="guided-analysis-state__cancel"
+                        onClick={cancelFastCategoryAnalysis}
+                      >
+                        <X size={15} /> 取消识别
+                      </button>
+                    ) : categoryAnalysisStage === 'cancelled' ? (
+                      <button
+                        type="button"
+                        className="guided-analysis-state__cancel"
+                        onClick={() => startFastCategoryAnalysis()}
+                      >
+                        <WandSparkles size={15} /> 重新识别
+                      </button>
+                    ) : null}
+                    <button type="button" onClick={startManualLayering}>
+                      <Plus size={16} /> 手动添加
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className={`guided-empty-state guided-upload-state ${sourceDropActive ? 'guided-upload-state--drop-active' : ''}`}>
+                  <ImagePlus size={28} />
+                  <strong>上传一张 UI 图片开始拆分</strong>
+                  <span>{sourceDropActive ? '松开鼠标即可载入图片' : '选择图片，或将图片拖到这里'}</span>
+                  <label className="guided-empty-state__upload" onClick={openSourceFilePicker}>
+                    <Upload size={16} /> 选择图片
+                  </label>
+                </div>
+              )}
             </section>
           )
         ) : (
           <section
             ref={canvasRef}
-            className={`canvas-viewport ${spacePanReady ? 'canvas-viewport--pan-ready' : ''} ${canvasPanning ? 'canvas-viewport--panning' : ''}`}
+            className={`canvas-viewport ${!hasSource ? 'canvas-viewport--empty' : ''} ${sourceDropActive ? 'canvas-viewport--drop-active' : ''} ${spacePanReady ? 'canvas-viewport--pan-ready' : ''} ${canvasPanning ? 'canvas-viewport--panning' : ''}`}
             aria-label="无限画布，按住空格并拖动鼠标移动画布"
             onPointerDown={startPan}
             onWheel={handleWheel}
+            onDoubleClick={openSourcePickerFromEmptyCanvas}
+            onDragEnter={handleSourceDragEnter}
+            onDragOver={handleSourceDragOver}
+            onDragLeave={handleSourceDragLeave}
+            onDrop={handleSourceDrop}
           >
-            {!isLeftOpen || !isRightOpen ? (
-              <div className="canvas-top-controls">
-                {!isLeftOpen ? <IconButton label="展开图层面板" onClick={() => setIsLeftOpen(true)}><PanelLeft size={17} /></IconButton> : null}
-                {!isRightOpen ? <IconButton label="展开检查器" onClick={() => setIsRightOpen(true)}><PanelRight size={17} /></IconButton> : null}
+            {!hasSource ? (
+              <div className={`canvas-empty-node-picker ${sourceDropActive ? 'canvas-empty-node-picker--drop-active' : ''}`}>
+                <div className="canvas-empty-node-picker__intro">
+                  <ImagePlus size={22} />
+                  <strong>{sourceDropActive ? '松开鼠标添加原图节点' : '添加第一个节点'}</strong>
+                  <span>双击画布，拖入图片，或选择下方节点</span>
+                </div>
+                <button className="canvas-empty-node-picker__option" type="button" onClick={openSourceFilePicker}>
+                  <span className="canvas-empty-node-picker__icon"><ImagePlus size={22} /></span>
+                  <span className="canvas-empty-node-picker__option-copy">
+                    <strong>原图节点</strong>
+                    <small>上传 PNG、JPG 或 WebP</small>
+                  </span>
+                  <Plus size={17} />
+                </button>
               </div>
             ) : null}
             <div className="canvas-bottom-controls" onPointerDown={(event) => event.stopPropagation()}>
-              <IconButton label="缩小画布" onClick={() => changeZoom(-0.1)}><ZoomOut size={17} /></IconButton>
-              <button className="zoom-readout" type="button" aria-label="适配全部节点" onClick={fitCanvasOverview}>{Math.round(viewport.scale * 100)}%</button>
-              <IconButton label="放大画布" onClick={() => changeZoom(0.1)}><ZoomIn size={17} /></IconButton>
-              <span className="canvas-control-divider" />
-              <span className={`canvas-pan-hint ${spacePanReady ? 'canvas-pan-hint--active' : ''}`}>
-                <Hand size={14} /> 空格 + 拖动
-              </span>
-              <span className="canvas-control-divider" />
-              <button className="canvas-overview-button" type="button" onClick={fitCanvasOverview}><LocateFixed size={16} /> 总览</button>
-              <IconButton label="聚焦选中图层" onClick={focusCanvasSelection}><Focus size={17} /></IconButton>
+              <IconButton
+                className={`canvas-bottom-control canvas-asset-toggle ${panelVisibility.left ? 'canvas-asset-toggle--active' : ''}`}
+                label={panelVisibility.left ? '关闭资产栏' : '打开资产栏'}
+                aria-pressed={panelVisibility.left}
+                onClick={() => setIsLeftOpen((current) => !current)}
+              >
+                <PanelLeft size={17} />
+              </IconButton>
+              <div className="canvas-zoom-cluster">
+                <IconButton className="canvas-bottom-control" label="缩小画布" onClick={() => changeZoom(-0.1)}><ZoomOut size={17} /></IconButton>
+                <label className="canvas-zoom-field canvas-bottom-control">
+                  <input
+                    ref={canvasZoomInputRef}
+                    type="number"
+                    min="22"
+                    max="135"
+                    step="1"
+                    defaultValue={Math.round(viewport.scale * 100)}
+                    aria-label="画布缩放百分比"
+                    onFocus={(event) => event.currentTarget.select()}
+                    onBlur={commitCanvasZoom}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') event.currentTarget.blur();
+                    }}
+                  />
+                  <span>%</span>
+                </label>
+                <IconButton className="canvas-bottom-control" label="放大画布" onClick={() => changeZoom(0.1)}><ZoomIn size={17} /></IconButton>
+              </div>
+              <IconButton className="canvas-bottom-control" label="适配全部节点" onClick={fitCanvasOverview}><LocateFixed size={17} /></IconButton>
+              <IconButton className="canvas-bottom-control" label="聚焦选中节点" onClick={focusCanvasSelection}><Focus size={17} /></IconButton>
             </div>
             <div className="canvas-command-controls" onPointerDown={(event) => event.stopPropagation()}>
-              <button className="canvas-command canvas-command--primary" type="button" onClick={(event) => openNodeInsertMenu(event)}>
-                <Plus size={17} /> 新增节点
+              {alignmentMenuOpen ? (
+                <div className="canvas-alignment-menu" role="menu" aria-label="节点对齐方式">
+                  <button type="button" role="menuitem" onClick={() => alignCanvasSelection('left', '左对齐')}><AlignHorizontalJustifyStart size={16} /><span>左对齐</span></button>
+                  <button type="button" role="menuitem" onClick={() => alignCanvasSelection('center', '中对齐')}><AlignHorizontalJustifyCenter size={16} /><span>中对齐</span></button>
+                  <button type="button" role="menuitem" onClick={() => alignCanvasSelection('right', '右对齐')}><AlignHorizontalJustifyEnd size={16} /><span>右对齐</span></button>
+                  <button type="button" role="menuitem" onClick={() => alignCanvasSelection('top', '上对齐')}><AlignVerticalJustifyStart size={16} /><span>上对齐</span></button>
+                  <button type="button" role="menuitem" onClick={() => alignCanvasSelection('bottom', '下对齐')}><AlignVerticalJustifyEnd size={16} /><span>下对齐</span></button>
+                </div>
+              ) : null}
+              <button className="canvas-command canvas-command--primary canvas-command--icon" type="button" aria-label="新增节点" data-tooltip="新增节点" onClick={(event) => openNodeInsertMenu(event)}>
+                <Plus size={18} />
+              </button>
+              <button className="canvas-command canvas-command--icon" type="button" aria-label="按原图整理" data-tooltip="按原图整理" onClick={() => arrangeAllImageDocuments()}>
+                <Move size={16} />
               </button>
               <span className="canvas-control-divider" />
-              <button className="canvas-command" type="button" onClick={selectAllCanvasNodes}>
-                <Square size={15} /> 全选
+              <button className="canvas-command canvas-command--icon" type="button" aria-label="全选节点" data-tooltip="全选节点" onClick={selectAllCanvasNodes}>
+                <Square size={16} />
               </button>
-              <button className="canvas-command" type="button" onClick={arrangeCanvasNodes}>
-                <WandSparkles size={15} /> 整理
+              <button
+                className={`canvas-command canvas-command--icon ${alignmentMenuOpen ? 'canvas-command--active' : ''}`}
+                type="button"
+                aria-label="对齐节点"
+                data-tooltip={canvasSelectedKeys.length < 2 ? '请先选择至少两个节点' : '对齐节点'}
+                aria-expanded={alignmentMenuOpen}
+                disabled={canvasSelectedKeys.length < 2}
+                onClick={() => setAlignmentMenuOpen((current) => !current)}
+              >
+                <WandSparkles size={16} />
               </button>
-              <button className="canvas-command" type="button" onClick={groupCanvasSelection} disabled={canvasSelectedKeys.length < 2}>
-                <Layers3 size={15} /> 编组
+              <button className="canvas-command canvas-command--icon" type="button" aria-label="编组节点" data-tooltip="编组节点" onClick={groupCanvasSelection} disabled={canvasSelectedKeys.length < 2}>
+                <Layers3 size={16} />
               </button>
-              <span className="canvas-selection-count">
-                {canvasSelectedKeys.length ? `已选 ${canvasSelectedKeys.length}` : '未选择'}
-              </span>
             </div>
 
             <div
@@ -3349,6 +4262,42 @@ function App() {
                           ? 'flow-link--active'
                           : ''
                       }`}
+                    />
+                  );
+                })}
+                {inactiveCanvasNodes.map((item) => {
+                  const sourceItem = canvasItemMap.get(imageSourceNodeKey(item.imageId));
+                  const route = routeMeta[categoryMeta[item.node.category].route];
+                  const targetItem = canvasItemMap.get(item.key);
+                  if (!sourceItem || !targetItem) return null;
+                  return (
+                    <path
+                      key={item.key}
+                      d={connectionPath(
+                        sourceItem.x + sourceItem.width,
+                        sourceItem.y + sourceItem.portY,
+                        targetItem.x,
+                        targetItem.y + targetItem.portY,
+                      )}
+                      className={`flow-link flow-link--${route.color} ${canvasSelectedKeys.includes(sourceItem.key) || canvasSelectedKeys.includes(item.key) ? 'flow-link--active' : ''}`}
+                    />
+                  );
+                })}
+                {inactiveResultNodes.map(({ id, imageId, node, job }) => {
+                  const sourceItem = canvasItemMap.get(imageSplitNodeKey(imageId, node.id));
+                  const key = resultNodeKey(id);
+                  const targetItem = canvasItemMap.get(key);
+                  if (!sourceItem || !targetItem) return null;
+                  return (
+                    <path
+                      key={key}
+                      d={connectionPath(
+                        sourceItem.x + sourceItem.width,
+                        sourceItem.y + sourceItem.portY,
+                        targetItem.x,
+                        targetItem.y + targetItem.portY,
+                      )}
+                      className={`flow-link flow-link--result ${canvasSelectedKeys.includes(imageSplitNodeKey(imageId, node.id)) || canvasSelectedKeys.includes(key) ? 'flow-link--active' : ''}`}
                     />
                   );
                 })}
@@ -3422,7 +4371,166 @@ function App() {
                 </section>
               ))}
 
-              <article
+              {inactiveImageDocuments.map((document, index) => {
+                const key = imageSourceNodeKey(document.imageId);
+                const item = canvasItemMap.get(key);
+                if (!item) return null;
+                const previewHeight = item.height - 32;
+                return (
+                  <article
+                    key={key}
+                    className={`source-node source-node--inactive ${canvasSelectedKeys.includes(key) ? 'source-node--selected' : ''}`}
+                    style={{ left: item.x, top: item.y, width: item.width }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`打开 ${document.sourceName || `图片 ${index + 1}`}`}
+                    aria-pressed={canvasSelectedKeys.includes(key)}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setCanvasSelectedKeys([key]);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      activateImageDocument(document.imageId);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activateImageDocument(document.imageId);
+                      }
+                    }}
+                  >
+                    <div className="canvas-node-meta">
+                      <span><ImagePlus size={14} /><strong>{document.sourceName || `图片 ${index + 1}`}</strong></span>
+                      <small>{document.sourceSize.width} x {document.sourceSize.height}</small>
+                    </div>
+                    <div className="canvas-node-frame">
+                      <div className="source-node__image" style={{ height: previewHeight }}>
+                        <img src={document.sourceDataUrl || document.sourceImage} alt={document.sourceName || '原图'} draggable="false" />
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+
+              {inactiveCanvasNodes.map((item) => {
+                const document = imageDocuments.find((entry) => entry.imageId === item.imageId);
+                if (!document) return null;
+                const node = item.node;
+                const route = routeMeta[categoryMeta[node.category].route];
+                const RouteIcon = route.icon;
+                const region = pixelBounds(node.bounds, document.sourceSize);
+                return (
+                  <article
+                    key={item.key}
+                    className={`canvas-node canvas-node--${route.color} canvas-node--inactive ${canvasSelectedKeys.includes(item.key) ? 'canvas-node--selected' : ''}`}
+                    style={{ left: item.x, top: item.y, width: item.width }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`选择 ${node.name}（${document.sourceName || '其他原图'}）`}
+                    aria-pressed={canvasSelectedKeys.includes(item.key)}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setCanvasSelectedKeys([item.key]);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      activateImageDocument(item.imageId);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activateImageDocument(item.imageId);
+                      }
+                    }}
+                  >
+                    <div className="canvas-node-meta">
+                      <span><RouteIcon size={14} /><strong>{node.name}</strong></span>
+                      <small>{region.width} x {region.height}</small>
+                    </div>
+                    <div className="canvas-node-frame">
+                      <div className="canvas-node__media" style={{ height: item.preview.height }}>
+                        <RegionPreview sourceImage={document.sourceDataUrl || document.sourceImage} sourceSize={document.sourceSize} bounds={node.bounds} className="region-preview--node" />
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+
+              {inactiveResultNodes.map((resultNode) => {
+                const document = imageDocuments.find((entry) => entry.imageId === resultNode.imageId);
+                if (!document) return null;
+                const {
+                  job,
+                  node,
+                  image,
+                  bounds,
+                  sourceSize: resultSourceSize,
+                  x,
+                  y,
+                  previewWidth,
+                  previewHeight,
+                } = resultNode;
+                const meta = jobStatus(job.status);
+                const key = resultNodeKey(resultNode.id);
+                const region = pixelBounds(bounds, resultSourceSize);
+                return (
+                  <article
+                    key={resultNode.id}
+                    className={`result-node result-node--${meta.tone} result-node--inactive ${canvasSelectedKeys.includes(key) ? 'result-node--selected' : ''}`}
+                    style={{ left: x, top: y, width: previewWidth }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`选择 ${node.name} 的历史拆分结果`}
+                    aria-pressed={canvasSelectedKeys.includes(key)}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setCanvasSelectedKeys([key]);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      activateImageDocument(resultNode.imageId);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activateImageDocument(resultNode.imageId);
+                      }
+                    }}
+                  >
+                    <div className="canvas-node-meta">
+                      <span>{meta.tone === 'pending' ? <LoaderCircle size={14} className="spin" /> : <ImagePlus size={14} />}<strong>{node.name} - 拆分结果</strong></span>
+                      <small>{region.width} x {region.height}</small>
+                    </div>
+                    <div className="canvas-node-frame">
+                      {image ? (
+                        <a
+                          className="result-node__image"
+                          style={{ height: previewHeight }}
+                          href={resolveWorkbenchUrl(image.url)}
+                          download={image.name || `${node.id}.png`}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <ResultPreview image={image} sourceSize={resultSourceSize} bounds={bounds} />
+                        </a>
+                      ) : (
+                        <div className="result-node__pending">
+                          <LoaderCircle size={22} className="spin" />
+                          <span>等待输出 PNG</span>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+
+              {hasSource ? <article
                 className={`source-node ${canvasSelectedKeys.includes(sourceNodeKey) ? 'source-node--selected' : ''}`}
                 style={{ left: sourceNodePosition.x, top: sourceNodePosition.y, width: sourcePreviewWidth }}
                 role="button"
@@ -3448,7 +4556,7 @@ function App() {
                     <img src={sourceImage} alt="图层拆分原图" draggable="false" />
                   </div>
                 </div>
-              </article>
+              </article> : null}
 
               {nodes.map((node) => {
                 const route = routeMeta[categoryMeta[node.category].route];
@@ -3562,17 +4670,30 @@ function App() {
                     </div>
                     <div className="canvas-node-frame">
                       {image ? (
-                        <button type="button" className="result-node__image" style={{ height: previewHeight }} onClick={(event) => {
-                          if (canvasDragConsumedRef.current) {
-                            event.preventDefault();
+                        <>
+                          <a
+                            className="result-node__download"
+                            href={resolveWorkbenchUrl(image.url)}
+                            download={image.name || `${node.id}.png`}
+                            aria-label={`下载结果 ${node.name}`}
+                            data-tooltip="下载 PNG"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <Download size={17} />
+                          </a>
+                          <button type="button" className="result-node__image" style={{ height: previewHeight }} onClick={(event) => {
+                            if (canvasDragConsumedRef.current) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              return;
+                            }
                             event.stopPropagation();
-                            return;
-                          }
-                          event.stopPropagation();
-                          openResultViewer(image, node, bounds, resultSourceSize);
-                        }}>
-                          <ResultPreview image={image} sourceSize={resultSourceSize} bounds={bounds} />
-                        </button>
+                            openResultViewer(image, node, bounds, resultSourceSize);
+                          }}>
+                            <ResultPreview image={image} sourceSize={resultSourceSize} bounds={bounds} />
+                          </button>
+                        </>
                       ) : (
                         <div className="result-node__pending">
                           <LoaderCircle size={22} className="spin" />
@@ -3673,43 +4794,73 @@ function App() {
                   aria-label="选择新增节点类型"
                   onPointerDown={(event) => event.stopPropagation()}
                 >
-                  <div className="node-type-menu__heading">
-                    <span>新增节点</span>
-                    <button type="button" aria-label="关闭节点类型菜单" onClick={() => setNodeInsertMenu(null)}><X size={14} /></button>
-                  </div>
-                  <span className="node-type-menu__section-label">拆分节点</span>
-                  {categoryOrder.map((category) => {
-                    const meta = categoryMeta[category];
-                    const CategoryIcon = meta.icon;
-                    const route = routeMeta[meta.route];
-                    return (
-                      <button
-                        key={category}
-                        type="button"
-                        role="menuitem"
-                        className="node-type-menu__category"
-                        onClick={() => addCanvasNode('split', category)}
-                      >
-                        <CategoryIcon size={17} />
-                        <span><strong>{meta.label}</strong><small>{route.label}</small></span>
-                      </button>
-                    );
-                  })}
-                  <span className="node-type-menu__section-label">结果节点</span>
-                  <button type="button" role="menuitem" className="node-type-menu__result" onClick={() => addCanvasNode('result')}>
-                    <ImagePlus size={17} />
-                    <span><strong>拆分结果节点</strong><small>承接拆分后产出的 PNG</small></span>
+                  <button
+                    type="button"
+                    className="node-type-menu__close"
+                    aria-label="关闭节点类型菜单"
+                    onClick={() => setNodeInsertMenu(null)}
+                  >
+                    <X size={14} />
                   </button>
+                  <span className="node-type-menu__section-label">源节点</span>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="node-type-menu__source"
+                    aria-label={hasSource ? '上传另一张原图' : '原图节点'}
+                    onClick={() => addCanvasNode('source')}
+                  >
+                    <ImagePlus size={17} />
+                    <strong>{hasSource ? '上传另一张原图' : '原图节点'}</strong>
+                  </button>
+                  {hasSource ? (
+                    <>
+                      <span className="node-type-menu__section-label">拆分节点</span>
+                      {categoryOrder.map((category) => {
+                        const meta = categoryMeta[category];
+                        const CategoryIcon = meta.icon;
+                        return (
+                          <button
+                            key={category}
+                            type="button"
+                            role="menuitem"
+                            className="node-type-menu__category"
+                            onClick={() => addCanvasNode('split', category)}
+                          >
+                            <CategoryIcon size={17} />
+                            <strong>{meta.label}</strong>
+                          </button>
+                        );
+                      })}
+                      <span className="node-type-menu__section-label">结果节点</span>
+                      <button type="button" role="menuitem" className="node-type-menu__result" onClick={() => addCanvasNode('result')}>
+                        <ImagePlus size={17} />
+                        <strong>拆分结果节点</strong>
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           </section>
         )}
 
-        <aside className={`sidebar sidebar--right ${reviewMode === 'canvas' && !isRightOpen ? 'sidebar--collapsed' : ''}`}>
+        <aside className={`sidebar sidebar--right ${!panelVisibility.right ? 'sidebar--collapsed' : ''}`}>
           <div className="panel-title-row">
-            <div><span className="eyebrow">当前拆分项</span><h2>{hasSelectedLayer ? selected.name : '未选择图层'}</h2></div>
-            {reviewMode === 'canvas' ? <IconButton label="收起检查器" onClick={() => setIsRightOpen(false)}><PanelRight size={17} /></IconButton> : null}
+            <div>
+              <span className="eyebrow">{reviewMode === 'canvas' ? '当前节点' : '当前拆分项'}</span>
+              <h2>
+                {reviewMode === 'canvas'
+                  ? singleSelectedCanvasItem?.kind === 'source'
+                    ? '原图'
+                    : singleSelectedCanvasItem?.kind === 'result'
+                      ? `${selected.name} · 拆分结果`
+                      : singleSelectedCanvasItem?.kind === 'manual-result'
+                        ? '拆分结果节点'
+                        : hasSelectedLayer ? selected.name : '未选择节点'
+                  : hasSelectedLayer ? selected.name : '未选择图层'}
+              </h2>
+            </div>
           </div>
           {reviewMode === 'canvas' ? renderCanvasSummary() : renderRequestPanel()}
         </aside>
@@ -3731,9 +4882,22 @@ function App() {
                 <span>拆分结果</span>
                 <strong>{resultViewer.node.name}</strong>
               </div>
-              <IconButton label="关闭预览" onClick={() => setResultViewer(null)}>
-                <X size={18} />
-              </IconButton>
+              <div className="result-lightbox__actions">
+                <a
+                  className="icon-button result-lightbox__download"
+                  href={resolveWorkbenchUrl(resultViewer.image.url)}
+                  download={pngDownloadName(resultViewer.image.name, resultViewer.node.id)}
+                  aria-label="下载 PNG"
+                  data-tooltip="下载 PNG"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <Download size={18} />
+                </a>
+                <IconButton label="关闭预览" onClick={() => setResultViewer(null)}>
+                  <X size={18} />
+                </IconButton>
+              </div>
             </header>
             <div className="result-lightbox__body">
               <div
@@ -3756,7 +4920,7 @@ function App() {
         </div>
       ) : null}
 
-      {toast ? <div className="toast"><Check size={16} /> {toast}</div> : null}
+      {toast ? <div className={`toast ${reviewMode === 'canvas' ? 'toast--canvas' : ''}`}><Check size={16} /> {toast}</div> : null}
     </main>
   );
 }

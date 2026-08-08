@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { deriveDurations } from '../src/execution-timing.js';
 import { summarizeDurations, reductionPercent } from '../src/performance-metrics.js';
 
 function flagValue(flag) {
@@ -11,6 +12,17 @@ function flagValue(flag) {
     process.exit(1);
   }
   return value;
+}
+
+function numericFlag(flag, { min = 0 } = {}) {
+  const value = flagValue(flag);
+  if (value === null) return null;
+  const parsed = Number(value);
+  if (!value.trim() || !Number.isFinite(parsed) || parsed < min) {
+    console.error(`Usage: ${flag} requires a finite number >= ${min}.`);
+    process.exit(1);
+  }
+  return parsed;
 }
 
 const jobsRoot = path.resolve('output', 'jobs');
@@ -28,6 +40,14 @@ const allowedJobIds = jobIds !== null
   : null;
 const baselinePath = flagValue('--baseline');
 const requiredValue = flagValue('--require-fast-improvement');
+const requiredTargetedP50 = numericFlag('--require-targeted-p50-seconds');
+const requiredTargetedP90 = numericFlag('--require-targeted-p90-seconds');
+const requiredPostprocess = numericFlag('--require-postprocess-seconds');
+const hasTargetedGate = [
+  requiredTargetedP50,
+  requiredTargetedP90,
+  requiredPostprocess,
+].some((value) => value !== null);
 let required = null;
 const gateErrors = [];
 const foundJobIds = new Set();
@@ -55,6 +75,11 @@ if (requiredValue !== null) {
   }
 }
 
+if (hasTargetedGate && !allowedJobIds?.size) {
+  console.error('Targeted performance gates require an explicit --job-ids <id,...> current-job set.');
+  process.exit(1);
+}
+
 for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
   if (!entry.isDirectory() || !entry.name.startsWith('layer-job-')) continue;
   if (allowedJobIds && !allowedJobIds.has(entry.name)) continue;
@@ -69,17 +94,26 @@ for (const entry of entries.sort((left, right) => left.name.localeCompare(right.
   }
   const plannedLayers = Array.isArray(plan.layers) ? plan.layers : [];
   const plannedRoute = plannedLayers[0]?.execution_route_hint;
+  const reportTiming = report?.timing || {};
   const reportSubmitted = Date.parse(report?.timing?.submitted_at || '');
+  const reportConfirmationAccepted = Date.parse(reportTiming.confirmation_accepted_at || '');
   const reportCompleted = Date.parse(report?.timing?.completed_at || '');
-  const submitted = required !== null
-    ? reportSubmitted
+  const submitted = hasTargetedGate
+    ? reportConfirmationAccepted
+    : required !== null
+      ? reportSubmitted
     : Date.parse(report?.timing?.submitted_at || plan.submitted_at || '');
-  const completed = required !== null
+  const completed = hasTargetedGate || required !== null
     ? reportCompleted
     : Date.parse(report?.timing?.completed_at || plan.codex_completed_at || '');
   const seconds = (completed - submitted) / 1000;
+  const route = report?.execution_route || plan.layers?.[0]?.execution_route_hint || 'legacy';
+  const durations = report?.durations || deriveDurations(reportTiming);
+  const postprocessSeconds = Number.isFinite(durations.postprocess_ms)
+    ? durations.postprocess_ms / 1000
+    : null;
 
-  if (required !== null) {
+  if (required !== null || hasTargetedGate) {
     if (!report) {
       gateErrors.push(`${entry.name}: execution report is required`);
       continue;
@@ -96,7 +130,9 @@ for (const entry of entries.sort((left, right) => left.name.localeCompare(right.
       gateErrors.push(`${entry.name}: report status must be completed, got ${report.status || 'missing'}`);
       continue;
     }
-    if (!Number.isFinite(reportSubmitted) || !Number.isFinite(reportCompleted)) {
+    if (!Number.isFinite(reportCompleted)
+      || (hasTargetedGate && !Number.isFinite(reportConfirmationAccepted))
+      || (!hasTargetedGate && !Number.isFinite(reportSubmitted))) {
       gateErrors.push(`${entry.name}: executor report timing is incomplete`);
       continue;
     }
@@ -109,13 +145,21 @@ for (const entry of entries.sort((left, right) => left.name.localeCompare(right.
       gateErrors.push(`${entry.name}: mandatory validation ${failedValidation} did not pass`);
       continue;
     }
+    if (hasTargetedGate && route === 'targeted_repair' && requiredPostprocess !== null) {
+      if (!Number.isFinite(postprocessSeconds)) {
+        gateErrors.push(`${entry.name}: postprocess timing is required for targeted repair`);
+      } else if (postprocessSeconds > requiredPostprocess) {
+        gateErrors.push(`${entry.name}: postprocess duration ${postprocessSeconds}s exceeds ${requiredPostprocess}s`);
+      }
+    }
   } else if (!Number.isFinite(submitted) || !Number.isFinite(completed)) {
     continue;
   }
   samples.push({
     jobId: entry.name,
-    route: report?.execution_route || plan.layers?.[0]?.execution_route_hint || 'legacy',
+    route,
     seconds,
+    postprocessSeconds,
     status: report?.status || plan.status,
   });
 }
@@ -171,4 +215,27 @@ if (required !== null) {
       process.exitCode = 1;
     }
   }
+}
+
+if (hasTargetedGate && !gateErrors.length) {
+  const targetedSummary = summary.targeted_repair;
+  if (!targetedSummary?.completed) {
+    gateErrors.push('targeted_repair: no completed benchmark samples were found');
+  } else {
+    if (requiredTargetedP50 !== null
+      && (!Number.isFinite(targetedSummary.p50Seconds)
+        || targetedSummary.p50Seconds > requiredTargetedP50)) {
+      gateErrors.push(`targeted_repair: P50 ${targetedSummary.p50Seconds ?? 'missing'}s exceeds ${requiredTargetedP50}s`);
+    }
+    if (requiredTargetedP90 !== null
+      && (!Number.isFinite(targetedSummary.p90Seconds)
+        || targetedSummary.p90Seconds > requiredTargetedP90)) {
+      gateErrors.push(`targeted_repair: P90 ${targetedSummary.p90Seconds ?? 'missing'}s exceeds ${requiredTargetedP90}s`);
+    }
+  }
+}
+
+if (hasTargetedGate && gateErrors.length) {
+  console.error(`Targeted performance evidence invalid: ${gateErrors.join('; ')}.`);
+  process.exitCode = 1;
 }

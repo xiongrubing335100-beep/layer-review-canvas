@@ -5,7 +5,7 @@
 ## 1. 项目位置
 
 ```text
-C:\Users\Amoiz\Documents\New project 18\ui-layer-review-canvas
+<repo-root>
 ```
 
 本地地址：
@@ -173,20 +173,27 @@ output/jobs/<jobId>/
 ```
 
 `vite.config.js` 提供本地 API 中间件。新任务不再通过 Codex app-server 的
-`turn/start` 启动隐藏后台回合，而是写入前台消息队列。`layer-review-mcp-server.mjs`
-提供 MCP App 会话桥接卡片，由卡片使用 `ui/message` 把拆分任务作为用户消息发送到
-当前 Codex 会话。`codex-thread-bridge.mjs` 仅继续兼容读取旧任务的 turn 状态和生成
-权威计划提示词。
+`turn/start` 启动隐藏后台回合，而是写入前台消息队列。完整 Imvia Layer 界面运行在
+独立侧边工作区 `http://127.0.0.1:4173/`；`layer-review-mcp-server.mjs` 只在当前任务
+中提供一个轻量会话监听器，由它使用 `ui/message` 把拆分任务作为用户消息发送到当前
+Codex 会话。`codex-thread-bridge.mjs` 仅继续兼容读取旧任务的 turn 状态和生成权威计划
+提示词。
 
 会话桥接：
 
 ```text
-MCP: http://127.0.0.1:4174/mcp
-工具: open_layer_review_conversation_bridge
+MCP: Codex 托管 layer-review-mcp-server.mjs --stdio
+工具: open_layer_review_workbench
+HTTP 兼容入口: http://127.0.0.1:4174/mcp
 ```
 
-开始工作前需要同时运行工作台和桥接服务，并在当前 Codex 任务中打开一次
-Layer Review 会话桥接卡片。之后点击“拆分”会直接产生当前会话消息。
+用户要求打开或重启工作台时，必须同时完成两步：
+
+1. 调用 `open_layer_review_workbench`，在当前 Codex 任务中挂载轻量会话监听器。
+2. 在侧边工作区打开 `http://127.0.0.1:4173/`，不要把完整工作台嵌入对话卡片。
+
+之后在侧边工作区点击“拆分”，监听器会直接产生当前会话消息。对话内只显示监听状态，
+不承载上传、框选、画布或结果预览。
 
 默认执行 skill：
 
@@ -291,11 +298,12 @@ npm run build
 ## 10. 启动与构建
 
 ```powershell
-cd "C:\Users\Amoiz\Documents\New project 18\ui-layer-review-canvas"
+cd "<repo-root>"
 npm install
 npm run dev
-npm run mcp:bridge
 ```
+
+`npm run dev` 会同时启动 4173 工作台和 4174 会话桥接服务。
 
 构建：
 
@@ -333,10 +341,10 @@ npm run build
 
 ```text
 请继续维护：
-C:\Users\Amoiz\Documents\New project 18\ui-layer-review-canvas
+<repo-root>
 
 先完整阅读：
-C:\Users\Amoiz\Documents\New project 18\ui-layer-review-canvas\HANDOFF.md
+<repo-root>\HANDOFF.md
 
 这是本地无限画布 UI 拆图工作台。不要重新设计产品，也不要修改拆图契约。先检查当前 git 状态、src/main.jsx、src/styles.css、vite.config.js 和 codex-thread-bridge.mjs，再启动 4173 页面复现。
 

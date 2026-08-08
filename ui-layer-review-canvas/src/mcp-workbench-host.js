@@ -1,84 +1,111 @@
-import { App, PostMessageTransport } from '@modelcontextprotocol/ext-apps';
+import {
+  callMcpAppTool,
+  isMcpAppHost,
+} from './mcp-app-client.js';
 
 const workbenchOrigin = 'http://127.0.0.1:4173';
-let requestId = 1;
-let appPromise = null;
-
-export function buildUiMessageRequest(prompt, id = requestId++) {
-  return {
-    jsonrpc: '2.0',
-    id,
-    method: 'ui/message',
-    params: {
-      role: 'user',
-      content: [{ type: 'text', text: prompt }],
-    },
-  };
-}
 
 export function resolveWorkbenchUrl(value) {
   if (typeof value !== 'string' || !value.startsWith('/')) return value;
   return new URL(value, `${workbenchOrigin}/`).href;
 }
 
-export async function deliverSplitPrompt({
-  jobId,
-  prompt,
-  request,
-  acknowledge,
-}) {
-  if (!request) return false;
-  await request('ui/message', buildUiMessageRequest(prompt, 0).params);
-  await acknowledge(jobId);
-  return true;
+export async function getConversationBridgePresence(fetchImpl = fetch) {
+  const response = await fetchImpl(resolveWorkbenchUrl('/api/layer-review/bridge-status'), {
+    cache: 'no-store',
+  });
+  if (!response.ok) return { online: false, last_seen: null };
+  return response.json();
 }
 
-async function connectWorkbenchApp(windowLike) {
-  if (!windowLike || windowLike.parent === windowLike) return null;
-  const app = new App(
-    { name: 'layer-review-workbench', version: '0.4.0' },
-    { availableDisplayModes: ['inline', 'fullscreen'] },
-    { autoResize: false },
-  );
-  await app.connect(new PostMessageTransport(windowLike.parent, windowLike.parent));
-  try {
-    await app.requestDisplayMode({ mode: 'fullscreen' });
-  } catch {
-    // Fullscreen is optional; the workbench still functions inline.
+export async function markLayerReviewMessageSent(jobId, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    return callMcpAppTool('mark_layer_review_message_sent', { jobId });
   }
-  return app;
+  const response = await fetchImpl(resolveWorkbenchUrl(
+    `/api/layer-review/jobs/${encodeURIComponent(jobId)}/message-sent`,
+  ), { method: 'POST' });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `消息确认失败：HTTP ${response.status}`);
+  return result;
 }
 
-export function getWorkbenchApp(windowLike = globalThis.window) {
-  if (!appPromise) {
-    appPromise = connectWorkbenchApp(windowLike).catch((error) => {
-      console.warn('Layer Review MCP App connection failed', error);
-      return null;
+export async function markLayerReviewMessageFailed(jobId, error, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    return callMcpAppTool('mark_layer_review_message_failed', {
+      jobId,
+      error: error?.message || String(error || '发送失败'),
     });
   }
-  return appPromise;
-}
-
-export async function sendSplitPromptToCurrentTask({ jobId, prompt }) {
-  if (!prompt) return false;
-  const app = await getWorkbenchApp();
-  return deliverSplitPrompt({
-    jobId,
-    prompt,
-    request: app ? (method, params) => (
-      method === 'ui/message'
-        ? app.sendMessage(params)
-        : Promise.reject(new Error(`Unsupported MCP App request: ${method}`))
-    ) : null,
-    acknowledge: async (id) => {
-      const response = await fetch(resolveWorkbenchUrl(
-        `/api/layer-review/foreground-dispatch/${encodeURIComponent(id)}/ack`,
-      ), { method: 'POST' });
-      if (!response.ok) throw new Error(`确认发送失败：HTTP ${response.status}`);
-    },
+  const response = await fetchImpl(resolveWorkbenchUrl(
+    `/api/layer-review/jobs/${encodeURIComponent(jobId)}/message-failed`,
+  ), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ error: error?.message || String(error || '发送失败') }),
   });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `消息失败状态写入失败：HTTP ${response.status}`);
+  return result;
 }
 
-if (typeof window !== 'undefined') {
-  void getWorkbenchApp(window);
+export async function cancelQueuedSplit(jobId, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    return callMcpAppTool('cancel_layer_review_job', { jobId });
+  }
+  const response = await fetchImpl(resolveWorkbenchUrl(
+    `/api/layer-review/foreground-dispatch/${encodeURIComponent(jobId)}/cancel`,
+  ), { method: 'POST' });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `取消失败：HTTP ${response.status}`);
+  return result;
+}
+
+export async function getLayerReviewJob(jobId, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    const result = await callMcpAppTool('get_layer_review_job', { jobId });
+    return result.job;
+  }
+  const response = await fetchImpl(resolveWorkbenchUrl(
+    `/api/layer-review/jobs/${encodeURIComponent(jobId)}`,
+  ), { cache: 'no-store' });
+  if (response.status === 404) return { job_id: jobId, status: 'failed', images: [] };
+  if (response.status === 410) return { job_id: jobId, status: 'discarded' };
+  if (!response.ok) return null;
+  return response.json();
+}
+
+export async function uploadMcpSourcePreview(file, fetchImpl = fetch) {
+  if (!isMcpAppHost()) return null;
+  const response = await fetchImpl(resolveWorkbenchUrl('/api/layer-review/source-preview'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+    },
+    body: file,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.url) {
+    throw new Error(result.error || `图片上传失败：HTTP ${response.status}`);
+  }
+  return resolveWorkbenchUrl(result.url);
+}
+
+export async function submitLayerReviewPlan(plan, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    const prepared = await callMcpAppTool('submit_layer_review_job', {
+      plan,
+      delivery: 'current_conversation',
+    });
+    return prepared.submission;
+  }
+
+  const response = await fetchImpl(resolveWorkbenchUrl('/api/layer-review/submit'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(plan),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  return result;
 }
