@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildWorkbenchPrompt,
   buildWorkbenchTurnInput,
+  resolvePythonInvocation,
   selectExecutionAttachments,
 } from '../codex-thread-bridge.mjs';
 
@@ -55,6 +56,14 @@ test('remove-background finalization is delegated to RMBG after Codex finishes t
   assert.match(prompt, /isnet-general-use/);
   assert.match(prompt, /Codex 最终拆分结果/);
   assert.match(prompt, /写入 final/);
+});
+
+test('split prompts reuse the Python runtime selected during setup', () => {
+  assert.equal(resolvePythonInvocation({ IMVIA_LAYER_PYTHON_COMMAND: 'python3' }, 'darwin'), 'python3');
+  assert.equal(resolvePythonInvocation({
+    IMVIA_LAYER_PYTHON_COMMAND: 'py',
+    IMVIA_LAYER_PYTHON_ARGS: '["-3"]',
+  }, 'win32'), 'py -3');
 });
 
 test('title background removal is routed to visible Codex RGBA without RMBG', () => {

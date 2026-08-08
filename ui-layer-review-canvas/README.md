@@ -2,30 +2,52 @@
 
 Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
 
+## 当前版本：v0.1.0
+
+这是首个可安装版本，提供以下能力：
+
+- **插件唤起工作台**：安装后通过 `@imvia-layer` 在当前 Codex 任务的右侧浏览器打开工作台，无需解释本地服务、MCP 或会话桥接的工作方式。
+- **可见会话拆分**：每个拆分任务会作为可见消息进入当前 Codex 对话；不会静默转为后台拆分。
+- **框选与画布总览**：支持框选单张原图的拆分区域，也支持在无限画布中查看多张原图及各自的拆分节点与结果。
+- **多图独立处理**：不同原图拥有独立的图层、任务和结果，互不覆盖；画布中按原图组织其子节点。
+- **任务队列与回传**：当前会话繁忙时，新的拆分任务会排队；完成的透明 PNG 自动回传工作台并可下载、放大预览。
+- **定向拆分与验收**：输出尺寸锁定为框选尺寸；文字与标志使用原像素锁定的透明 RGBA 流程，UI 组件可使用 `isnet-general-use` RMBG 输出真实透明 PNG。
+- **一键本地安装**：`npm run setup` 会探测 Python 3.10+、安装 RMBG 依赖、预热 `isnet-general-use` 模型，并注册本地 Imvia Layer 插件。
+
+## 版本历史与更新规则
+
+后续发布会继续在本 README 维护版本记录。每个版本会说明新增功能、重要修复、兼容性要求及必要的升级步骤。
+
+### v0.1.0 — 首个可安装版本
+
+- 发布 Codex Desktop 本地插件与右侧工作台的一体化安装流程。
+- 提供可见会话拆分、任务队列、透明 PNG 回传、RMBG 最终处理和多图画布总览。
+- 提供插件模板、安装脚本、开源许可证与 GitHub 发布说明。
+- 安装器支持 Windows 与 macOS：自动记录本机可用的 Python 命令，后续拆分任务会复用该命令执行 RMBG 处理。
+
 ## 一次安装
 
-前置条件：Codex Desktop、Node.js 20+、Python 3.10+。
+前置条件：Codex Desktop、Node.js 20+、Python 3.10+。Windows 与 macOS 均支持；macOS 请先通过 [python.org](https://www.python.org/downloads/macos/) 或 Homebrew 安装 Python 3.10+。`npm run setup` 会自动下载 RMBG 的 Python 依赖和 `isnet-general-use` 模型，首次运行需要联网。
 
-```powershell
+```sh
 git clone <你的 GitHub 仓库地址>
-cd ui-layer-review-canvas
-npm install
+cd <克隆或解压后的项目目录>
 npm run setup
 ```
 
-`npm run setup` 会安装 RMBG 依赖和 `isnet-general-use` 模型，再复制并注册本地 Imvia Layer 插件。完成后重启 Codex Desktop（或新建任务），在对话中发送：
+`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再安装 RMBG 依赖和 `isnet-general-use` 模型，最后注册本地插件。该命令必须完整成功才会注册插件：若 Python、RMBG 依赖或模型下载失败，安装会停止并给出原因，不会留下半安装插件。完成后重启 Codex Desktop（或新建任务），在对话中发送：
 
 ```text
 [@imvia-layer](plugin://imvia-layer@personal) 打开工作台
 ```
 
-工作台会在当前任务的右侧浏览器打开。上传图片、框选拆分项并点击“拆分”后，任务会以可见消息进入当前对话；结果 PNG 会回传到工作台。
+工作台会在当前任务的右侧浏览器打开。上传图片、框选拆分项并点击“拆分”后，任务会以可见消息进入当前对话；结果 PNG 会回传到工作台。用户无需手动运行开发服务、打开 `127.0.0.1` 地址、安装额外插件或了解 MCP/会话桥接机制。
 
 ## 仅更新插件
 
 工作台源码更新后，在下载目录运行：
 
-```powershell
+```sh
 npm run install:codex-plugin
 ```
 

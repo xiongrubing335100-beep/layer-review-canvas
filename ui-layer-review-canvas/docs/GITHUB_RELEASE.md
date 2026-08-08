@@ -2,7 +2,7 @@
 
 ## 发布前检查
 
-```powershell
+```sh
 npm install
 npm test
 npm run build
@@ -25,16 +25,15 @@ npm run build
 
 用户克隆或下载 ZIP 后，在项目根目录运行：
 
-```powershell
-npm install
+```sh
 npm run setup
 ```
 
 初始化会完成三件事：
 
-1. 安装 `rembg[cpu]` 与 `isnet-general-use` 模型；
+1. 探测 Python 3.10+，安装 `rembg[cpu]` 并下载、校验 `isnet-general-use` 模型；
 2. 在用户目录注册 Imvia Layer 本地插件；
-3. 写入该用户下载目录对应的运行配置。
+3. 写入该用户下载目录、插件启动 Node.js 命令和 Python 调用方式对应的运行配置。
 
 之后重启 Codex Desktop，并在新任务中发送：
 
@@ -42,4 +41,4 @@ npm run setup
 [@imvia-layer](plugin://imvia-layer@personal) 打开工作台
 ```
 
-插件不会使用发布者机器上的固定目录；每个用户的安装脚本都会写入自己的下载位置。
+插件不会使用发布者机器上的固定目录；每个用户的安装脚本都会写入自己的下载位置。Windows 与 macOS 都使用同一条 `npm run setup` 命令；发布前请至少在两种系统各完成一次“克隆、安装、打开插件、RMBG 拆分”的干净环境验证。

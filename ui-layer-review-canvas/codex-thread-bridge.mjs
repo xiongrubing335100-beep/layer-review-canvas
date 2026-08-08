@@ -55,7 +55,40 @@ async function resolveCodexExecutable() {
       // Keep looking.
     }
   }
-  throw new Error('未找到 Codex 桌面运行时，请从当前 Codex 任务重新启动工作台');
+
+  const pathEntries = (process.env.PATH || process.env.Path || '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  const names = process.platform === 'win32'
+    ? ['codex.exe', 'codex.cmd', 'codex.bat', 'codex']
+    : ['codex'];
+  for (const directory of pathEntries) {
+    for (const name of names) {
+      const candidate = path.join(directory, name);
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+        // Keep looking.
+      }
+    }
+  }
+  throw new Error('未找到 Codex 运行时。请确认 Codex CLI 已安装并在 PATH 中，或设置 CODEX_CLI_PATH 后重新运行 npm run setup。');
+}
+
+export function resolvePythonInvocation(environment = process.env, platform = process.platform) {
+  const command = environment.IMVIA_LAYER_PYTHON_COMMAND
+    || (platform === 'win32' ? 'python' : 'python3');
+  let args = [];
+  try {
+    const parsed = JSON.parse(environment.IMVIA_LAYER_PYTHON_ARGS || '[]');
+    args = Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : [];
+  } catch {
+    args = [];
+  }
+  return [command, ...args]
+    .map((part) => /\s/.test(part) ? `"${part.replaceAll('"', '\\"')}"` : part)
+    .join(' ');
 }
 
 function allocatePort() {
@@ -253,6 +286,7 @@ export function buildWorkbenchPrompt({
   plan,
   requireForegroundConfirmation = true,
 }) {
+  const pythonInvocation = resolvePythonInvocation();
   const projectRoot = path.resolve(
     path.dirname(jobPath),
     '..',
@@ -309,10 +343,10 @@ export function buildWorkbenchPrompt({
       ? `去背景已开启：${removeBackgroundLayers.join('、')}。这些图层必须输出真实透明 RGBA PNG。`
       : '',
     codexRgbaLayers.length
-      ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 python "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 python "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
+      ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
       : '',
     rmbgLayers.length
-      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 python "${rmbgScriptPath}" --input <中间PNG> --output <final PNG> --model isnet-general-use --expected-width <宽> --expected-height <高>。`
+      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} "${rmbgScriptPath}" --input <中间PNG> --output <final PNG> --model isnet-general-use --expected-width <宽> --expected-height <高>。`
       : '',
     rmbgLayers.length
       ? 'RMBG 成功并通过结构验收后才写入 final；禁止用色差、轮廓、膨胀、模糊或自制蒙版代替。'

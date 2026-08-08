@@ -9,6 +9,19 @@ const pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer');
 const marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const cachebuster = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
 
+function installedPythonRuntime() {
+  let args = [];
+  try {
+    args = JSON.parse(process.env.IMVIA_LAYER_PYTHON_ARGS || '[]');
+  } catch {
+    args = [];
+  }
+  return {
+    command: process.env.IMVIA_LAYER_PYTHON_COMMAND || (process.platform === 'win32' ? 'python' : 'python3'),
+    args: Array.isArray(args) && args.every((item) => typeof item === 'string') ? args : [],
+  };
+}
+
 async function readMarketplace() {
   try {
     return JSON.parse(await readFile(marketplacePath, 'utf8'));
@@ -33,6 +46,7 @@ async function install() {
 
   await writeFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), `${JSON.stringify({
     workbenchRoot: repositoryRoot,
+    python: installedPythonRuntime(),
     installedAt: new Date().toISOString(),
   }, null, 2)}\n`);
 

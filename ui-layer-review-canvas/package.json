@@ -11,7 +11,7 @@
     "test": "node --test src/*.test.mjs",
     "benchmark:splits": "node scripts/report-split-performance.mjs",
     "install:codex-plugin": "node scripts/install-codex-plugin.mjs",
-    "setup": "node scripts/setup-imvia-layer.mjs"
+    "setup": "npm install && node scripts/setup-imvia-layer.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
