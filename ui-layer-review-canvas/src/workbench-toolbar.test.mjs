@@ -136,6 +136,23 @@ test('layer review exposes pen tools and no brush-size controls', () => {
   assert.doesNotMatch(reviewPanel, /\u753b\u7b14\u5927\u5c0f|brushSize|<Brush size=\{16\}/);
 });
 
+test('PNG result refinement uses the shared pen editor and an independent requirement field', () => {
+  const editor = source.slice(
+    source.indexOf('<div className="result-editor__toolbar"'),
+    source.indexOf('</section>', source.indexOf('<div className="result-editor__toolbar"')),
+  );
+
+  assert.match(source, /import \{[^}]*buildResultRefinementPlan,[^}]*canSubmitResultRefinement,[^}]*readPngPixelSize[^}]*\} from '\.\/result-refinement\.js';/s);
+  assert.match(editor, /<PenTool size=\{14\} \/> 保留钢笔/);
+  assert.match(editor, /<PenTool size=\{14\} \/> 擦除钢笔/);
+  assert.match(editor, /<PenTool size=\{14\} \/> 边界钢笔/);
+  assert.match(editor, /<PenPathOverlay/);
+  assert.match(editor, />二次编辑要求</);
+  assert.match(editor, /<textarea/);
+  assert.match(editor, /className="result-editor__submit"[\s\S]*?发送调整/);
+  assert.doesNotMatch(source, /resultEditBrushSize|startResultAnnotation|moveResultAnnotation|finishResultAnnotation|renderResultEditMark/);
+});
+
 test('read-only legacy annotations remain selectable above the pen canvas', () => {
   assert.match(
     styles,

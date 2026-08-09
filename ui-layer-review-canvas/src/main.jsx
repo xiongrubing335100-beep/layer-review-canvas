@@ -83,6 +83,11 @@ import { analyzeFastCategories } from './fast-category-analysis.js';
 import { resolvePanelVisibility } from './workbench-layout.js';
 import { annotationForPlan, selectionForPenOverlay } from './annotation-plan.js';
 import { PenPathOverlay } from './PenPathOverlay.jsx';
+import {
+  buildResultRefinementPlan,
+  canSubmitResultRefinement,
+  readPngPixelSize,
+} from './result-refinement.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import './styles.css';
 
@@ -549,9 +554,10 @@ function App() {
   const [resultViewer, setResultViewer] = useState(null);
   const [resultEditing, setResultEditing] = useState(false);
   const [resultEditTool, setResultEditTool] = useState('background');
-  const [resultEditMarks, setResultEditMarks] = useState([]);
+  const [resultEditPrompt, setResultEditPrompt] = useState('');
+  const [resultEditPaths, setResultEditPaths] = useState([]);
   const [resultEditDraft, setResultEditDraft] = useState(null);
-  const [resultEditBrushSize, setResultEditBrushSize] = useState(24);
+  const [resultEditSelection, setResultEditSelection] = useState(null);
   const [submittingResultEdit, setSubmittingResultEdit] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
@@ -561,7 +567,6 @@ function App() {
   const guidedImageRef = useRef(null);
   const annotationPreviewRef = useRef(null);
   const resultEditPreviewRef = useRef(null);
-  const resultEditGestureRef = useRef(null);
   const reviewPenPathsRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
@@ -747,6 +752,11 @@ function App() {
   const selectedPendingRevision = selectedResultState?.pendingRevision?.job;
   const selectedFailedRevision = selectedResultState?.failedRevision?.job;
   const latestSelectedJob = latestSelectedResult?.job;
+  const resultEditSubmission = canSubmitResultRefinement({
+    prompt: resultEditPrompt,
+    paths: resultEditPaths,
+    draft: resultEditDraft,
+  });
   const selectedFallbackJob = [...jobsForCurrentSource].reverse().find((job) => job.nodeIds?.includes(selected.id));
   const activeSelectedJob = localSubmissions[selected.id]
     || selectedPendingRevision
@@ -1296,9 +1306,10 @@ function App() {
 
   useEffect(() => {
     setResultEditing(false);
-    setResultEditMarks([]);
+    setResultEditPrompt('');
+    setResultEditPaths([]);
     setResultEditDraft(null);
-    resultEditGestureRef.current = null;
+    setResultEditSelection(null);
   }, [selectedId, latestSelectedJob?.id]);
 
   useEffect(() => {
@@ -2558,112 +2569,25 @@ function App() {
     }
   };
 
-  const startResultAnnotation = (event) => {
-    if (!resultEditing || !resultEditTool || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const point = annotationPoint(event);
-    const id = `result-${selectedId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const mark = {
-      id,
-      layer_id: selectedId,
-      kind: resultEditTool,
-      shape: 'stroke',
-      points: [{ x: point.x, y: point.y }],
-      brush_size_px: resultEditBrushSize,
-      brush_size_percent: (resultEditBrushSize / point.previewWidth) * 100,
-    };
-    resultEditGestureRef.current = {
-      pointerId: event.pointerId,
-      anchor: point,
-      mark,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setResultEditDraft(mark);
+  const updateResultPenEditor = ({ paths, draft, selection }) => {
+    setResultEditPaths(paths);
+    setResultEditDraft(draft);
+    setResultEditSelection(selection);
   };
 
-  const moveResultAnnotation = (event) => {
-    const gesture = resultEditGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    const point = annotationPoint(event);
-    let next;
-    if (gesture.mark.shape === 'rect') {
-      next = {
-        ...gesture.mark,
-        x: Math.min(gesture.anchor.x, point.x),
-        y: Math.min(gesture.anchor.y, point.y),
-        width: Math.abs(point.x - gesture.anchor.x),
-        height: Math.abs(point.y - gesture.anchor.y),
-      };
-    } else {
-      const previous = gesture.mark.points.at(-1);
-      const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-      if (distance < 0.22) return;
-      next = { ...gesture.mark, points: [...gesture.mark.points, { x: point.x, y: point.y }] };
-    }
-    gesture.mark = next;
-    setResultEditDraft(next);
-  };
-
-  const finishResultAnnotation = (event) => {
-    const gesture = resultEditGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const mark = gesture.mark;
-    resultEditGestureRef.current = null;
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    setResultEditDraft(null);
-    if (mark.shape === 'rect' && (mark.width < 1 || mark.height < 1)) {
-      setToast('请在结果图上拖动，画出需要修整的区域');
+  const undoResultPenEdit = () => {
+    if (resultEditDraft) {
+      setResultEditDraft(null);
       return;
     }
-    setResultEditMarks((current) => [...current, mark]);
+    setResultEditPaths((current) => current.slice(0, -1));
+    setResultEditSelection(null);
   };
 
-  const cancelResultAnnotation = (event) => {
-    const gesture = resultEditGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    resultEditGestureRef.current = null;
+  const clearResultPenEdit = () => {
+    setResultEditPaths([]);
     setResultEditDraft(null);
-  };
-
-  const renderResultEditMark = (mark, draft = false) => {
-    if (mark.shape === 'rect') {
-      return (
-        <rect
-          key={mark.id}
-          className={`annotation-mark annotation-mark--${mark.kind} ${draft ? 'annotation-mark--draft' : ''}`}
-          x={mark.x}
-          y={mark.y}
-          width={mark.width}
-          height={mark.height}
-          vectorEffect="non-scaling-stroke"
-        />
-      );
-    }
-    if (mark.points.length === 1) {
-      return (
-        <circle
-          key={mark.id}
-          className={`annotation-mark annotation-mark--${mark.kind} ${draft ? 'annotation-mark--draft' : ''}`}
-          cx={mark.points[0].x}
-          cy={mark.points[0].y}
-          r="0.7"
-          vectorEffect="non-scaling-stroke"
-        />
-      );
-    }
-    return (
-      <polyline
-        key={mark.id}
-        className={`annotation-mark annotation-mark--${mark.kind} ${draft ? 'annotation-mark--draft' : ''}`}
-        points={mark.points.map((point) => `${point.x},${point.y}`).join(' ')}
-        style={{ strokeWidth: `${mark.brush_size_px}px` }}
-        vectorEffect="non-scaling-stroke"
-      />
-    );
+    setResultEditSelection(null);
   };
 
   const submitResultEdit = async () => {
@@ -2672,8 +2596,8 @@ function App() {
       setToast('当前结果精修仍在处理中，请等待完成后再提交');
       return;
     }
-    if (!resultEditMarks.length) {
-      setToast('先在拆分结果上标注需要修整的区域');
+    if (!resultEditSubmission.ok) {
+      setToast(resultEditSubmission.reason);
       return;
     }
     setSubmittingResultEdit(true);
@@ -2682,70 +2606,39 @@ function App() {
     try {
       const imageResponse = await fetch(resolveWorkbenchUrl(latestSelectedResult.image.url), { cache: 'no-store' });
       if (!imageResponse.ok) throw new Error(`无法读取拆分结果（HTTP ${imageResponse.status}）`);
-      const embeddedSource = await blobToDataUrl(await imageResponse.blob());
+      const resultBlob = await imageResponse.blob();
+      const pngSize = await readPngPixelSize(resultBlob);
+      const embeddedSource = await blobToDataUrl(resultBlob);
       const resultRegion = pixelBounds(latestSelectedResult.bounds, latestSelectedResult.sourceSize);
-      const editSourceSize = { width: resultRegion.width, height: resultRegion.height };
-      const fullResultBounds = { x: 0, y: 0, width: 100, height: 100 };
-      const payload = {
-        version: '0.7',
-        task: 'refine_split_result',
-        project_id: projectId,
-        image_id: activeImageId,
-        source_fingerprint: currentSourceFingerprint || null,
-        source_revision: currentSourceRevision,
-        parent_job_id: latestSelectedResult.job.id,
-        review_source_size: latestSelectedResult.sourceSize,
-        source: {
-          file_name: latestSelectedResult.image.name || `${selected.id}.png`,
-          canvas: editSourceSize,
-          coordinate_space: 'result_pixels',
-          source_uri: null,
-          embedded_data_url: embeddedSource,
+      const refinementSnapshot = {
+        prompt: resultEditPrompt.trim(),
+        paths: resultEditPaths.map((path) => ({ ...path })),
+      };
+      const payload = buildResultRefinementPlan({
+        pngSize,
+        placement: resultRegion,
+        prompt: refinementSnapshot.prompt,
+        paths: refinementSnapshot.paths,
+        baseResult: {
+          jobId: latestSelectedResult.job.id,
+          versionId: latestSelectedResult.image.versionId || latestSelectedResult.image.version_id || latestSelectedResult.job.id,
+          fileName: latestSelectedResult.image.name || `${selected.id}.png`,
+          dataUrl: embeddedSource,
         },
-        layers: [{
-          layer_index: 1,
+        layer: {
           id: selected.id,
           category: selected.category,
-          category_label: categoryMeta[selected.category].label,
+          categoryLabel: categoryMeta[selected.category].label,
           name: selected.name,
-          requirement: '基于已有拆分结果继续精修，只修改本次标注区域；未标注像素、已有透明通道、画布尺寸和原始位置必须保持不变。',
-          source_region_percent: fullResultBounds,
-          source_region_pixels: { x: 0, y: 0, ...editSourceSize },
-          review_snapshot: {
-            bounds: latestSelectedResult.bounds,
-            source_region_pixels: resultRegion,
-          },
-          mask_annotations: resultEditMarks.map((mark, index) => (
-            annotationForPlan(mark, fullResultBounds, editSourceSize, index)
-          )),
-          mask_policy: {
-            selected_region: 'existing_result_full_canvas',
-            keep_region: 'force_include_existing_result_pixels',
-            exclude_region: 'force_remove_to_transparent',
-            manual_boundary: 'highest_priority_edge_override',
-            preserve_unmarked_pixels: true,
-          },
-          execution_mode: selected.executionMode || 'fast',
-          remove_background: true,
-          processing_route: 'result_refinement',
-          output: {
-            crop_to_source_region: true,
-            width: editSourceSize.width,
-            height: editSourceSize.height,
-            original_source_x: resultRegion.x,
-            original_source_y: resultRegion.y,
-          },
-        }],
-        constraints: {
-          output_scope: 'selected_layers_only',
-          auto_add_layers: false,
-          edit_base: 'existing_split_result_png',
-          preserve_unmarked_pixels: true,
-          preserve_existing_alpha: true,
-          final_png_canvas: 'exact_existing_result_canvas',
-          visible_pixels: 'existing_result_pixel_locked_outside_annotations',
+          executionMode: selected.executionMode || 'fast',
         },
-      };
+        project: {
+          projectId,
+          imageId: activeImageId,
+          sourceFingerprint: currentSourceFingerprint || null,
+          sourceRevision: currentSourceRevision,
+        },
+      });
 
       const result = await submitLayerReviewPlan(payload);
       submissionResult = result;
@@ -2779,11 +2672,13 @@ function App() {
         skillName: result.skill_name || 'split-ui-design-layers-workbench-targeted',
         parentJobId: latestSelectedResult.job.id,
         editKind: 'result_refinement',
+        refinementSnapshot,
       }]);
       addActivity(result.delivery_channel === 'current_conversation'
         ? `${selected.name} 的二次精修已发送到当前会话`
         : `${selected.name} 的二次精修已交给会话监听，等待当前任务确认`);
       setToast('结果修整已提交，原结果版本已保留');
+      setResultEditDraft(null);
     } catch (error) {
       if (submissionResult?.job_id && !followUpPosted) {
         await markLayerReviewMessageFailed(submissionResult.job_id, error).catch(() => {});
@@ -3903,46 +3798,37 @@ function App() {
                           aria-pressed={resultEditTool === 'foreground'}
                           className={resultEditTool === 'foreground' ? 'result-editor__tool result-editor__tool--active result-editor__tool--foreground' : 'result-editor__tool'}
                           onClick={() => setResultEditTool('foreground')}
+                          disabled={Boolean(selectedPendingRevision)}
                         >
-                          <Brush size={14} /> 保留画笔
+                          <PenTool size={14} /> 保留钢笔
                         </button>
                         <button
                           type="button"
                           aria-pressed={resultEditTool === 'background'}
                           className={resultEditTool === 'background' ? 'result-editor__tool result-editor__tool--active result-editor__tool--background' : 'result-editor__tool'}
                           onClick={() => setResultEditTool('background')}
+                          disabled={Boolean(selectedPendingRevision)}
                         >
-                          <Brush size={14} /> 擦除画笔
+                          <PenTool size={14} /> 擦除钢笔
                         </button>
                         <button
                           type="button"
-                          aria-pressed={resultEditTool === 'brush'}
-                          className={resultEditTool === 'brush' ? 'result-editor__tool result-editor__tool--active result-editor__tool--brush' : 'result-editor__tool'}
-                          onClick={() => setResultEditTool('brush')}
+                          aria-pressed={resultEditTool === 'boundary'}
+                          className={resultEditTool === 'boundary' ? 'result-editor__tool result-editor__tool--active result-editor__tool--boundary' : 'result-editor__tool'}
+                          onClick={() => setResultEditTool('boundary')}
+                          disabled={Boolean(selectedPendingRevision)}
                         >
-                          <Brush size={14} /> 边界画笔
+                          <PenTool size={14} /> 边界钢笔
                         </button>
-                        <label className="result-editor__brush-size">
-                          <span>笔刷</span>
-                          <input
-                            type="range"
-                            min="1"
-                            max="52"
-                            step="1"
-                            value={resultEditBrushSize}
-                            onChange={(event) => setResultEditBrushSize(Number(event.target.value))}
-                          />
-                          <strong>{resultEditBrushSize}px</strong>
-                        </label>
                       </div>
                     ) : null}
                     {resultEditing ? (
                       <div className={`result-editor__hint result-editor__hint--${resultEditTool}`}>
                         {resultEditTool === 'foreground'
-                          ? `保留画笔：涂过的结果像素必须保留 · ${resultEditBrushSize}px`
+                          ? '保留钢笔：闭合路径内的结果像素必须保留'
                           : resultEditTool === 'background'
-                            ? `擦除画笔：涂过的区域将变为透明 · ${resultEditBrushSize}px`
-                            : `边界画笔：沿结果边缘绘制修整线 · ${resultEditBrushSize}px`}
+                            ? '擦除钢笔：闭合路径内的区域将变为透明'
+                            : '边界钢笔：用闭合路径精确重定义结果边缘'}
                       </div>
                     ) : null}
                     <ResultPreview
@@ -3950,49 +3836,73 @@ function App() {
                       sourceSize={latestSelectedResult.sourceSize}
                       bounds={latestSelectedResult.bounds}
                       previewRef={resultEditPreviewRef}
-                      interactive={resultEditing}
-                      tabIndex={resultEditing ? 0 : undefined}
                       className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''}`}
-                      onPointerDown={resultEditing ? startResultAnnotation : undefined}
-                      onPointerMove={resultEditing ? moveResultAnnotation : undefined}
-                      onPointerUp={resultEditing ? finishResultAnnotation : undefined}
-                      onPointerCancel={resultEditing ? cancelResultAnnotation : undefined}
                     >
                       {resultEditing ? (
-                        <svg className="annotation-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="拆分结果精修标注">
-                          {resultEditMarks.map((mark) => renderResultEditMark(mark))}
-                          {resultEditDraft ? renderResultEditMark(resultEditDraft, true) : null}
-                        </svg>
+                        <PenPathOverlay
+                          paths={resultEditPaths}
+                          draft={resultEditDraft}
+                          selection={resultEditSelection}
+                          activeKind={resultEditTool}
+                          disabled={Boolean(selectedPendingRevision)}
+                          onChange={updateResultPenEditor}
+                          ariaLabel="拆分结果精修钢笔标注"
+                        />
                       ) : null}
                     </ResultPreview>
                     {resultEditing ? (
-                      <div className="result-editor__actions">
-                        <span>以当前拆分 PNG 为底图，只修整标注区域</span>
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => setResultEditMarks((current) => current.slice(0, -1))}
-                            disabled={!resultEditMarks.length}
-                          >
-                            <Undo2 size={13} /> 撤销
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setResultEditMarks([])}
-                            disabled={!resultEditMarks.length}
-                          >
-                            <Trash2 size={13} /> 清空
-                          </button>
-                          <button
-                            type="button"
-                            className="result-editor__submit"
-                            onClick={submitResultEdit}
-                            disabled={!resultEditMarks.length || submittingResultEdit || Boolean(selectedPendingRevision)}
-                          >
-                            {submittingResultEdit ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-                            {submittingResultEdit ? '提交中' : '提交修整'}
-                          </button>
+                      <div className="result-editor__request">
+                        <label className="result-editor__prompt">
+                          <span>二次编辑要求</span>
+                          <textarea
+                            className="refinement-prompt__field"
+                            value={resultEditPrompt}
+                            onChange={(event) => setResultEditPrompt(event.target.value)}
+                            placeholder="例如：增强按钮高光，保持已有透明边缘"
+                            rows="3"
+                            readOnly={Boolean(selectedPendingRevision)}
+                          />
+                        </label>
+                        <div className="result-editor__actions">
+                          <span>非空要求或至少一条闭合路径即可发送</span>
+                          <div>
+                            <button
+                              type="button"
+                              onClick={undoResultPenEdit}
+                              disabled={(!resultEditPaths.length && !resultEditDraft) || Boolean(selectedPendingRevision)}
+                            >
+                              <Undo2 size={13} /> 撤销
+                            </button>
+                            <button
+                              type="button"
+                              onClick={clearResultPenEdit}
+                              disabled={(!resultEditPaths.length && !resultEditDraft) || Boolean(selectedPendingRevision)}
+                            >
+                              <Trash2 size={13} /> 清空路径
+                            </button>
+                            <button
+                              type="button"
+                              className="result-editor__submit"
+                              onClick={submitResultEdit}
+                              disabled={!resultEditSubmission.ok || submittingResultEdit || Boolean(selectedPendingRevision)}
+                            >
+                              {submittingResultEdit ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
+                              发送调整
+                            </button>
+                          </div>
                         </div>
+                        {!resultEditSubmission.ok ? (
+                          <small className={`result-editor__validation ${resultEditDraft ? 'result-editor__validation--blocking' : ''}`}>
+                            {resultEditSubmission.reason}
+                          </small>
+                        ) : null}
+                        {selectedPendingRevision?.refinementSnapshot ? (
+                          <div className="result-editor__submitted-snapshot" aria-label="已提交的二次编辑输入">
+                            <strong>已提交输入</strong>
+                            <span>{selectedPendingRevision.refinementSnapshot.prompt || '仅使用钢笔路径'}</span>
+                            <small>{selectedPendingRevision.refinementSnapshot.paths.length} 条闭合路径</small>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
