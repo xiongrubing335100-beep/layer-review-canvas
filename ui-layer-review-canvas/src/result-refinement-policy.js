@@ -173,6 +173,8 @@ function polygonUnionAreaRatio(polygons, canvas) {
     start,
     end: points[(index + 1) % points.length],
     polygonIndex,
+    edgeIndex: index,
+    edgeCount: points.length,
   })));
   const criticalYs = [0, canvas.height];
   validPolygons.forEach((points) => points.forEach((point) => {
@@ -191,7 +193,10 @@ function polygonUnionAreaRatio(polygons, canvas) {
   edges.forEach((first, firstIndex) => {
     for (let secondIndex = firstIndex + 1; secondIndex < edges.length; secondIndex += 1) {
       const second = edges[secondIndex];
-      if (first.polygonIndex === second.polygonIndex) continue;
+      if (first.polygonIndex === second.polygonIndex) {
+        const edgeDistance = Math.abs(first.edgeIndex - second.edgeIndex);
+        if (edgeDistance === 1 || edgeDistance === first.edgeCount - 1) continue;
+      }
       const y = segmentIntersectionY(first, second);
       if (y != null && y > 0 && y < canvas.height) criticalYs.push(y);
     }

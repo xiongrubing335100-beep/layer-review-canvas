@@ -155,6 +155,18 @@ test('fully overlapping repair paths use their polygon union for coverage', () =
   }), { ok: true, reason: null, warnings: [] });
 });
 
+test('self-intersecting repair paths use the actual even-odd mutable fill area', () => {
+  const bowTie = boundary('bow-tie', [
+    { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 100, y: 0 },
+  ]);
+  const policy = deriveRefinementPolicy({
+    prompt: '修复交叉区域', annotations: [bowTie], operation: pathScoped, canvas,
+  });
+
+  assert.equal(policy.repair_coverage_ratio, 0.5);
+  assert.deepEqual(policy.warnings, ['局部修复路径范围较大，可能产生重新构图']);
+});
+
 test('explicit full-canvas mode allows text-only edits and derives native tile calls', () => {
   const operation = {
     mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [],
