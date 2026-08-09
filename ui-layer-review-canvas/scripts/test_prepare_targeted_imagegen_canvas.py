@@ -129,6 +129,17 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only valid for codex_rgba, targeted_repair, or result_refinement"):
             MODULE.prepare_canvas(self.job_id, "title-one", jobs_root=self.root)
 
+    def test_rejects_cross_platform_unsafe_layer_ids_before_writing_files(self):
+        preflight_path = self.job / "preflight.json"
+        for layer_id in ("../escape", r"..\escape", r"C:\escape", "/tmp/escape", r"\\server\share"):
+            with self.subTest(layer_id=layer_id):
+                preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+                preflight["layers"][0]["id"] = layer_id
+                preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "unsafe layer id"):
+                    MODULE.prepare_canvas(self.job_id, layer_id, jobs_root=self.root)
+                self.assertFalse((self.job / "generated").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

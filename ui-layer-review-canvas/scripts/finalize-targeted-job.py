@@ -11,6 +11,11 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+try:
+    from scripts.safe_layer_path import contained_child, safe_layer_id
+except ModuleNotFoundError:
+    from safe_layer_path import contained_child, safe_layer_id
+
 
 VALIDATION_KEYS = (
     "count",
@@ -39,10 +44,10 @@ def atomic_json(path, value):
 
 
 def reserve_versioned_output_path(final_directory, layer_id):
-    stem = str(layer_id).replace("/", "-")
+    stem = safe_layer_id(layer_id)
     version = 1
     while True:
-        candidate = final_directory / f"{stem}-v{version:03d}.png"
+        candidate = contained_child(final_directory, f"{stem}-v{version:03d}.png")
         try:
             descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -385,6 +390,7 @@ def finalize_job(
     clock=now_iso,
     rmbg_runner=run_rmbg,
 ):
+    layer_id = safe_layer_id(layer_id)
     job_directory = (jobs_root / job_id).resolve()
     if job_directory.name != job_id:
         raise ValueError("job directory does not match jobId")
@@ -392,23 +398,23 @@ def finalize_job(
     layer = find_layer(plan, layer_id)
     width, height, source_x, source_y = expected_output(layer)
     route = layer.get("execution_route_hint")
-    generated_root = (job_directory / "generated").resolve()
+    generated_root = contained_child(job_directory, "generated")
     generated_path = Path(generated_input).resolve()
     if not contained(generated_path, generated_root):
         raise ValueError("ImageGen input must be inside the job generated directory")
     if not generated_path.is_file():
         raise ValueError("ImageGen input does not exist")
 
-    final_directory = (job_directory / "final").resolve()
+    final_directory = contained_child(job_directory, "final")
     planned_output = Path(plan.get("output_directory", final_directory)).resolve()
     if planned_output != final_directory:
         raise ValueError("planned output directory must be the current job final directory")
     final_directory.mkdir(parents=True, exist_ok=True)
-    output_layer_id = layer.get("id") or layer_id
+    output_layer_id = safe_layer_id(layer.get("id") or layer_id)
     final_path = (
         None
         if route == "result_refinement"
-        else final_directory / f"{str(output_layer_id).replace('/', '-')}.png"
+        else contained_child(final_directory, f"{output_layer_id}.png")
     )
     temporary_directory = Path(tempfile.mkdtemp(prefix="targeted-finalize-", dir=generated_root))
     temporary_candidate = temporary_directory / "candidate.png"

@@ -225,6 +225,23 @@ test('preflight rejects output path escape, missing files, invalid size, and lay
   }
 });
 
+test('preflight rejects layer ids that are unsafe on POSIX or Windows', async () => {
+  const context = await fixture();
+  try {
+    for (const layerId of ['../escape', '..\\escape', 'C:\\escape', '/tmp/escape', '\\\\server\\share']) {
+      await assert.rejects(
+        buildTargetedExecutionSpec({
+          ...context,
+          plan: { ...context.plan, layers: [{ ...context.plan.layers[0], id: layerId }] },
+        }),
+        /layer id/i,
+      );
+    }
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
 test('preflight rejects repair regions without an allowed source', async () => {
   const context = await fixture();
   try {

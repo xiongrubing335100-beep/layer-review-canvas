@@ -92,6 +92,32 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         self.assertTrue(first.is_file())
         self.assertTrue(second.is_file())
 
+    def test_versioned_outputs_reject_cross_platform_unsafe_layer_ids(self):
+        for layer_id in ("../escape", r"..\escape", r"C:\escape", "/tmp/escape", r"\\server\share"):
+            with self.subTest(layer_id=layer_id):
+                with self.assertRaisesRegex(ValueError, "unsafe layer id"):
+                    MODULE.reserve_versioned_output_path(self.job / "final", layer_id)
+
+        self.assertEqual(list((self.job / "final").iterdir()), [])
+
+    def test_rejects_a_final_directory_symlink_that_escapes_the_job(self):
+        final_directory = self.job / "final"
+        final_directory.rmdir()
+        escaped_directory = self.root / "escaped-final"
+        escaped_directory.mkdir()
+        final_directory.symlink_to(escaped_directory, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+            )
+
+        self.assertEqual(list(escaped_directory.iterdir()), [])
+
     def test_writes_exact_size_png_and_completed_report(self):
         report = MODULE.finalize_job(
             self.job_id,

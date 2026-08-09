@@ -5,6 +5,11 @@ from pathlib import Path
 
 from PIL import Image
 
+try:
+    from scripts.safe_layer_path import contained_child, safe_layer_id
+except ModuleNotFoundError:
+    from safe_layer_path import contained_child, safe_layer_id
+
 
 LANDSCAPE_CANVAS = (1536, 1024)
 PORTRAIT_CANVAS = (1024, 1536)
@@ -46,6 +51,7 @@ def average_corner_color(image):
 
 
 def prepare_canvas(job_id, layer_id, *, jobs_root):
+    layer_id = safe_layer_id(layer_id)
     job_directory = (jobs_root / job_id).resolve()
     if job_directory.name != job_id:
         raise ValueError("job directory does not match jobId")
@@ -87,11 +93,10 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     resized = crop.resize((roi_width, roi_height), Image.Resampling.LANCZOS)
     canvas.alpha_composite(resized, (roi_x, roi_y))
 
-    generated_directory = job_directory / "generated"
+    generated_directory = contained_child(job_directory, "generated")
     generated_directory.mkdir(parents=True, exist_ok=True)
-    stem = str(layer_id).replace("/", "-")
-    reference_path = generated_directory / f"{stem}-imagegen-reference.png"
-    mapping_path = generated_directory / f"{stem}-imagegen-mapping.json"
+    reference_path = contained_child(generated_directory, f"{layer_id}-imagegen-reference.png")
+    mapping_path = contained_child(generated_directory, f"{layer_id}-imagegen-mapping.json")
     reference = canvas if route == "result_refinement" else canvas.convert("RGB")
     reference.save(reference_path, format="PNG")
 

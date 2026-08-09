@@ -7,6 +7,9 @@ const allowedRoutes = new Set(['direct_crop', 'alpha_extract', 'codex_rgba', 'ta
 const jobIdPattern = /^layer-job-[a-zA-Z0-9._-]+$/;
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const maximumDecodedPngBytes = 512 * 1024 * 1024;
+const unsafeLayerIdCharacters = /[<>:"/\\|?*\u0000-\u001f]/;
+const windowsDrivePrefix = /^[A-Za-z]:/;
+const windowsReservedName = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i;
 const pngCrcTable = Uint32Array.from({ length: 256 }, (_, value) => {
   let crc = value;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -19,6 +22,20 @@ function fail(message, code = 'PREFLIGHT_INVALID') {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function safeLayerId(value, fallback) {
+  const layerId = String(value ?? fallback ?? '');
+  if (!layerId
+    || layerId !== layerId.trim()
+    || layerId.includes('..')
+    || unsafeLayerIdCharacters.test(layerId)
+    || windowsDrivePrefix.test(layerId)
+    || windowsReservedName.test(layerId)
+    || /[. ]$/.test(layerId)) {
+    throw fail(`layer id 不安全：${layerId || '(empty)'}`);
+  }
+  return layerId;
 }
 
 async function requireFile(filePath, label) {
@@ -252,7 +269,8 @@ export async function buildTargetedExecutionSpec({
   const refinementPngSize = hasResultRefinement ? await readPngSize(sourcePath) : null;
   const layers = [];
   for (const [index, layer] of plan.layers.entries()) {
-    const layerName = layer.name || layer.id || `拆分项 ${index + 1}`;
+    const layerId = safeLayerId(layer.id, `layer-${index + 1}`);
+    const layerName = layer.name || layerId || `拆分项 ${index + 1}`;
     if (layer.layer_index !== undefined && layer.layer_index !== index + 1) {
       throw fail(`${layerName} 的 layer_index 顺序不一致`);
     }
@@ -306,7 +324,7 @@ export async function buildTargetedExecutionSpec({
     }
     layers.push({
       layer_index: index + 1,
-      id: layer.id || `layer-${index + 1}`,
+      id: layerId,
       name: layerName,
       category: layer.category || null,
       requirement: normalizeRequirement(layer.requirement),
