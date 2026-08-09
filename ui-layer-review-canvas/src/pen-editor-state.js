@@ -9,6 +9,7 @@ import {
 } from './pen-path.js';
 
 const HISTORY_LIMIT = 50;
+const PENDING_EMISSION_LIMIT = 50;
 
 function snapshot(state) {
   return {
@@ -91,13 +92,18 @@ export function syncPenEditorStateFromProps({
   if (emissionIndex >= 0) {
     return {
       state: current,
-      pendingEmissions: pendingEmissions.slice(emissionIndex + 1),
+      pendingEmissions: pendingEmissions.filter((_, index) => index !== emissionIndex),
     };
   }
   return {
     state: { ...createPenEditorState(paths), draft, selection },
     pendingEmissions: [],
   };
+}
+
+export function queuePenEditorEmission(pendingEmissions = [], output, { enabled = true } = {}) {
+  if (!enabled || !output) return [];
+  return [...pendingEmissions.slice(-(PENDING_EMISSION_LIMIT - 1)), output];
 }
 
 export function reducePenEditor(state, action = {}) {

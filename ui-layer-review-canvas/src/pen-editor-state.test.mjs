@@ -148,3 +148,92 @@ test('stale self-emitted props during a drag do not reset undo history', () => {
   assert.deepEqual(latestSync.pendingEmissions, []);
   assert.deepEqual(undone.paths[0].anchors[0], original.anchors[0]);
 });
+
+test('out-of-order self-emitted props are both ignored without losing undo history', () => {
+  const original = fourAnchorFixture();
+  const initial = reducePenEditor(createPenEditorState([original]), {
+    type: 'select-anchor', pathId: original.id, anchorIndex: 0,
+  });
+  const firstMove = reducePenEditor(initial, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .2, y: .2 },
+  });
+  const latestMove = reducePenEditor(firstMove, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
+  });
+  const firstOutput = emittedOutput(firstMove);
+  const latestOutput = emittedOutput(latestMove);
+
+  const latestSync = penEditorState.syncPenEditorStateFromProps({
+    current: latestMove,
+    pendingEmissions: [firstOutput, latestOutput],
+    ...latestOutput,
+  });
+  assert.equal(latestSync.state, latestMove);
+  assert.deepEqual(latestSync.pendingEmissions, [firstOutput]);
+
+  const staleSync = penEditorState.syncPenEditorStateFromProps({
+    current: latestSync.state,
+    pendingEmissions: latestSync.pendingEmissions,
+    ...firstOutput,
+  });
+  const undone = reducePenEditor(staleSync.state, { type: 'undo' });
+
+  assert.equal(staleSync.state, latestMove);
+  assert.deepEqual(staleSync.pendingEmissions, []);
+  assert.deepEqual(undone.paths[0].anchors[0], original.anchors[0]);
+});
+
+test('a controlled rollback with new prop references replaces pending local output', () => {
+  const original = fourAnchorFixture();
+  const initial = createPenEditorState([original]);
+  const firstMove = reducePenEditor(initial, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .2, y: .2 },
+  });
+  const latestMove = reducePenEditor(firstMove, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
+  });
+  const firstOutput = emittedOutput(firstMove);
+  const latestOutput = emittedOutput(latestMove);
+  const rollbackPaths = firstOutput.paths.map((path) => ({
+    ...path,
+    anchors: path.anchors.map((anchor) => ({
+      ...anchor,
+      in: { ...anchor.in },
+      out: { ...anchor.out },
+    })),
+  }));
+
+  const rollbackSync = penEditorState.syncPenEditorStateFromProps({
+    current: latestMove,
+    pendingEmissions: [firstOutput, latestOutput],
+    paths: rollbackPaths,
+    draft: firstOutput.draft,
+    selection: firstOutput.selection ? { ...firstOutput.selection } : null,
+  });
+
+  assert.notEqual(rollbackSync.state, latestMove);
+  assert.deepEqual(rollbackSync.state.paths, rollbackPaths);
+  assert.deepEqual(rollbackSync.state.history, []);
+  assert.deepEqual(rollbackSync.pendingEmissions, []);
+});
+
+test('pending self-emissions are disabled without onChange and bounded without parent feedback', () => {
+  assert.equal(typeof penEditorState.queuePenEditorEmission, 'function');
+  const outputs = Array.from({ length: 75 }, (_, index) => ({
+    paths: [{ id: `path-${index}` }],
+    draft: null,
+    selection: null,
+    history: [],
+  }));
+
+  const disabledQueue = penEditorState.queuePenEditorEmission([], outputs[0], { enabled: false });
+  const boundedQueue = outputs.reduce(
+    (pending, output) => penEditorState.queuePenEditorEmission(pending, output, { enabled: true }),
+    [],
+  );
+
+  assert.deepEqual(disabledQueue, []);
+  assert.equal(boundedQueue.length, 50);
+  assert.equal(boundedQueue[0], outputs[25]);
+  assert.equal(boundedQueue.at(-1), outputs[74]);
+});

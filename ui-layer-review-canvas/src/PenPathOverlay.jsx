@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   createPenEditorState,
   focusPenOverlayOwner,
+  queuePenEditorEmission,
   reducePenEditor,
   syncPenEditorStateFromProps,
 } from './pen-editor-state.js';
@@ -155,7 +156,9 @@ export function PenPathOverlay({
       selection: next.selection,
       history: next.history,
     };
-    emittedRef.current = [...emittedRef.current, output];
+    emittedRef.current = queuePenEditorEmission(emittedRef.current, output, {
+      enabled: typeof onChange === 'function',
+    });
     onChange?.(output);
     return next;
   };
