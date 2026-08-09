@@ -1,6 +1,13 @@
 import { annotationForPlan } from './annotation-plan.js';
 
 const fullCanvasPercent = { x: 0, y: 0, width: 100, height: 100 };
+const preDeliveryStatuses = new Set([
+  'queued',
+  'awaiting_codex_message',
+  'sending_to_codex',
+  'host_accepted',
+  'submitted_to_conversation',
+]);
 
 function positivePixelSize(size) {
   const width = Number(size?.width);
@@ -53,7 +60,10 @@ export async function recordResultRefinementDelivery({
 }) {
   const followsCurrentConversation = delivery.delivery_channel === 'current_conversation';
   if (followsCurrentConversation) await sendFollowUpMessage(delivery.prompt);
-  setJobs((current) => appendRevisionJob(current, revisionJob));
+  const deliveredRevisionJob = followsCurrentConversation
+    ? { ...revisionJob, status: 'sent_to_codex', deliveredToConversation: true }
+    : revisionJob;
+  setJobs((current) => appendRevisionJob(current, deliveredRevisionJob));
 
   let acknowledgementError = null;
   if (followsCurrentConversation) {
@@ -64,6 +74,19 @@ export async function recordResultRefinementDelivery({
     }
   }
   return { followUpPosted: followsCurrentConversation, acknowledgementError };
+}
+
+export function mergeResultRefinementPollUpdate(currentJob, polledJob) {
+  const protectsDeliveredRevision = currentJob?.editKind === 'result_refinement'
+    && currentJob.deliveredToConversation === true
+    && preDeliveryStatuses.has(polledJob?.status);
+  if (!protectsDeliveredRevision) return polledJob;
+  return {
+    ...polledJob,
+    status: currentJob.status,
+    statusDetail: currentJob.statusDetail,
+    deliveredToConversation: true,
+  };
 }
 
 export function buildResultRefinementPlan({

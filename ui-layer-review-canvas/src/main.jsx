@@ -86,6 +86,7 @@ import { PenPathOverlay } from './PenPathOverlay.jsx';
 import {
   buildResultRefinementPlan,
   canSubmitResultRefinement,
+  mergeResultRefinementPollUpdate,
   recordResultRefinementDelivery,
   readPngPixelSize,
 } from './result-refinement.js';
@@ -1260,7 +1261,8 @@ function App() {
       setJobs((current) => current.filter((job) => !discardedIds.has(job.id)).map((job) => {
         if (job.status === 'cancelled') return job;
         const update = updates.find((item) => item?.job_id === job.id);
-        return update ? {
+        if (!update) return job;
+        const polledJob = {
           ...job,
           projectId: update.project_id || job.projectId,
           imageId: update.image_id || job.imageId,
@@ -1283,7 +1285,8 @@ function App() {
           confirmationRequestedAt: update.status === 'needs_confirmation'
             ? job.confirmationRequestedAt || Date.now()
             : job.confirmationRequestedAt,
-        } : job;
+        };
+        return mergeResultRefinementPollUpdate(job, polledJob);
       }));
     };
 

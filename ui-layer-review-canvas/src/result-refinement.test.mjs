@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as resultRefinementState from './result-refinement.js';
 import {
   buildResultRefinementPlan,
   canSubmitResultRefinement,
@@ -205,6 +206,8 @@ test('a delivered current-conversation revision remains locally pending when ack
   assert.equal(outcome.followUpPosted, true);
   assert.match(outcome.acknowledgementError.message, /回写失败/);
   assert.equal(jobs.length, 2);
+  assert.equal(jobs.at(-1).status, 'sent_to_codex');
+  assert.equal(jobs.at(-1).deliveredToConversation, true);
   assert.deepEqual(jobs.at(-1).refinementSnapshot, revisionJob.refinementSnapshot);
 
   jobs = jobs.map((job) => (job.id === 'revision-job' ? { ...job, status: 'processing' } : job));
@@ -217,4 +220,50 @@ test('a delivered current-conversation revision remains locally pending when ack
   });
   assert.equal(jobs.filter((job) => job.id === 'revision-job').length, 1);
   assert.equal(jobs.find((job) => job.id === 'revision-job').status, 'processing');
+});
+
+test('stale pre-delivery polling cannot downgrade a locally delivered revision', () => {
+  const deliveredJob = {
+    id: 'revision-job',
+    editKind: 'result_refinement',
+    status: 'sent_to_codex',
+    deliveredToConversation: true,
+    refinementSnapshot: { prompt: '增强高光', paths: [] },
+  };
+  const staleStatuses = [
+    'queued',
+    'awaiting_codex_message',
+    'sending_to_codex',
+    'host_accepted',
+    'submitted_to_conversation',
+  ];
+
+  staleStatuses.forEach((status) => {
+    const merged = resultRefinementState.mergeResultRefinementPollUpdate?.(
+      deliveredJob,
+      { ...deliveredJob, status, statusDetail: `stale:${status}` },
+    );
+    assert.equal(merged?.status, 'sent_to_codex');
+    assert.equal(merged?.deliveredToConversation, true);
+  });
+});
+
+test('polling can advance a delivered revision to processing and terminal states', () => {
+  const deliveredJob = {
+    id: 'revision-job',
+    editKind: 'result_refinement',
+    status: 'sent_to_codex',
+    deliveredToConversation: true,
+  };
+  const merge = resultRefinementState.mergeResultRefinementPollUpdate;
+  const processing = merge?.(deliveredJob, { ...deliveredJob, status: 'processing' });
+
+  assert.equal(processing?.status, 'processing');
+  assert.equal(
+    merge?.(processing, { ...processing, status: 'awaiting_codex_message' })?.status,
+    'processing',
+  );
+  ['completed', 'failed', 'cancelled'].forEach((status) => {
+    assert.equal(merge?.(processing, { ...processing, status })?.status, status);
+  });
 });
