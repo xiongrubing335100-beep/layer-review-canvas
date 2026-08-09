@@ -83,6 +83,7 @@ import { analyzeFastCategories } from './fast-category-analysis.js';
 import { resolvePanelVisibility } from './workbench-layout.js';
 import { annotationForPlan, selectionForPenOverlay } from './annotation-plan.js';
 import { PenPathOverlay } from './PenPathOverlay.jsx';
+import { resolveNodeResultState } from './result-version-state.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -266,10 +267,6 @@ async function cropRegionDataUrl(source, bounds, sourceSize) {
   return canvas.toDataURL('image/png');
 }
 
-function normalizedFileKey(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
 function defaultRemoveBackground(category) {
   return category !== 'kvBackground';
 }
@@ -328,14 +325,6 @@ function fitCanvasPreviewSize(width, height, maxWidth = 260, maxHeight = 240) {
     return { width: maxWidth, height: Math.max(24, Math.round(maxWidth / aspect)) };
   }
   return { width: Math.max(24, Math.round(maxHeight * aspect)), height: maxHeight };
-}
-
-function jobLayerSnapshot(job, node, fallbackSourceSize) {
-  const snapshot = job?.layerSnapshots?.[node.id];
-  return {
-    bounds: snapshot?.bounds ?? node.bounds,
-    sourceSize: job?.sourceSize ?? fallbackSourceSize,
-  };
 }
 
 function expandedBounds(bounds) {
@@ -745,25 +734,25 @@ function App() {
     category,
     items: nodes.filter((node) => node.category === category),
   })), [nodes]);
-  const nodeResults = useMemo(() => {
-    const latestByNode = new Map();
-    jobsForCurrentSource.forEach((job) => job.nodeIds?.forEach((nodeId) => latestByNode.set(nodeId, job)));
-    const results = new Map();
-    nodes.forEach((node) => {
-      const job = latestByNode.get(node.id);
-      if (!job) return;
-      const jobNodeIndex = job.nodeIds.indexOf(node.id);
-      const nodeKey = normalizedFileKey(node.id);
-      const image = job.images?.find((item) => normalizedFileKey(item.name).includes(nodeKey))
-        || (job.nodeIds.length === 1 ? job.images?.[0] : job.images?.[jobNodeIndex]);
-      const snapshot = jobLayerSnapshot(job, node, sourceSize);
-      results.set(node.id, { job, image, ...snapshot });
-    });
-    return results;
-  }, [jobsForCurrentSource, nodes, sourceSize]);
+  const nodeResultStates = useMemo(() => new Map(nodes.map((node) => [node.id, resolveNodeResultState({
+    jobs: jobsForCurrentSource,
+    node,
+    sourceSize,
+  })])), [jobsForCurrentSource, nodes, sourceSize]);
+  const nodeResults = useMemo(() => new Map(
+    [...nodeResultStates].flatMap(([nodeId, state]) => (state.baseResult ? [[nodeId, state.baseResult]] : [])),
+  ), [nodeResultStates]);
   const latestSelectedResult = nodeResults.get(selected.id);
+  const selectedResultState = nodeResultStates.get(selected.id);
+  const selectedPendingRevision = selectedResultState?.pendingRevision?.job;
+  const selectedFailedRevision = selectedResultState?.failedRevision?.job;
   const latestSelectedJob = latestSelectedResult?.job;
-  const activeSelectedJob = localSubmissions[selected.id] || latestSelectedJob;
+  const selectedFallbackJob = [...jobsForCurrentSource].reverse().find((job) => job.nodeIds?.includes(selected.id));
+  const activeSelectedJob = localSubmissions[selected.id]
+    || selectedPendingRevision
+    || selectedFailedRevision
+    || latestSelectedJob
+    || selectedFallbackJob;
   const activeSelectedResult = latestSelectedResult || (activeSelectedJob ? { job: activeSelectedJob } : null);
   const sourcePreviewWidth = 275;
   const sourcePreviewHeight = Math.round(
@@ -779,6 +768,7 @@ function App() {
     return nodes.flatMap((node) => {
       const result = nodeResults.get(node.id);
       if (!result) return [];
+      const state = nodeResultStates.get(node.id);
       const region = pixelBounds(result.bounds, result.sourceSize);
       const { width: previewWidth, height: previewHeight } = fitCanvasPreviewSize(
         region.width,
@@ -791,6 +781,8 @@ function App() {
       const position = resultNodePositions[resultId] || { x: 1760, y: nextY };
       const item = {
         ...result,
+        pendingRevision: state?.pendingRevision?.job ?? null,
+        failedRevision: state?.failedRevision?.job ?? null,
         id: resultId,
         node,
         x: position.x,
@@ -801,7 +793,7 @@ function App() {
       nextY += previewHeight + 92;
       return [item];
     });
-  }, [hiddenCanvasResultKeys, nodeResults, nodes, resultNodePositions]);
+  }, [hiddenCanvasResultKeys, nodeResultStates, nodeResults, nodes, resultNodePositions]);
   const inactiveImageDocuments = useMemo(
     () => imageDocuments.filter((document) => document.imageId !== activeImageId && (document.sourceDataUrl || document.sourceImage)),
     [activeImageId, imageDocuments],
@@ -843,20 +835,14 @@ function App() {
         width: document.sourceSize.width,
         height: document.sourceSize.height,
       };
-      const latestByNode = new Map();
-      jobs
-        .filter((job) => jobMatchesSource(job, documentSource))
-        .forEach((job) => (job.nodeIds || []).forEach((nodeId) => latestByNode.set(nodeId, job)));
+      const documentJobs = jobs.filter((job) => jobMatchesSource(job, documentSource));
       let nextIndex = 0;
       return (document.nodes || []).flatMap((node) => {
-        const job = latestByNode.get(node.id);
-        if (!job) return [];
-        const jobNodeIndex = job.nodeIds.indexOf(node.id);
-        const nodeKey = normalizedFileKey(node.id);
-        const image = job.images?.find((item) => normalizedFileKey(item.name).includes(nodeKey))
-          || (job.nodeIds.length === 1 ? job.images?.[0] : job.images?.[jobNodeIndex]);
-        const snapshot = jobLayerSnapshot(job, node, document.sourceSize);
-        const region = pixelBounds(snapshot.bounds, snapshot.sourceSize);
+        const state = resolveNodeResultState({ jobs: documentJobs, node, sourceSize: document.sourceSize });
+        const result = state.baseResult;
+        if (!result) return [];
+        const { job, image, bounds, sourceSize: resultSourceSize } = result;
+        const region = pixelBounds(bounds, resultSourceSize);
         const { width: previewWidth, height: previewHeight } = fitCanvasPreviewSize(
           region.width,
           region.height,
@@ -871,7 +857,7 @@ function App() {
         };
         nextIndex += 1;
         return [{
-          ...snapshot,
+          ...result,
           id: resultId,
           imageId: document.imageId,
           node,
@@ -2680,6 +2666,10 @@ function App() {
 
   const submitResultEdit = async () => {
     if (!latestSelectedResult?.image || submittingResultEdit) return;
+    if (selectedPendingRevision) {
+      setToast('当前结果精修仍在处理中，请等待完成后再提交');
+      return;
+    }
     if (!resultEditMarks.length) {
       setToast('先在拆分结果上标注需要修整的区域');
       return;
@@ -3353,9 +3343,9 @@ function App() {
           <button type="button" className="command-button command-button--quiet" onClick={() => approveNode(true)}>
             <Check size={17} /> 确认并下一个
           </button>
-          <button type="button" className="command-button command-button--wide" onClick={submitCurrent} disabled={selectedNodeRunning}>
-            {selectedNodeRunning ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}
-            {selectedNodeRunning ? '拆分中' : latestSelectedResult?.image ? '重新拆分' : '拆分'}
+          <button type="button" className="command-button command-button--wide" onClick={submitCurrent} disabled={selectedNodeRunning || Boolean(selectedPendingRevision)}>
+            {selectedNodeRunning || selectedPendingRevision ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}
+            {selectedNodeRunning || selectedPendingRevision ? '拆分中' : latestSelectedResult?.image ? '重新拆分' : '拆分'}
           </button>
           {selected.status === 'accepted' ? <IconButton label="撤销当前确认" onClick={undoConfirmation}><Undo2 size={17} /></IconButton> : <span />}
         </div>
@@ -3695,7 +3685,11 @@ function App() {
                   <div className="layer-list">
                     {group.items.map((node) => {
                       const rowResult = nodeResults.get(node.id);
-                      const rowJob = localSubmissions[node.id] || rowResult?.job;
+                      const rowState = nodeResultStates.get(node.id);
+                      const rowJob = localSubmissions[node.id]
+                        || rowState?.pendingRevision?.job
+                        || rowState?.failedRevision?.job
+                        || rowResult?.job;
                       const rowPending = rowJob && jobStatus(rowJob.status).tone === 'pending';
                       return (
                         <button key={node.id} type="button" className={`layer-row ${selectedId === node.id ? 'layer-row--selected' : ''}`} onClick={() => selectNode(node, reviewMode === 'canvas')}>
@@ -3897,18 +3891,7 @@ function App() {
               </header>
 
               <div className={`guided-result-panel__body ${resultEditing ? 'guided-result-panel__body--editing' : ''}`}>
-                {localSubmissions[selected.id] ? (
-                  <div className="guided-result-panel__pending">
-                    <LoaderCircle size={30} className="spin" />
-                    <strong>{splitProgress(activeSelectedJob.status).label}</strong>
-                    <small>{splitProgress(activeSelectedJob.status).detail}</small>
-                    <div className="split-progress-track" role="progressbar" aria-label="拆分任务进度"><span /></div>
-                    <div className="split-progress-meta">
-                      <span>{splitProgress(activeSelectedJob.status).stage}</span>
-                      <span>已用时 {formatElapsed(activeSelectedJob.submittedAt, clockNow)}</span>
-                    </div>
-                  </div>
-                ) : latestSelectedResult?.image ? (
+                {latestSelectedResult?.image ? (
                   <div className={`guided-result-panel__canvas ${resultEditing ? 'guided-result-panel__canvas--editing' : ''}`}>
                     {resultEditing ? (
                       <div className="result-editor__toolbar" role="toolbar" aria-label="结果精修工具">
@@ -4001,7 +3984,7 @@ function App() {
                             type="button"
                             className="result-editor__submit"
                             onClick={submitResultEdit}
-                            disabled={!resultEditMarks.length || submittingResultEdit}
+                            disabled={!resultEditMarks.length || submittingResultEdit || Boolean(selectedPendingRevision)}
                           >
                             {submittingResultEdit ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
                             {submittingResultEdit ? '提交中' : '提交修整'}
@@ -4568,7 +4551,7 @@ function App() {
                     <div className="canvas-node-frame">
                       <div className="canvas-node__media" style={{ height: preview.height }}>
                         <RegionPreview sourceImage={sourceImage} sourceSize={sourceSize} bounds={node.bounds} className="region-preview--node">
-                          {nodeResults.get(node.id)?.job && jobStatus(nodeResults.get(node.id).job.status).tone === 'pending' ? (
+                          {nodeResultStates.get(node.id)?.pendingRevision ? (
                             <span className="node-processing"><LoaderCircle size={18} className="spin" /></span>
                           ) : null}
                         </RegionPreview>
@@ -4583,6 +4566,8 @@ function App() {
                   job,
                   node,
                   image,
+                  pendingRevision,
+                  failedRevision,
                   bounds,
                   sourceSize: resultSourceSize,
                   x,
@@ -4613,7 +4598,7 @@ function App() {
                     }}
                   >
                     <div className="canvas-node-meta">
-                      <span>{meta.tone === 'pending' ? <LoaderCircle size={14} className="spin" /> : <ImagePlus size={14} />}<strong>{node.name} - 拆分结果</strong></span>
+                      <span>{pendingRevision ? <LoaderCircle size={14} className="spin" /> : <ImagePlus size={14} />}<strong>{node.name} - 拆分结果</strong></span>
                       <span className="canvas-node-meta__actions">
                         <small>{region.width} x {region.height}</small>
                         {image ? (
@@ -4664,6 +4649,7 @@ function App() {
                           <span>等待输出 PNG</span>
                         </div>
                       )}
+                      {failedRevision ? <small>{failedRevision.statusDetail || '最近一次精修失败，已保留上一版 PNG'}</small> : null}
                     </div>
                   </article>
                 );
