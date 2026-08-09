@@ -83,13 +83,50 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         with Image.open(mapping["reference_path"]) as image:
             self.assertEqual(image.size, (1536, 1024))
 
+    def test_result_refinement_reference_preserves_transparent_rgba(self):
+        preflight_path = self.job / "preflight.json"
+        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+        preflight["layers"][0].update({
+            "execution_route_hint": "result_refinement",
+            "transparency_strategy": "preserve_existing_alpha",
+            "expected_output": {"width": 4, "height": 2},
+            "mask_annotations": [],
+        })
+        base = Image.new("RGBA", (4, 2), (25, 50, 75, 255))
+        base.putpixel((0, 0), (1, 2, 3, 0))
+        base.save(self.crop)
+        preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+        mapping_path, mapping = MODULE.prepare_canvas(
+            self.job_id,
+            "title-one",
+            jobs_root=self.root,
+        )
+
+        self.assertTrue(mapping_path.is_file())
+        self.assertEqual(mapping["generated_input_kind"], "result_refinement_canvas")
+        self.assertEqual(mapping["execution_route"], "result_refinement")
+        self.assertEqual(mapping["base_png_dimensions"], {"width": 4, "height": 2})
+        self.assertEqual(mapping["content_region"], {
+            "x": 0,
+            "y": 128,
+            "width": 1536,
+            "height": 768,
+        })
+        with Image.open(mapping["reference_path"]) as reference:
+            self.assertEqual(reference.format, "PNG")
+            self.assertEqual(reference.mode, "RGBA")
+            self.assertEqual(reference.size, (1536, 1024))
+            self.assertEqual(reference.getpixel((0, 0)), (0, 0, 0, 0))
+            self.assertLess(reference.getpixel((64, 192))[3], 255)
+
     def test_rejects_non_codex_rgba_route(self):
         preflight_path = self.job / "preflight.json"
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
         preflight["layers"][0]["execution_route_hint"] = "alpha_extract"
         preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
 
-        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba or targeted_repair"):
+        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba, targeted_repair, or result_refinement"):
             MODULE.prepare_canvas(self.job_id, "title-one", jobs_root=self.root)
 
 

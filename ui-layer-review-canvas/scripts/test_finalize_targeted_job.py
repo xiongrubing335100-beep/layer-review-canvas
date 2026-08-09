@@ -46,6 +46,52 @@ class FinalizeTargetedJobTests(unittest.TestCase):
                 child.rmdir()
         self.root.rmdir()
 
+    def configure_result_refinement(self, annotations, *, candidate_mode="RGBA"):
+        base = Image.new("RGBA", (4, 4), (10, 20, 30, 255))
+        base.putpixel((1, 1), (40, 50, 60, 128))
+        base.putpixel((3, 3), (70, 80, 90, 0))
+        base.save(self.source)
+        self.plan.update({
+            "parent_job_id": "parent-job",
+            "parent_version_id": "parent-version-3",
+        })
+        self.plan["layers"][0].update({
+            "execution_route_hint": "result_refinement",
+            "transparency_strategy": "preserve_existing_alpha",
+            "rmbg_required": False,
+            "output_resolution_policy": "existing_result_pixels",
+            "placement": {"x": 11, "y": 12, "width": 99, "height": 88},
+            "mask_annotations": annotations,
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        canvas = Image.new(candidate_mode, (1024, 1024), (200, 100, 50, 255)[:len(candidate_mode)])
+        canvas.save(self.generated)
+        mapping_path = self.job / "generated" / "result-refinement-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "result_refinement_canvas",
+            "execution_route": "result_refinement",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 4, "height": 4},
+            "base_png_dimensions": {"width": 4, "height": 4},
+        }), encoding="utf-8")
+        return mapping_path
+
+    def test_result_refinement_reserves_each_version_path_exclusively(self):
+        existing = self.job / "final" / "layer-one-v001.png"
+        existing.write_bytes(b"existing-parent-version")
+        first = MODULE.reserve_versioned_output_path(self.job / "final", "layer-one")
+        second = MODULE.reserve_versioned_output_path(self.job / "final", "layer-one")
+
+        self.assertEqual(first.name, "layer-one-v002.png")
+        self.assertEqual(second.name, "layer-one-v003.png")
+        self.assertEqual(existing.read_bytes(), b"existing-parent-version")
+        self.assertTrue(first.is_file())
+        self.assertTrue(second.is_file())
+
     def test_writes_exact_size_png_and_completed_report(self):
         report = MODULE.finalize_job(
             self.job_id,
@@ -312,6 +358,186 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         }), encoding="utf-8")
 
         with self.assertRaisesRegex(ValueError, "canonical canvas geometry"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+            )
+
+    def test_result_refinement_locks_unmarked_rgba_and_uses_base_pixel_dimensions(self):
+        mapping_path = self.configure_result_refinement([{
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "boundary",
+            "semantics": "edge_override",
+            "order_index": 0,
+            "source_polygon_pixels": [
+                {"x": 1, "y": 1},
+                {"x": 2, "y": 1},
+                {"x": 2, "y": 2},
+                {"x": 1, "y": 2},
+            ],
+        }])
+
+        def forbidden_rmbg(*_args):
+            self.fail("result_refinement must not call RMBG")
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            rmbg_runner=forbidden_rmbg,
+        )
+
+        output_path = Path(report["output_path"])
+        self.assertNotEqual(output_path, self.source)
+        self.assertRegex(output_path.name, r"^layer-one-v\d{3}\.png$")
+        with Image.open(output_path) as output:
+            self.assertEqual(output.format, "PNG")
+            self.assertEqual(output.mode, "RGBA")
+            self.assertEqual(output.size, (4, 4))
+            self.assertEqual(output.getpixel((0, 0)), (10, 20, 30, 255))
+            self.assertEqual(output.getpixel((1, 1)), (200, 100, 50, 128))
+            self.assertEqual(output.getpixel((3, 3)), (70, 80, 90, 0))
+        with Image.open(self.source) as base:
+            self.assertEqual(base.getpixel((1, 1)), (40, 50, 60, 128))
+        self.assertEqual(report["parent_job_id"], "parent-job")
+        self.assertEqual(report["parent_version_id"], "parent-version-3")
+        self.assertEqual(report["input_dimensions"], {"width": 4, "height": 4})
+        self.assertEqual(report["output_dimensions"], {"width": 4, "height": 4})
+        self.assertEqual(report["annotation_count"], 1)
+        self.assertTrue(report["preserve_existing_alpha"])
+        self.assertFalse(report["rmbg"]["required"])
+        self.assertEqual(report["logical_placement"], {
+            "x": 11,
+            "y": 12,
+            "width": 99,
+            "height": 88,
+        })
+
+    def test_result_refinement_explicit_erase_changes_only_annotated_alpha(self):
+        mapping_path = self.configure_result_refinement([{
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "background",
+            "semantics": "force_exclude",
+            "order_index": 0,
+            "source_polygon_pixels": [
+                {"x": 0, "y": 0},
+                {"x": 1, "y": 0},
+                {"x": 1, "y": 1},
+                {"x": 0, "y": 1},
+            ],
+        }])
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+        )
+
+        with Image.open(report["output_path"]) as output:
+            self.assertEqual(output.getpixel((0, 0)), (200, 100, 50, 0))
+            self.assertEqual(output.getpixel((2, 2)), (10, 20, 30, 255))
+            self.assertEqual(output.getpixel((3, 3)), (70, 80, 90, 0))
+
+    def test_result_refinement_later_annotation_wins_for_overlapping_erase(self):
+        polygon = [
+            {"x": 0, "y": 0},
+            {"x": 1, "y": 0},
+            {"x": 1, "y": 1},
+            {"x": 0, "y": 1},
+        ]
+        mapping_path = self.configure_result_refinement([{
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "boundary",
+            "semantics": "edge_override",
+            "order_index": 1,
+            "source_polygon_pixels": polygon,
+        }, {
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "background",
+            "semantics": "force_exclude",
+            "order_index": 0,
+            "source_polygon_pixels": polygon,
+        }])
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+        )
+
+        with Image.open(report["output_path"]) as output:
+            self.assertEqual(output.getpixel((0, 0)), (200, 100, 50, 255))
+
+    def test_result_refinement_text_only_can_edit_full_rgba_canvas(self):
+        mapping_path = self.configure_result_refinement([])
+        canvas = Image.new("RGBA", (1024, 1024), (200, 100, 50, 255))
+        canvas.paste((200, 100, 50, 64), (0, 0, 512, 1024))
+        canvas.save(self.generated)
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+        )
+
+        with Image.open(report["output_path"]) as output:
+            self.assertEqual(output.mode, "RGBA")
+            self.assertEqual(output.size, (4, 4))
+            self.assertLess(output.getpixel((0, 0))[3], 128)
+            self.assertLessEqual(
+                max(abs(actual - expected) for actual, expected in zip(
+                    output.getpixel((0, 0))[:3],
+                    (200, 100, 50),
+                )),
+                3,
+            )
+            self.assertEqual(output.getpixel((3, 0))[3], 255)
+            self.assertLessEqual(
+                max(abs(actual - expected) for actual, expected in zip(
+                    output.getpixel((3, 0))[:3],
+                    (200, 100, 50),
+                )),
+                3,
+            )
+            self.assertEqual(output.getpixel((3, 3))[3], 255)
+
+    def test_result_refinement_text_only_rejects_lost_base_transparency_structure(self):
+        mapping_path = self.configure_result_refinement([])
+
+        with self.assertRaisesRegex(ValueError, "retain transparent pixels"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+            )
+
+    def test_result_refinement_rejects_non_rgba_generated_png(self):
+        mapping_path = self.configure_result_refinement([], candidate_mode="RGB")
+
+        with self.assertRaisesRegex(ValueError, "must be an RGBA PNG"):
             MODULE.finalize_job(
                 self.job_id,
                 "layer-one",
