@@ -396,6 +396,29 @@ test('preflight accepts an erase-only result refinement without ImageGen calls',
   }
 });
 
+test('preflight keeps explicit full-canvas erase-only work deterministic', async () => {
+  const erasePath = polygonPath('erase-copy', 'erase', [
+    { x: 10, y: 10 }, { x: 30, y: 10 }, { x: 30, y: 30 }, { x: 10, y: 30 },
+  ]);
+  const context = await resultRefinementContext({
+    requirement: '',
+    paths: [erasePath],
+    operation: {
+      mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [],
+    },
+    width: 100,
+    height: 100,
+  });
+  context.plan.layers[0].maximum_imagegen_calls = 0;
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+    assert.equal(spec.layers[0].expected_roi_tile_count, 0);
+    assert.equal(spec.layers[0].maximum_imagegen_calls, 0);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
 test('preflight rejects text-only local mode and accepts explicit full-canvas text editing', async () => {
   const context = await resultRefinementContext({
     operation: { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] },
@@ -512,22 +535,27 @@ test('preflight rejects invalid operation references and unsafe or duplicate pat
   }
 });
 
-test('preflight rejects self-intersecting and zero-area polygons', async () => {
-  const invalidPolygons = [
-    polygonPath('bow-tie', 'boundary', [
-      { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 100, y: 0 },
-    ]),
-    polygonPath('flat', 'boundary', [
-      { x: 0, y: 10 }, { x: 50, y: 10 }, { x: 100, y: 10 },
-    ]),
-  ];
-  for (const invalidPath of invalidPolygons) {
-    const context = await resultRefinementContext({ paths: [invalidPath], width: 100, height: 100 });
-    try {
-      await assert.rejects(buildTargetedExecutionSpec(context), /自交|面积/);
-    } finally {
-      await rm(context.root, { recursive: true, force: true });
-    }
+test('preflight rejects a self-intersecting polygon whose shoelace area is nonzero', async () => {
+  const selfIntersecting = polygonPath('crossed', 'boundary', [
+    { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 80, y: 0 },
+  ]);
+  const context = await resultRefinementContext({ paths: [selfIntersecting], width: 100, height: 100 });
+  try {
+    await assert.rejects(buildTargetedExecutionSpec(context), /不得自交/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects a zero-area polygon', async () => {
+  const zeroArea = polygonPath('flat', 'boundary', [
+    { x: 0, y: 10 }, { x: 50, y: 10 }, { x: 100, y: 10 },
+  ]);
+  const context = await resultRefinementContext({ paths: [zeroArea], width: 100, height: 100 });
+  try {
+    await assert.rejects(buildTargetedExecutionSpec(context), /面积/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
   }
 });
 
@@ -565,6 +593,29 @@ test('preflight recomputes the 40% warning and blocks an actual 80% repair polyg
       { x: 0, y: 0 }, { x: 80, y: 0 }, { x: 80, y: 100 }, { x: 0, y: 100 },
     ])];
     await assert.rejects(buildTargetedExecutionSpec(context), /覆盖超过 70%/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight uses repair polygon union coverage for fully overlapping paths', async () => {
+  const overlap = [
+    { x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 100 }, { x: 0, y: 100 },
+  ];
+  const context = await resultRefinementContext({
+    requirement: '修复重叠区域',
+    paths: [
+      polygonPath('overlap-a', 'boundary', overlap),
+      polygonPath('overlap-b', 'boundary', overlap),
+    ],
+    width: 100,
+    height: 100,
+  });
+  context.plan.layers[0].maximum_imagegen_calls = 4;
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+    assert.equal(spec.layers[0].repair_coverage_ratio, 0.6);
+    assert.deepEqual(spec.layers[0].refinement_warnings, ['局部修复路径范围较大，可能产生重新构图']);
   } finally {
     await rm(context.root, { recursive: true, force: true });
   }
