@@ -858,6 +858,8 @@ function App() {
         nextIndex += 1;
         return [{
           ...result,
+          pendingRevision: state?.pendingRevision?.job ?? null,
+          failedRevision: state?.failedRevision?.job ?? null,
           id: resultId,
           imageId: document.imageId,
           node,
@@ -3882,6 +3884,7 @@ function App() {
                         {jobStatus(activeSelectedJob.status).tone === 'pending' ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}
                         <span>{jobStatus(activeSelectedJob.status).label}</span>
                         <small>{formatElapsed(activeSelectedJob.submittedAt, elapsedEnd(activeSelectedJob, clockNow))}</small>
+                        {jobStatus(activeSelectedJob.status).tone === 'failed' && activeSelectedJob.statusDetail ? <small>{activeSelectedJob.statusDetail}</small> : null}
                       </div>
                     </>
                   ) : (
@@ -4415,6 +4418,8 @@ function App() {
                   job,
                   node,
                   image,
+                  pendingRevision,
+                  failedRevision,
                   bounds,
                   sourceSize: resultSourceSize,
                   x,
@@ -4452,7 +4457,7 @@ function App() {
                     }}
                   >
                     <div className="canvas-node-meta">
-                      <span>{meta.tone === 'pending' ? <LoaderCircle size={14} className="spin" /> : <ImagePlus size={14} />}<strong>{node.name} - 拆分结果</strong></span>
+                      <span>{pendingRevision ? <LoaderCircle size={14} className="spin" /> : <ImagePlus size={14} />}<strong>{node.name} - 拆分结果</strong></span>
                       <small>{region.width} x {region.height}</small>
                     </div>
                     <div className="canvas-node-frame">
@@ -4472,6 +4477,7 @@ function App() {
                           <span>等待输出 PNG</span>
                         </div>
                       )}
+                      {failedRevision ? <small>{failedRevision.statusDetail || '最近一次精修失败，已保留上一版 PNG'}</small> : null}
                     </div>
                   </article>
                 );

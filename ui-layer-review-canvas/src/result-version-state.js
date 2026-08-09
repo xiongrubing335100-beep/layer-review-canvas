@@ -59,11 +59,19 @@ export function resolveNodeResultState({ jobs, node, sourceSize }) {
     .map((entry) => ({ ...entry, result: resultForNode(entry.job, node, sourceSize) }))
     .filter(({ result }) => result)
     .sort(compareByOrder);
+  const baseOrder = successful.at(-1)?.order;
   const revisions = relevantJobs.filter(({ job }) => parentJobId(job));
   const pending = revisions
-    .filter(({ job }) => job.status !== 'completed' && !isFailed(job) && !isCancelled(job))
+    .filter((entry) => (
+      (!baseOrder || compareByOrder(entry, { order: baseOrder }) > 0)
+      && entry.job.status !== 'completed'
+      && !isFailed(entry.job)
+      && !isCancelled(entry.job)
+    ))
     .sort(compareByOrder);
-  const failed = revisions.filter(({ job }) => isFailed(job)).sort(compareByOrder);
+  const failed = revisions
+    .filter((entry) => (!baseOrder || compareByOrder(entry, { order: baseOrder }) > 0) && isFailed(entry.job))
+    .sort(compareByOrder);
 
   return {
     baseResult: successful.at(-1)?.result ?? null,

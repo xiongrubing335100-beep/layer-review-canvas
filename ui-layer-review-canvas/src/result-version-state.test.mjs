@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { resolveNodeResultState } from './result-version-state.js';
 
@@ -128,4 +129,51 @@ test('uses the only image for a single-node job and preserves its layer snapshot
   assert.equal(state.baseResult.image.name, 'opaque-export.png');
   assert.deepEqual(state.baseResult.bounds, fixtureNode.bounds);
   assert.deepEqual(state.baseResult.sourceSize, sourceSize);
+});
+
+test('a newer completed revision clears stale failed revision state', () => {
+  const state = resolveNodeResultState({
+    jobs: [
+      job({ id: 'base', status: 'completed', images: [png('base.png')], submittedAt: 100, completedAt: 200 }),
+      job({ id: 'failed-revision', status: 'failed', parentJobId: 'base', submittedAt: 300, completedAt: 350 }),
+      job({ id: 'completed-revision', status: 'completed', parentJobId: 'base', images: [png('revision.png')], submittedAt: 400, completedAt: 500 }),
+    ],
+    node: fixtureNode,
+    sourceSize,
+  });
+
+  assert.equal(state.baseResult.job.id, 'completed-revision');
+  assert.equal(state.pendingRevision, null);
+  assert.equal(state.failedRevision, null);
+});
+
+const mainSource = readFileSync(new URL('./main.jsx', import.meta.url), 'utf8');
+
+test('inactive result nodes retain revision state and render its pending and failure indicators', () => {
+  const inactiveResults = mainSource.slice(
+    mainSource.indexOf('const inactiveResultNodes = useMemo('),
+    mainSource.indexOf('const canvasItems = useMemo('),
+  );
+  const inactiveResultRenderer = mainSource.slice(
+    mainSource.indexOf('{inactiveResultNodes.map((resultNode) => {'),
+    mainSource.indexOf('{hasSource ? <article', mainSource.indexOf('{inactiveResultNodes.map((resultNode) => {')),
+  );
+
+  assert.match(inactiveResults, /pendingRevision:\s*state\?\.pendingRevision\?\.job \?\? null/);
+  assert.match(inactiveResults, /failedRevision:\s*state\?\.failedRevision\?\.job \?\? null/);
+  assert.match(inactiveResultRenderer, /pendingRevision \? <LoaderCircle/);
+  assert.match(inactiveResultRenderer, /failedRevision\.statusDetail/);
+});
+
+test('guided result panel shows a failed revision detail while retaining the completed image', () => {
+  const guidedResultPanel = mainSource.slice(
+    mainSource.indexOf('<section className={`guided-result-panel'),
+    mainSource.indexOf('</section>', mainSource.indexOf('<section className={`guided-result-panel')),
+  );
+
+  assert.match(guidedResultPanel, /activeSelectedJob\.statusDetail/);
+  assert.ok(
+    guidedResultPanel.indexOf('latestSelectedResult?.image') < guidedResultPanel.indexOf('activeSelectedJob.statusDetail'),
+    'the completed image branch must remain before revision failure detail',
+  );
 });
