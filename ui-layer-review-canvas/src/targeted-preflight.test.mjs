@@ -42,6 +42,7 @@ function pngFixture(width, height, {
   includeIend = true,
   corruptIdatCrc = false,
   compressedData = null,
+  compressedTrailing = null,
   rowFilter = 0,
   trailing = null,
 } = {}) {
@@ -66,7 +67,9 @@ function pngFixture(width, height, {
   parts.push(ihdr);
   if (duplicateIhdr) parts.push(ihdr);
   if (includeIdat) {
-    parts.push(pngChunk('IDAT', compressedData ?? deflateSync(raw), { corruptCrc: corruptIdatCrc }));
+    const encoded = compressedData ?? deflateSync(raw);
+    const idatData = compressedTrailing ? Buffer.concat([encoded, compressedTrailing]) : encoded;
+    parts.push(pngChunk('IDAT', idatData, { corruptCrc: corruptIdatCrc }));
   }
   if (includeIend) parts.push(pngChunk('IEND'));
   if (trailing) parts.push(trailing);
@@ -402,6 +405,18 @@ test('preflight rejects structurally invalid or unreadable result PNG sources', 
       await rm(context.root, { recursive: true, force: true });
     }
   }));
+});
+
+test('preflight rejects CRC-valid trailing garbage inside concatenated IDAT data', async () => {
+  const context = await resultRefinementContext();
+  try {
+    await writeFile(context.sourcePath, pngFixture(1536, 837, {
+      compressedTrailing: Buffer.from([0xde, 0xad, 0xbe, 0xef]),
+    }));
+    await assert.rejects(buildTargetedExecutionSpec(context), /PNG.*IDAT|IDAT.*PNG/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
 });
 
 test('preflight requires result refinement text or a valid closed Bezier path', async () => {

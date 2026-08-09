@@ -115,12 +115,17 @@ async function readPngSize(filePath) {
   if (!Number.isSafeInteger(decodedBytes) || decodedBytes > maximumDecodedPngBytes) {
     throw pngFail('解压后像素数据过大');
   }
-  let decoded;
+  const compressed = Buffer.concat(compressedParts);
+  let inflation;
   try {
-    decoded = inflateSync(Buffer.concat(compressedParts), { maxOutputLength: decodedBytes });
+    inflation = inflateSync(compressed, { info: true, maxOutputLength: decodedBytes });
   } catch {
     throw pngFail('IDAT zlib 数据无法解压');
   }
+  if (inflation.engine.bytesWritten !== compressed.length) {
+    throw pngFail('IDAT zlib 数据包含未消费的尾随字节');
+  }
+  const decoded = inflation.buffer;
   if (decoded.length !== decodedBytes) throw pngFail('解压后的扫描行长度无效');
   for (let y = 0; y < header.height; y += 1) {
     if (decoded[y * rowBytes] > 4) throw pngFail('扫描行 filter byte 无效');
