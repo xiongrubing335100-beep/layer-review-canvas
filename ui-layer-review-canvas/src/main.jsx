@@ -92,11 +92,15 @@ import {
 } from './review-pen-actions.js';
 import {
   buildResultRefinementPlan,
-  canSubmitResultRefinement,
   mergeResultRefinementPollUpdate,
   recordResultRefinementDelivery,
   readPngPixelSize,
 } from './result-refinement.js';
+import {
+  deriveRefinementPolicy,
+  refinementSubmissionState,
+  refinementSummary,
+} from './result-refinement-policy.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import './styles.css';
 
@@ -572,6 +576,11 @@ function App() {
   const [resultEditDraft, setResultEditDraft] = useState(null);
   const [resultEditSelection, setResultEditSelection] = useState(null);
   const [resultEditFeedbackToken, setResultEditFeedbackToken] = useState(null);
+  const [resultEditOperation, setResultEditOperation] = useState({
+    mode: 'path_scoped',
+    subject_path_ids: [],
+    alpha_include_path_ids: [],
+  });
   const [submittingResultEdit, setSubmittingResultEdit] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
@@ -770,11 +779,41 @@ function App() {
   const selectedPendingRevision = selectedResultState?.pendingRevision?.job;
   const selectedFailedRevision = selectedResultState?.failedRevision?.job;
   const latestSelectedJob = latestSelectedResult?.job;
-  const resultEditSubmission = canSubmitResultRefinement({
+  const resultEditCanvas = latestSelectedResult
+    ? pixelBounds(latestSelectedResult.bounds, latestSelectedResult.sourceSize)
+    : { width: 1, height: 1 };
+  const resultEditAnnotations = useMemo(() => resultEditPaths
+    .filter((path) => path?.shape === 'bezier_path' && path.closed === true && path.anchors?.length >= 3)
+    .map((path, index) => annotationForPlan(
+      path,
+      { x: 0, y: 0, width: 100, height: 100 },
+      resultEditCanvas,
+      index,
+    )), [resultEditCanvas.height, resultEditCanvas.width, resultEditPaths]);
+  const resultEditPolicy = useMemo(() => deriveRefinementPolicy({
+    prompt: resultEditPrompt,
+    annotations: resultEditAnnotations,
+    operation: resultEditOperation,
+    canvas: resultEditCanvas,
+  }), [resultEditAnnotations, resultEditCanvas.height, resultEditCanvas.width, resultEditOperation, resultEditPrompt]);
+  const resultEditSubmission = refinementSubmissionState({
     prompt: resultEditPrompt,
     paths: resultEditPaths,
     draft: resultEditDraft,
+    operation: resultEditOperation,
+    canvas: resultEditCanvas,
   });
+  const selectedResultEditBoundary = resultEditPaths.find((path) => (
+    path.id === resultEditSelection?.pathId
+    && path.shape === 'bezier_path'
+    && path.kind === 'boundary'
+    && path.closed === true
+    && path.anchors?.length >= 3
+  ));
+  const selectedResultEditRepairBoundary = selectedResultEditBoundary
+    && !resultEditOperation.subject_path_ids.includes(selectedResultEditBoundary.id)
+    ? selectedResultEditBoundary
+    : null;
   const selectedFallbackJob = [...jobsForCurrentSource].reverse().find((job) => job.nodeIds?.includes(selected.id));
   const activeSelectedJob = localSubmissions[selected.id]
     || selectedPendingRevision
@@ -1331,7 +1370,12 @@ function App() {
     setResultEditDraft(null);
     setResultEditSelection(null);
     setResultEditFeedbackToken(null);
-  }, [selectedId, latestSelectedJob?.id]);
+    setResultEditOperation({
+      mode: 'path_scoped',
+      subject_path_ids: [],
+      alpha_include_path_ids: [],
+    });
+  }, [activeImageId, selectedId, latestSelectedJob?.id]);
 
   useEffect(() => {
     const handleMove = (event) => {
@@ -2663,6 +2707,51 @@ function App() {
     setResultEditDraft(draft);
     setResultEditSelection(selection);
     setResultEditFeedbackToken(feedbackToken);
+    const pathIds = new Set(paths.map((path) => path.id));
+    setResultEditOperation((current) => {
+      const subjectPathIds = current.subject_path_ids.filter((id) => pathIds.has(id));
+      const alphaIncludePathIds = current.alpha_include_path_ids.filter((id) => pathIds.has(id));
+      const mode = current.mode === 'keep_inside_delete_outside' && subjectPathIds.length === 0
+        ? 'path_scoped'
+        : current.mode;
+      if (mode === current.mode
+          && subjectPathIds.length === current.subject_path_ids.length
+          && alphaIncludePathIds.length === current.alpha_include_path_ids.length) return current;
+      return {
+        mode,
+        subject_path_ids: subjectPathIds,
+        alpha_include_path_ids: alphaIncludePathIds,
+      };
+    });
+  };
+
+  const toggleSelectedResultEditPathRole = (field, selectedPath) => {
+    if (!selectedPath) return;
+    setResultEditOperation((current) => {
+      const addingRole = !current[field].includes(selectedPath.id);
+      const nextPathIds = addingRole
+        ? [...current[field], selectedPath.id]
+        : current[field].filter((id) => id !== selectedPath.id);
+      const subjectPathIds = field === 'subject_path_ids'
+        ? nextPathIds
+        : current.subject_path_ids;
+      return {
+        ...current,
+        mode: current.mode === 'keep_inside_delete_outside' && subjectPathIds.length === 0
+          ? 'path_scoped'
+          : current.mode,
+        subject_path_ids: subjectPathIds,
+        alpha_include_path_ids: field === 'alpha_include_path_ids'
+          ? nextPathIds
+          : addingRole
+            ? current.alpha_include_path_ids.filter((id) => id !== selectedPath.id)
+            : current.alpha_include_path_ids,
+      };
+    });
+  };
+
+  const selectResultEditMode = (mode) => {
+    setResultEditOperation((current) => ({ ...current, mode }));
   };
 
   const undoResultPenEdit = () => {
@@ -2679,6 +2768,11 @@ function App() {
 
   const clearResultPenEdit = () => {
     resultPenOverlayRef.current?.clear();
+    setResultEditOperation({
+      mode: 'path_scoped',
+      subject_path_ids: [],
+      alpha_include_path_ids: [],
+    });
   };
 
   const submitResultEdit = async () => {
@@ -2690,6 +2784,10 @@ function App() {
     if (!resultEditSubmission.ok) {
       setToast(resultEditSubmission.reason);
       return;
+    }
+    if (resultEditOperation.mode === 'full_canvas_explicit') {
+      const confirmed = window.confirm('整图编辑可能改变构图、位置和比例。确认允许整张 PNG 参与生成式修改吗？');
+      if (!confirmed) return;
     }
     setSubmittingResultEdit(true);
     let submissionResult = null;
@@ -2704,12 +2802,15 @@ function App() {
       const refinementSnapshot = {
         prompt: resultEditPrompt.trim(),
         paths: resultEditPaths.map((path) => ({ ...path })),
+        operation: structuredClone(resultEditOperation),
+        summary: refinementSummary(resultEditPolicy),
       };
       const payload = buildResultRefinementPlan({
         pngSize,
         placement: resultRegion,
         prompt: refinementSnapshot.prompt,
         paths: refinementSnapshot.paths,
+        operation: refinementSnapshot.operation,
         baseResult: {
           jobId: latestSelectedResult.job.id,
           versionId: latestSelectedResult.image.versionId || latestSelectedResult.image.version_id || latestSelectedResult.job.id,
@@ -3904,6 +4005,55 @@ function App() {
                             : '边界钢笔：用闭合路径精确重定义结果边缘'}
                       </div>
                     ) : null}
+                    {resultEditing ? (
+                      <div className="result-editor__operation-controls">
+                        <div className="result-editor__path-roles" role="group" aria-label="选中路径角色">
+                          <button
+                            type="button"
+                            aria-pressed={Boolean(selectedResultEditBoundary && resultEditOperation.subject_path_ids.includes(selectedResultEditBoundary.id))}
+                            onClick={() => toggleSelectedResultEditPathRole('subject_path_ids', selectedResultEditBoundary)}
+                            disabled={!selectedResultEditBoundary || Boolean(selectedPendingRevision)}
+                          >
+                            设为主体范围
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={Boolean(selectedResultEditRepairBoundary && resultEditOperation.alpha_include_path_ids.includes(selectedResultEditRepairBoundary.id))}
+                            onClick={() => toggleSelectedResultEditPathRole('alpha_include_path_ids', selectedResultEditRepairBoundary)}
+                            disabled={!selectedResultEditRepairBoundary || Boolean(selectedPendingRevision)}
+                          >
+                            允许补入透明缺口
+                          </button>
+                        </div>
+                        <div className="result-editor__modes" role="group" aria-label="修改范围">
+                          <button
+                            type="button"
+                            aria-pressed={resultEditOperation.mode === 'path_scoped'}
+                            onClick={() => selectResultEditMode('path_scoped')}
+                            disabled={Boolean(selectedPendingRevision)}
+                          >
+                            局部精修（仅路径内）
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={resultEditOperation.mode === 'keep_inside_delete_outside'}
+                            onClick={() => selectResultEditMode('keep_inside_delete_outside')}
+                            disabled={!resultEditOperation.subject_path_ids.length || Boolean(selectedPendingRevision)}
+                          >
+                            仅保留路径内，路径外透明
+                          </button>
+                          <button
+                            type="button"
+                            className="result-editor__mode--danger"
+                            aria-pressed={resultEditOperation.mode === 'full_canvas_explicit'}
+                            onClick={() => selectResultEditMode('full_canvas_explicit')}
+                            disabled={Boolean(selectedPendingRevision)}
+                          >
+                            整图编辑（高风险）
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                     <ResultPreview
                       image={latestSelectedResult.image}
                       sourceSize={latestSelectedResult.sourceSize}
@@ -3928,18 +4078,25 @@ function App() {
                     {resultEditing ? (
                       <div className="result-editor__request">
                         <label className="result-editor__prompt">
-                          <span>二次编辑要求</span>
+                          <span>修改目标</span>
                           <textarea
                             className="refinement-prompt__field"
                             value={resultEditPrompt}
                             onChange={(event) => setResultEditPrompt(event.target.value)}
-                            placeholder="例如：增强按钮高光，保持已有透明边缘"
+                            placeholder="例如：补全已标注的两个金币，保持原位置、大小、材质和光影"
                             rows="3"
                             readOnly={Boolean(selectedPendingRevision)}
                           />
                         </label>
+                        <div className="result-editor__summary" aria-label="系统理解">
+                          <strong>系统理解</strong>
+                          <span>{refinementSummary(resultEditPolicy)}</span>
+                          {resultEditPolicy.warnings.map((warning) => (
+                            <small key={warning}>{warning}</small>
+                          ))}
+                        </div>
                         <div className="result-editor__actions">
-                          <span>非空要求或至少一条闭合路径即可发送</span>
+                          <span>发送前会校验路径角色、修改范围与风险</span>
                           <div>
                             <button
                               type="button"
@@ -3989,7 +4146,7 @@ function App() {
                           <div className="result-editor__submitted-snapshot" aria-label="已提交的二次编辑输入">
                             <strong>已提交输入</strong>
                             <span>{selectedPendingRevision.refinementSnapshot.prompt || '仅使用钢笔路径'}</span>
-                            <small>{selectedPendingRevision.refinementSnapshot.paths.length} 条闭合路径</small>
+                            <small>{selectedPendingRevision.refinementSnapshot.summary || `${selectedPendingRevision.refinementSnapshot.paths.length} 条闭合路径`}</small>
                           </div>
                         ) : null}
                       </div>

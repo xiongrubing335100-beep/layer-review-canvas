@@ -2576,6 +2576,57 @@ rect.annotation-mark--selected { stroke: #fff; }
 .result-editor__hint--background { color: #d9a184; }
 .result-editor__hint--boundary { color: #b99bd3; }
 
+.result-editor__operation-controls {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+}
+
+.result-editor__path-roles,
+.result-editor__modes {
+  display: grid;
+  gap: 6px;
+}
+
+.result-editor__path-roles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.result-editor__modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.result-editor__operation-controls button {
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 5px;
+  color: #aebbb1;
+  background: var(--surface-control);
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.result-editor__operation-controls button:hover:not(:disabled),
+.result-editor__operation-controls button:focus-visible {
+  border-color: #5e7367;
+  color: #edf4ef;
+  outline: none;
+}
+
+.result-editor__operation-controls button[aria-pressed='true'] {
+  border-color: #579674;
+  color: #c9f2da;
+  background: #293a31;
+}
+
+.result-editor__operation-controls .result-editor__mode--danger[aria-pressed='true'] {
+  border-color: #b36a59;
+  color: #ffd1c5;
+  background: #3e2b27;
+}
+
+.result-editor__operation-controls button:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+}
+
 .result-preview--result-editor {
   touch-action: none;
   outline: 1px solid rgba(103, 220, 162, .24);
@@ -2605,6 +2656,21 @@ rect.annotation-mark--selected { stroke: #fff; }
   font-size: 9px;
   font-weight: 720;
 }
+
+.result-editor__summary {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 6px;
+  color: #8f9d92;
+  background: rgba(255, 255, 255, .025);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.result-editor__summary strong { color: #cfd9d1; }
+.result-editor__summary small { color: #ffb092; }
 
 .refinement-prompt__field {
   width: 100%;
@@ -2714,6 +2780,8 @@ rect.annotation-mark--selected { stroke: #fff; }
   .guided-result-panel__body { padding: 16px 12px; }
   .guided-result-panel__footer { padding: 9px 12px 0; }
   .result-editor__toolbar { flex-wrap: wrap; }
+  .result-editor__path-roles,
+  .result-editor__modes { grid-template-columns: 1fr; }
   .result-editor__actions { align-items: flex-start; flex-direction: column; }
   .result-editor__submitted-snapshot { grid-template-columns: 1fr; }
 }

@@ -101,6 +101,40 @@ test('a boundary path alone cannot submit without a modification target', () => 
   );
 });
 
+test('a selected closed boundary can authorize keeping only its subject pixels', () => {
+  assert.deepEqual(
+    canSubmitResultRefinement({
+      prompt: '',
+      paths: [closedFixture()],
+      draft: null,
+      operation: {
+        mode: 'keep_inside_delete_outside',
+        subject_path_ids: ['pen-1'],
+        alpha_include_path_ids: [],
+      },
+      canvas: { width: 1536, height: 837 },
+    }),
+    { ok: true, reason: null, warnings: [] },
+  );
+});
+
+test('outside deletion stays blocked until a closed subject boundary is selected', () => {
+  assert.deepEqual(
+    canSubmitResultRefinement({
+      prompt: '',
+      paths: [closedFixture()],
+      draft: null,
+      operation: {
+        mode: 'keep_inside_delete_outside',
+        subject_path_ids: [],
+        alpha_include_path_ids: [],
+      },
+      canvas: { width: 1536, height: 837 },
+    }),
+    { ok: false, reason: '仅保留路径内，路径外透明必须指定主体范围', warnings: [] },
+  );
+});
+
 test('an open pen draft blocks submission even when text is present', () => {
   const result = canSubmitResultRefinement({ prompt: '调整', paths: [], draft: openFixture() });
   assert.equal(result.ok, false);
