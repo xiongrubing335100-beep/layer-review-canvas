@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   buildWorkbenchPrompt,
@@ -14,6 +15,14 @@ const base = {
   outputDirectory: 'C:/jobs/job-1/final',
   reviewCropPaths: ['C:/jobs/job-1/01-selection.png'],
 };
+
+test('the workbench skill documents PNG result refinement source locking', async () => {
+  const skill = await readFile(new URL('../plugin-template/imvia-layer/skills/split-ui-design-layers-workbench-targeted/SKILL.md', import.meta.url), 'utf8');
+  assert.match(skill, /result_refinement/);
+  assert.match(skill, /当前成功 PNG/);
+  assert.match(skill, /未标注 RGBA 像素/);
+  assert.match(skill, /不得调用 RMBG/);
+});
 
 test('compact prompt points to the authoritative plan without duplicating requirements', () => {
   const prompt = buildWorkbenchPrompt({

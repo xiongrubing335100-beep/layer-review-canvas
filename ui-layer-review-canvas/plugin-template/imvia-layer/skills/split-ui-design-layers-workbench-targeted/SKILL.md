@@ -59,6 +59,9 @@ plans are conservatively inferred by the executor; never infer a new layer or a 
   differs from the prepared reference. With `transparency_strategy: rembg`, keep the extracted
   native `content_region` resolution through RMBG and delivery; `expected_output` remains the
   infinite-canvas logical placement size. Without RMBG, map the region to the exact logical crop.
+- `result_refinement`: treat the current successful PNG as the only authoritative base, preserve
+  its actual pixel dimensions and alpha, and edit only the scope declared by text and closed
+  Bézier pen paths. This route must never call RMBG.
 
 Honor a submitted `execution_route_hint`. When it is absent, select the narrowest route that
 satisfies the normalized record requirement: `direct_crop`; `codex_rgba` for text, title, and logo
@@ -73,6 +76,40 @@ first required working result and immediately run the first-candidate gate below
 result without another call. Only when that result fails may one targeted ImageGen retry address
 the failed checks; if the retry fails, stop. For `quality`, keep the same route and call ceiling but
 add the existing validation depth.
+
+## PNG Result Refinement
+
+For `execution_route_hint: result_refinement`, the 当前成功 PNG is the only authoritative
+base. Attach only that base PNG; do not attach the original source, an earlier successful version,
+a logical selection crop, or any other visual context.
+
+- A text-only requirement with no closed Bézier pen path makes the full base PNG canvas editable.
+- When closed Bézier pen paths exist, the text requirement and those paths define the complete
+  mutable scope. Every path must be closed; an open draft is not an annotation.
+- Outside that scope, all 未标注 RGBA 像素 are locked byte-for-byte to the base PNG.
+- Use the PNG's actual pixel width and height, never its logical selection or placement dimensions.
+- Preserve the base PNG's alpha channel and transparent structure. The generated candidate must be
+  an RGBA PNG at exactly the base PNG pixel dimensions.
+- Use `transparency_strategy: preserve_existing_alpha` and
+  `output_resolution_policy: existing_result_pixels`. 不得调用 RMBG for preparation,
+  generation, finalization, or retry.
+
+Run the preparation command exactly with the active job and layer identifiers:
+
+```sh
+python3 scripts/prepare-targeted-imagegen-canvas.py --job-id <jobId> --layer-id <layerId>
+```
+
+Give ImageGen only the returned reference canvas. Save its RGBA PNG candidate in `generated/`, then
+run the finalization command exactly with the returned mapping JSON:
+
+```sh
+python3 scripts/finalize-targeted-job.py --job-id <jobId> --layer-id <layerId> --generated-input <PNG> --imagegen-mapping <JSON>
+```
+
+Complete all inspection before finalization. When this finalizer succeeds, it must be the last tool
+call in the Codex turn; immediately return the finalizer-approved PNG path and end the reply. Do not
+preview, reread, list, or validate anything after it.
 
 ## Performance Report
 

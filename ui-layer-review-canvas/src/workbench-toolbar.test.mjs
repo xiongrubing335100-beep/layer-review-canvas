@@ -8,6 +8,7 @@ const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const bridgeWidget = await readFile(new URL('../public/layer-review-bridge-widget.js', import.meta.url), 'utf8');
 const bridgeServer = await readFile(new URL('../layer-review-mcp-server.mjs', import.meta.url), 'utf8');
 const viteConfig = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
+const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 
 test('the user-visible workbench brand is Imvia Layer', () => {
   assert.match(source, /<strong>Imvia Layer<\/strong>/);
@@ -151,6 +152,15 @@ test('PNG result refinement uses the shared pen editor and an independent requir
   assert.match(editor, /<textarea/);
   assert.match(editor, /className="result-editor__submit"[\s\S]*?发送调整/);
   assert.doesNotMatch(source, /resultEditBrushSize|startResultAnnotation|moveResultAnnotation|finishResultAnnotation|renderResultEditMark/);
+});
+
+test('README documents complete Bezier pen paths and PNG revision retention', () => {
+  assert.match(readme, /完整贝塞尔钢笔路径/);
+  assert.match(readme, /直线锚点/);
+  assert.match(readme, /曲线控制柄/);
+  assert.match(readme, /Option/);
+  assert.match(readme, /当前成功 PNG/);
+  assert.match(readme, /legacy.*画笔数据/i);
 });
 
 test('read-only legacy annotations remain selectable above the pen canvas', () => {
