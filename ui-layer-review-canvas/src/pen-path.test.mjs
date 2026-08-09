@@ -42,6 +42,32 @@ test('linked handles stay collinear until option breaks the link', () => {
   assert.equal(broken.anchors[0].handlesLinked, false);
 });
 
+test('directly moved handles keep finite coordinates outside the anchor bounds', () => {
+  const path = createPenPath({ id: 'p1', kind: 'boundary', point: { x: .9, y: .2 } });
+  const moved = moveHandle(path, 0, 'out', { x: 1.25, y: -.3 }, { breakLink: true });
+
+  assert.deepEqual(moved.anchors[0].out, { x: 1.25, y: -.3 });
+  assert.deepEqual(moved.anchors[0], {
+    x: .9, y: .2,
+    in: { x: .9, y: .2 }, out: { x: 1.25, y: -.3 }, handlesLinked: false,
+  });
+});
+
+test('out-of-bounds handles affect flattening while emitted pixels stay on the canvas', () => {
+  let path = createPenPath({ id: 'curve', kind: 'boundary', point: { x: .9, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .9 });
+  path = appendAnchor(path, { x: .1, y: .5 });
+  const outside = closePenPath(moveHandle(path, 0, 'out', { x: 1.25, y: .15 }, { breakLink: true }));
+  const edge = closePenPath(moveHandle(path, 0, 'out', { x: 1, y: .15 }, { breakLink: true }));
+  const outsidePixels = flattenPenPath(outside, { width: 640, height: 360, maxErrorPx: 1 });
+
+  assert.notDeepEqual(outsidePixels, flattenPenPath(edge, { width: 640, height: 360, maxErrorPx: 1 }));
+  assert.ok(outsidePixels.every(({ x, y }) => x >= 0 && x <= 640 && y >= 0 && y <= 360));
+  assert.ok(outsidePixels.every((point, index) => (
+    index === 0 || point.x !== outsidePixels[index - 1].x || point.y !== outsidePixels[index - 1].y
+  )));
+});
+
 test('flattening a closed curve is deterministic and stays inside source pixels', () => {
   const points = flattenPenPath(curvedFixture(), { width: 640, height: 360, maxErrorPx: 1 });
   assert.deepEqual(points, flattenPenPath(curvedFixture(), { width: 640, height: 360, maxErrorPx: 1 }));

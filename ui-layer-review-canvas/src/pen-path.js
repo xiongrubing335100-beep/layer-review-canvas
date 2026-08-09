@@ -11,6 +11,10 @@ function normalizedPoint(point) {
   return { x: clampUnit(point?.x), y: clampUnit(point?.y) };
 }
 
+function finitePoint(point) {
+  return validPoint(point) ? { x: point.x, y: point.y } : null;
+}
+
 function stableNumber(value) {
   return Number(value.toFixed(12));
 }
@@ -58,7 +62,14 @@ function pointToString({ x, y }) {
 }
 
 function pixelPoint(point, width, height) {
-  return { x: clampUnit(point.x) * width, y: clampUnit(point.y) * height };
+  return { x: point.x * width, y: point.y * height };
+}
+
+function clampPixelPoint(point, width, height) {
+  return {
+    x: Math.min(width, Math.max(0, point.x)),
+    y: Math.min(height, Math.max(0, point.y)),
+  };
 }
 
 function distanceToSegment(point, start, end) {
@@ -138,7 +149,8 @@ export function moveHandle(path, index, side, point, { breakLink = false } = {})
   if (!['in', 'out'].includes(side)) return path;
   const anchor = path?.anchors?.[index];
   if (!anchor) return path;
-  const nextPoint = normalizedPoint(point);
+  const nextPoint = finitePoint(point);
+  if (!nextPoint) return path;
   const opposite = side === 'in' ? 'out' : 'in';
   const nextAnchor = { ...anchor, [side]: nextPoint };
   if (breakLink) {
@@ -210,5 +222,10 @@ export function flattenPenPath(path, { width, height, maxErrorPx = DEFAULT_MAX_E
       pixelPoint(end, pixelWidth, pixelHeight),
     ], error);
   });
-  return points;
+  return points.reduce((samples, point) => {
+    const sample = clampPixelPoint(point, pixelWidth, pixelHeight);
+    const previous = samples.at(-1);
+    if (!previous || previous.x !== sample.x || previous.y !== sample.y) samples.push(sample);
+    return samples;
+  }, []);
 }
