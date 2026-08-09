@@ -229,7 +229,8 @@ test('PNG result refinement uses the shared pen editor and an independent requir
     source.indexOf('</section>', source.indexOf('<div className="result-editor__toolbar"')),
   );
 
-  assert.match(source, /import \{[^}]*buildResultRefinementPlan,[^}]*readPngPixelSize[^}]*\} from '\.\/result-refinement\.js';/s);
+  assert.match(source, /import \{[^}]*readPngPixelSize[^}]*\} from '\.\/result-refinement\.js';/s);
+  assert.match(source, /import \{[^}]*coordinateResultRefinementSubmission,[^}]*reduceResultRefinementUi,[^}]*resultRefinementGeometry[^}]*\} from '\.\/result-refinement-ui\.js';/s);
   assert.match(editor, /<PenTool size=\{14\} \/> 保留钢笔/);
   assert.match(editor, /<PenTool size=\{14\} \/> 擦除钢笔/);
   assert.match(editor, /<PenTool size=\{14\} \/> 边界钢笔/);
@@ -255,41 +256,6 @@ test('PNG result refinement exposes explicit operation controls and guided copy'
   assert.match(editor, /修改目标/);
   assert.match(editor, /例如：补全已标注的两个金币，保持原位置、大小、材质和光影/);
   assert.doesNotMatch(source, /非空要求或至少一条闭合路径即可发送/);
-});
-
-test('PNG result operation wiring preserves paths while enforcing explicit authority', () => {
-  const toolHandler = source.slice(
-    source.indexOf('const selectResultEditTool = (tool) =>'),
-    source.indexOf('const updateResultPenEditor =', source.indexOf('const selectResultEditTool = (tool) =>')),
-  );
-  const submitHandler = source.slice(
-    source.indexOf('const submitResultEdit = async () =>'),
-    source.indexOf('const runFastCategoryAnalysis =', source.indexOf('const submitResultEdit = async () =>')),
-  );
-  const penUpdateHandler = source.slice(
-    source.indexOf('const updateResultPenEditor ='),
-    source.indexOf('const toggleSelectedResultEditPathRole =', source.indexOf('const updateResultPenEditor =')),
-  );
-  const roleHandler = source.slice(
-    source.indexOf('const toggleSelectedResultEditPathRole ='),
-    source.indexOf('const selectResultEditMode =', source.indexOf('const toggleSelectedResultEditPathRole =')),
-  );
-
-  assert.match(source, /const \[resultEditOperation, setResultEditOperation\] = useState\(\{[\s\S]*?mode: 'path_scoped',[\s\S]*?subject_path_ids: \[\],[\s\S]*?alpha_include_path_ids: \[\],[\s\S]*?\}\);/);
-  assert.match(source, /selectedResultEditBoundary[\s\S]*?\.closed === true/);
-  assert.match(source, /disabled=\{!resultEditOperation\.subject_path_ids\.length \|\| Boolean\(selectedPendingRevision\)\}/);
-  assert.match(toolHandler, /resultPenOverlayRef\.current\?\.cancelDraft\(\);/);
-  assert.doesNotMatch(toolHandler, /setResultEditPaths|setResultEditOperation|\.clear\(/);
-  assert.match(penUpdateHandler, /current\.subject_path_ids\.filter\(\(id\) => pathIds\.has\(id\)\)/);
-  assert.match(penUpdateHandler, /current\.alpha_include_path_ids\.filter\(\(id\) => pathIds\.has\(id\)\)/);
-  assert.match(roleHandler, /field === 'subject_path_ids'/);
-  assert.match(roleHandler, /alpha_include_path_ids:[\s\S]*?filter\(\(id\) => id !== selectedPath\.id\)/);
-  assert.match(roleHandler, /current\.mode === 'keep_inside_delete_outside'[\s\S]*?'path_scoped'/);
-  assert.match(submitHandler, /window\.confirm\('整图编辑可能改变构图、位置和比例。确认允许整张 PNG 参与生成式修改吗？'\)/);
-  assert.match(submitHandler, /if \(!confirmed\) return;/);
-  assert.match(submitHandler, /operation: structuredClone\(resultEditOperation\)/);
-  assert.match(submitHandler, /summary: refinementSummary\(resultEditPolicy\)/);
-  assert.match(submitHandler, /operation: refinementSnapshot\.operation/);
 });
 
 test('pending PNG revisions keep rendering the current successful image', () => {

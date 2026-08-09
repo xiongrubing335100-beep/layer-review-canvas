@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlignHorizontalJustifyCenter,
@@ -91,7 +91,6 @@ import {
   reduceReviewPenParentState,
 } from './review-pen-actions.js';
 import {
-  buildResultRefinementPlan,
   mergeResultRefinementPollUpdate,
   recordResultRefinementDelivery,
   readPngPixelSize,
@@ -101,6 +100,13 @@ import {
   refinementSubmissionState,
   refinementSummary,
 } from './result-refinement-policy.js';
+import {
+  coordinateResultRefinementSubmission,
+  createResultRefinementUiState,
+  reduceResultRefinementUi,
+  resultRefinementBaseKey,
+  resultRefinementGeometry,
+} from './result-refinement-ui.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import './styles.css';
 
@@ -451,6 +457,8 @@ function ResultPreview({
   image,
   bounds,
   sourceSize,
+  canvasSize = null,
+  authoritativeCanvas = false,
   compact = false,
   className = '',
   previewRef,
@@ -459,15 +467,18 @@ function ResultPreview({
   ...props
 }) {
   const [isFullCanvas, setIsFullCanvas] = useState(true);
-  const region = pixelBounds(bounds, sourceSize);
-  const aspect = Math.max(0.12, region.width / Math.max(1, region.height));
+  const placementRegion = pixelBounds(bounds, sourceSize);
+  const previewPixels = authoritativeCanvas
+    ? canvasSize || { width: 1, height: 1 }
+    : placementRegion;
+  const aspect = Math.max(0.12, previewPixels.width / Math.max(1, previewPixels.height));
   const compactWidth = aspect >= 38 / 42 ? 38 : Math.max(8, 42 * aspect);
   const compactHeight = aspect >= 38 / 42 ? Math.max(8, 38 / aspect) : 42;
   const maxPreviewHeight = className.includes('guided-result') ? 300 : className.includes('node') ? 118 : null;
-  const maxPreviewWidth = compact ? null : resultPreviewMaxWidth(region, maxPreviewHeight);
-  const imageStyle = isFullCanvas
-    ? cropImageStyle(bounds)
-    : { inset: 0, width: '100%', height: '100%', objectFit: 'contain' };
+  const maxPreviewWidth = compact ? null : resultPreviewMaxWidth(previewPixels, maxPreviewHeight);
+  const imageStyle = authoritativeCanvas || !isFullCanvas
+    ? { inset: 0, width: '100%', height: '100%', objectFit: 'contain' }
+    : cropImageStyle(bounds);
 
   return (
     <div
@@ -489,6 +500,7 @@ function ResultPreview({
         draggable="false"
         style={imageStyle}
         onLoad={(event) => {
+          if (authoritativeCanvas) return;
           const element = event.currentTarget;
           setIsFullCanvas(element.naturalWidth === sourceSize.width && element.naturalHeight === sourceSize.height);
         }}
@@ -570,17 +582,22 @@ function App() {
   const [candidatePreviewExpanded, setCandidatePreviewExpanded] = useState(false);
   const [resultViewer, setResultViewer] = useState(null);
   const [resultEditing, setResultEditing] = useState(false);
-  const [resultEditTool, setResultEditTool] = useState('background');
-  const [resultEditPrompt, setResultEditPrompt] = useState('');
-  const [resultEditPaths, setResultEditPaths] = useState([]);
-  const [resultEditDraft, setResultEditDraft] = useState(null);
-  const [resultEditSelection, setResultEditSelection] = useState(null);
-  const [resultEditFeedbackToken, setResultEditFeedbackToken] = useState(null);
-  const [resultEditOperation, setResultEditOperation] = useState({
-    mode: 'path_scoped',
-    subject_path_ids: [],
-    alpha_include_path_ids: [],
-  });
+  const [resultEditState, dispatchResultEdit] = useReducer(
+    reduceResultRefinementUi,
+    undefined,
+    createResultRefinementUiState,
+  );
+  const {
+    tool: resultEditTool,
+    prompt: resultEditPrompt,
+    paths: resultEditPaths,
+    draft: resultEditDraft,
+    selection: resultEditSelection,
+    feedbackToken: resultEditFeedbackToken,
+    operation: resultEditOperation,
+  } = resultEditState;
+  const [resultEditBasePng, setResultEditBasePng] = useState(null);
+  const [resultEditBaseError, setResultEditBaseError] = useState('');
   const [submittingResultEdit, setSubmittingResultEdit] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
@@ -779,9 +796,23 @@ function App() {
   const selectedPendingRevision = selectedResultState?.pendingRevision?.job;
   const selectedFailedRevision = selectedResultState?.failedRevision?.job;
   const latestSelectedJob = latestSelectedResult?.job;
-  const resultEditCanvas = latestSelectedResult
+  const resultEditBaseKey = resultRefinementBaseKey({
+    imageId: activeImageId,
+    result: latestSelectedResult,
+  });
+  const resultEditBaseReady = Boolean(
+    resultEditBaseKey && resultEditBasePng?.key === resultEditBaseKey,
+  );
+  const resultEditPlacement = latestSelectedResult
     ? pixelBounds(latestSelectedResult.bounds, latestSelectedResult.sourceSize)
-    : { width: 1, height: 1 };
+    : { x: 0, y: 0, width: 1, height: 1 };
+  const resultEditGeometry = resultEditBaseReady
+    ? resultRefinementGeometry({
+      pngSize: resultEditBasePng.pngSize,
+      placement: resultEditPlacement,
+    })
+    : null;
+  const resultEditCanvas = resultEditGeometry?.canvas || { width: 1, height: 1 };
   const resultEditAnnotations = useMemo(() => resultEditPaths
     .filter((path) => path?.shape === 'bezier_path' && path.closed === true && path.anchors?.length >= 3)
     .map((path, index) => annotationForPlan(
@@ -1365,17 +1396,33 @@ function App() {
 
   useEffect(() => {
     setResultEditing(false);
-    setResultEditPrompt('');
-    setResultEditPaths([]);
-    setResultEditDraft(null);
-    setResultEditSelection(null);
-    setResultEditFeedbackToken(null);
-    setResultEditOperation({
-      mode: 'path_scoped',
-      subject_path_ids: [],
-      alpha_include_path_ids: [],
-    });
-  }, [activeImageId, selectedId, latestSelectedJob?.id]);
+    dispatchResultEdit({ type: 'reset' });
+    setResultEditBasePng(null);
+    setResultEditBaseError('');
+  }, [activeImageId, resultEditBaseKey, selectedId]);
+
+  useEffect(() => {
+    if (!resultEditing || !latestSelectedResult?.image || !resultEditBaseKey) return undefined;
+    if (resultEditBasePng?.key === resultEditBaseKey) return undefined;
+    let cancelled = false;
+    setResultEditBaseError('');
+    const loadBasePng = async () => {
+      try {
+        const response = await fetch(resolveWorkbenchUrl(latestSelectedResult.image.url), { cache: 'no-store' });
+        if (!response.ok) throw new Error(`无法读取拆分结果（HTTP ${response.status}）`);
+        const blob = await response.blob();
+        const pngSize = await readPngPixelSize(blob);
+        const dataUrl = await blobToDataUrl(blob);
+        if (!cancelled) setResultEditBasePng({ key: resultEditBaseKey, pngSize, dataUrl });
+      } catch (error) {
+        if (cancelled) return;
+        setResultEditBaseError(error.message);
+        setToast(`结果精修准备失败：${error.message}`);
+      }
+    };
+    loadBasePng();
+    return () => { cancelled = true; };
+  }, [latestSelectedResult?.image?.url, resultEditBaseKey, resultEditBasePng?.key, resultEditing]);
 
   useEffect(() => {
     const handleMove = (event) => {
@@ -2667,17 +2714,17 @@ function App() {
   };
 
   const toggleResultEditing = () => {
-    if (resultEditing) resultPenOverlayRef.current?.cancelDraft();
-    setResultEditing((current) => {
-      const next = !current;
-      if (next) {
-        setResultEditTool('background');
-        window.requestAnimationFrame(() => {
-          resultEditPreviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          resultEditPreviewRef.current?.focus({ preventScroll: true });
-        });
-      }
-      return next;
+    if (resultEditing) {
+      resultPenOverlayRef.current?.cancelDraft();
+      dispatchResultEdit({ type: 'cancel-draft' });
+      setResultEditing(false);
+      return;
+    }
+    dispatchResultEdit({ type: 'select-tool', tool: 'background' });
+    setResultEditing(true);
+    window.requestAnimationFrame(() => {
+      resultEditPreviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      resultEditPreviewRef.current?.focus({ preventScroll: true });
     });
   };
 
@@ -2699,59 +2746,20 @@ function App() {
 
   const selectResultEditTool = (tool) => {
     resultPenOverlayRef.current?.cancelDraft();
-    setResultEditTool(tool);
+    dispatchResultEdit({ type: 'select-tool', tool });
   };
 
   const updateResultPenEditor = ({ paths, draft, selection, feedbackToken }) => {
-    setResultEditPaths(paths);
-    setResultEditDraft(draft);
-    setResultEditSelection(selection);
-    setResultEditFeedbackToken(feedbackToken);
-    const pathIds = new Set(paths.map((path) => path.id));
-    setResultEditOperation((current) => {
-      const subjectPathIds = current.subject_path_ids.filter((id) => pathIds.has(id));
-      const alphaIncludePathIds = current.alpha_include_path_ids.filter((id) => pathIds.has(id));
-      const mode = current.mode === 'keep_inside_delete_outside' && subjectPathIds.length === 0
-        ? 'path_scoped'
-        : current.mode;
-      if (mode === current.mode
-          && subjectPathIds.length === current.subject_path_ids.length
-          && alphaIncludePathIds.length === current.alpha_include_path_ids.length) return current;
-      return {
-        mode,
-        subject_path_ids: subjectPathIds,
-        alpha_include_path_ids: alphaIncludePathIds,
-      };
-    });
+    dispatchResultEdit({ type: 'editor-change', paths, draft, selection, feedbackToken });
   };
 
   const toggleSelectedResultEditPathRole = (field, selectedPath) => {
     if (!selectedPath) return;
-    setResultEditOperation((current) => {
-      const addingRole = !current[field].includes(selectedPath.id);
-      const nextPathIds = addingRole
-        ? [...current[field], selectedPath.id]
-        : current[field].filter((id) => id !== selectedPath.id);
-      const subjectPathIds = field === 'subject_path_ids'
-        ? nextPathIds
-        : current.subject_path_ids;
-      return {
-        ...current,
-        mode: current.mode === 'keep_inside_delete_outside' && subjectPathIds.length === 0
-          ? 'path_scoped'
-          : current.mode,
-        subject_path_ids: subjectPathIds,
-        alpha_include_path_ids: field === 'alpha_include_path_ids'
-          ? nextPathIds
-          : addingRole
-            ? current.alpha_include_path_ids.filter((id) => id !== selectedPath.id)
-            : current.alpha_include_path_ids,
-      };
-    });
+    dispatchResultEdit({ type: 'toggle-path-role', field, pathId: selectedPath.id });
   };
 
   const selectResultEditMode = (mode) => {
-    setResultEditOperation((current) => ({ ...current, mode }));
+    dispatchResultEdit({ type: 'select-mode', mode });
   };
 
   const undoResultPenEdit = () => {
@@ -2768,11 +2776,7 @@ function App() {
 
   const clearResultPenEdit = () => {
     resultPenOverlayRef.current?.clear();
-    setResultEditOperation({
-      mode: 'path_scoped',
-      subject_path_ids: [],
-      alpha_include_path_ids: [],
-    });
+    dispatchResultEdit({ type: 'clear-paths' });
   };
 
   const submitResultEdit = async () => {
@@ -2781,41 +2785,29 @@ function App() {
       setToast('当前结果精修仍在处理中，请等待完成后再提交');
       return;
     }
+    if (!resultEditBaseReady || !resultEditGeometry) {
+      setToast(resultEditBaseError || '正在读取当前 PNG 像素尺寸，请稍候');
+      return;
+    }
     if (!resultEditSubmission.ok) {
       setToast(resultEditSubmission.reason);
       return;
-    }
-    if (resultEditOperation.mode === 'full_canvas_explicit') {
-      const confirmed = window.confirm('整图编辑可能改变构图、位置和比例。确认允许整张 PNG 参与生成式修改吗？');
-      if (!confirmed) return;
     }
     setSubmittingResultEdit(true);
     let submissionResult = null;
     let followUpPosted = false;
     try {
-      const imageResponse = await fetch(resolveWorkbenchUrl(latestSelectedResult.image.url), { cache: 'no-store' });
-      if (!imageResponse.ok) throw new Error(`无法读取拆分结果（HTTP ${imageResponse.status}）`);
-      const resultBlob = await imageResponse.blob();
-      const pngSize = await readPngPixelSize(resultBlob);
-      const embeddedSource = await blobToDataUrl(resultBlob);
-      const resultRegion = pixelBounds(latestSelectedResult.bounds, latestSelectedResult.sourceSize);
-      const refinementSnapshot = {
-        prompt: resultEditPrompt.trim(),
-        paths: resultEditPaths.map((path) => ({ ...path })),
-        operation: structuredClone(resultEditOperation),
-        summary: refinementSummary(resultEditPolicy),
-      };
-      const payload = buildResultRefinementPlan({
-        pngSize,
-        placement: resultRegion,
-        prompt: refinementSnapshot.prompt,
-        paths: refinementSnapshot.paths,
-        operation: refinementSnapshot.operation,
+      const coordinated = await coordinateResultRefinementSubmission({
+        prompt: resultEditPrompt,
+        paths: resultEditPaths,
+        operation: resultEditOperation,
+        policy: resultEditPolicy,
+        basePng: resultEditBasePng,
+        placement: resultEditGeometry.placement,
         baseResult: {
           jobId: latestSelectedResult.job.id,
           versionId: latestSelectedResult.image.versionId || latestSelectedResult.image.version_id || latestSelectedResult.job.id,
           fileName: latestSelectedResult.image.name || `${selected.id}.png`,
-          dataUrl: embeddedSource,
         },
         layer: {
           id: selected.id,
@@ -2830,10 +2822,13 @@ function App() {
           sourceFingerprint: currentSourceFingerprint || null,
           sourceRevision: currentSourceRevision,
         },
+        confirmFullCanvas: () => window.confirm('整图编辑可能改变构图、位置和比例。确认允许整张 PNG 参与生成式修改吗？'),
+        submitPlan: submitLayerReviewPlan,
       });
-
-      const result = await submitLayerReviewPlan(payload);
+      if (coordinated.cancelled) return;
+      const { delivery: result, refinementSnapshot } = coordinated;
       submissionResult = result;
+      const resultRegion = resultEditGeometry.placement;
       const revisionJob = {
         id: result.job_id,
         projectId,
@@ -2875,8 +2870,13 @@ function App() {
       setToast(deliveryOutcome.acknowledgementError
         ? '结果修整已发送并保留本地记录，状态回写未确认'
         : '结果修整已提交，原结果版本已保留');
-      setResultEditDraft(null);
-      setResultEditFeedbackToken(null);
+      dispatchResultEdit({
+        type: 'editor-change',
+        paths: resultEditPaths,
+        draft: null,
+        selection: resultEditSelection,
+        feedbackToken: null,
+      });
     } catch (error) {
       if (submissionResult?.job_id && !followUpPosted) {
         await markLayerReviewMessageFailed(submissionResult.job_id, error).catch(() => {});
@@ -4058,8 +4058,11 @@ function App() {
                       image={latestSelectedResult.image}
                       sourceSize={latestSelectedResult.sourceSize}
                       bounds={latestSelectedResult.bounds}
+                      canvasSize={resultEditGeometry?.canvas}
+                      authoritativeCanvas={resultEditing}
                       previewRef={resultEditPreviewRef}
                       className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''}`}
+                      aria-busy={resultEditing && !resultEditBaseReady}
                     >
                       {resultEditing ? (
                         <PenPathOverlay
@@ -4069,7 +4072,7 @@ function App() {
                           selection={resultEditSelection}
                           feedbackToken={resultEditFeedbackToken}
                           activeKind={resultEditTool}
-                          disabled={Boolean(selectedPendingRevision)}
+                          disabled={Boolean(selectedPendingRevision) || !resultEditBaseReady}
                           onChange={updateResultPenEditor}
                           ariaLabel="拆分结果精修钢笔标注"
                         />
@@ -4082,7 +4085,7 @@ function App() {
                           <textarea
                             className="refinement-prompt__field"
                             value={resultEditPrompt}
-                            onChange={(event) => setResultEditPrompt(event.target.value)}
+                            onChange={(event) => dispatchResultEdit({ type: 'set-prompt', prompt: event.target.value })}
                             placeholder="例如：补全已标注的两个金币，保持原位置、大小、材质和光影"
                             rows="3"
                             readOnly={Boolean(selectedPendingRevision)}
@@ -4130,14 +4133,18 @@ function App() {
                               type="button"
                               className="result-editor__submit"
                               onClick={submitResultEdit}
-                              disabled={!resultEditSubmission.ok || submittingResultEdit || Boolean(selectedPendingRevision)}
+                              disabled={!resultEditBaseReady || !resultEditSubmission.ok || submittingResultEdit || Boolean(selectedPendingRevision)}
                             >
                               {submittingResultEdit ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
                               发送调整
                             </button>
                           </div>
                         </div>
-                        {!resultEditSubmission.ok ? (
+                        {!resultEditBaseReady ? (
+                          <small className="result-editor__validation result-editor__validation--blocking">
+                            {resultEditBaseError || '正在读取当前 PNG 像素尺寸…'}
+                          </small>
+                        ) : !resultEditSubmission.ok ? (
                           <small className={`result-editor__validation ${resultEditDraft ? 'result-editor__validation--blocking' : ''}`}>
                             {resultEditSubmission.reason}
                           </small>
@@ -4174,11 +4181,19 @@ function App() {
 
               <footer className="guided-result-panel__footer">
                 <span>
-                  {pixelBounds(latestSelectedResult?.bounds ?? selected.bounds, latestSelectedResult?.sourceSize ?? sourceSize).width}
+                  {resultEditing && resultEditGeometry
+                    ? resultEditGeometry.canvas.width
+                    : pixelBounds(latestSelectedResult?.bounds ?? selected.bounds, latestSelectedResult?.sourceSize ?? sourceSize).width}
                   {' x '}
-                  {pixelBounds(latestSelectedResult?.bounds ?? selected.bounds, latestSelectedResult?.sourceSize ?? sourceSize).height} px
+                  {resultEditing && resultEditGeometry
+                    ? resultEditGeometry.canvas.height
+                    : pixelBounds(latestSelectedResult?.bounds ?? selected.bounds, latestSelectedResult?.sourceSize ?? sourceSize).height} px
                 </span>
-                <small>{latestSelectedResult ? '输出尺寸锁定为提交拆分时的框选区域' : '输出尺寸将在点击拆分时锁定'}</small>
+                <small>{resultEditing && resultEditGeometry
+                  ? '精修坐标锁定为当前成功 PNG 的解码像素'
+                  : latestSelectedResult
+                    ? '输出尺寸锁定为提交拆分时的框选区域'
+                    : '输出尺寸将在点击拆分时锁定'}</small>
               </footer>
             </section>
           </section>
