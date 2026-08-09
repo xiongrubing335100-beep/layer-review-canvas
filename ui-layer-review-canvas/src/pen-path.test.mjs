@@ -5,6 +5,7 @@ import {
   closePenPath,
   createPenPath,
   deleteAnchor,
+  draftPreviewSegment,
   flattenPenPath,
   isValidClosedPath,
   moveAnchor,
@@ -140,4 +141,21 @@ test('SVG serialization uses cubic segments and closes only when requested', () 
     pathToSvgD(path, { close: true }),
     'M 0.1 0.2 C 0.2 0.1 0.7 0.1 0.8 0.2 C 0.8 0.2 0.5 0.9 0.5 0.9 C 0.5 0.9 0.1 0.2 0.1 0.2 Z',
   );
+});
+
+test('draft preview continues from the last outgoing handle as a cubic segment', () => {
+  const anchor = {
+    x: .4,
+    y: .5,
+    in: { x: .3, y: .5 },
+    out: { x: .55, y: .35 },
+    handlesLinked: true,
+  };
+
+  assert.deepEqual(draftPreviewSegment(anchor, { x: .8, y: .7 }), {
+    start: { x: .4, y: .5 },
+    control1: { x: .55, y: .35 },
+    control2: { x: .8, y: .7 },
+    end: { x: .8, y: .7 },
+  });
 });

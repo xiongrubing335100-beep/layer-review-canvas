@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { draftPreviewSegment } from './pen-path.js';
 import {
   createPenEditorState,
   focusPenOverlayOwner,
@@ -60,17 +61,18 @@ function EditablePenPath({
     draft ? 'pen-path--draft' : '',
   ].filter(Boolean).join(' ');
   const lastAnchor = path.anchors.at(-1);
+  const previewSegment = draft && lastAnchor && previewPoint
+    ? draftPreviewSegment(lastAnchor, previewPoint)
+    : null;
 
   return (
     <g className={draft ? 'pen-editable-path pen-editable-path--draft' : 'pen-editable-path'}>
       <path className={pathClass} d={svgPath(path)} onPointerDown={onSelectPath} />
-      {draft && previewPoint && lastAnchor ? (
-        <line
+      {previewSegment ? (
+        <path
           className={`pen-preview pen-preview--${path.kind}`}
-          x1={svgPoint(lastAnchor).x}
-          y1={svgPoint(lastAnchor).y}
-          x2={svgPoint(previewPoint).x}
-          y2={svgPoint(previewPoint).y}
+          d={`M ${svgPoint(previewSegment.start).x} ${svgPoint(previewSegment.start).y} C ${svgPoint(previewSegment.control1).x} ${svgPoint(previewSegment.control1).y} ${svgPoint(previewSegment.control2).x} ${svgPoint(previewSegment.control2).y} ${svgPoint(previewSegment.end).x} ${svgPoint(previewSegment.end).y}`}
+          fill="none"
         />
       ) : null}
       {(selected || draft) ? path.anchors.map((anchor, anchorIndex) => {

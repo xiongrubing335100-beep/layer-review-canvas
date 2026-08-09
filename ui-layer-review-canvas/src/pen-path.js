@@ -233,6 +233,16 @@ export function pathToSvgD(path, { close } = {}) {
   return commands.join(' ');
 }
 
+export function draftPreviewSegment(anchor, previewPoint) {
+  if (!validPoint(anchor) || !validPoint(anchor?.out) || !validPoint(previewPoint)) return null;
+  return {
+    start: { x: anchor.x, y: anchor.y },
+    control1: { x: anchor.out.x, y: anchor.out.y },
+    control2: { x: previewPoint.x, y: previewPoint.y },
+    end: { x: previewPoint.x, y: previewPoint.y },
+  };
+}
+
 export function flattenPenPath(path, { width, height, maxErrorPx = DEFAULT_MAX_ERROR_PX } = {}) {
   if (!Array.isArray(path?.anchors) || !path.anchors.length) return [];
   const pixelWidth = Math.max(0, Number(width) || 0);
