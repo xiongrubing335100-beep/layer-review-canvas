@@ -133,9 +133,7 @@ def apply_result_refinement_pixel_lock(candidate, base, annotations):
     if not annotations:
         return candidate.convert("RGBA")
 
-    base_alpha = base.getchannel("A")
-    alpha_locked_candidate = candidate.copy()
-    alpha_locked_candidate.putalpha(base_alpha)
+    candidate_rgba = candidate.convert("RGBA")
 
     edit_mask = Image.new("L", base.size, 0)
     alpha_action = Image.new("L", base.size, 0)
@@ -172,10 +170,17 @@ def apply_result_refinement_pixel_lock(candidate, base, annotations):
             annotation.get("semantics") == "force_exclude"
             or annotation.get("kind") in ("background", "exclude", "erase")
         )
-        alpha_draw.polygon(points, fill=2 if explicit_erase else 1)
+        explicit_keep = (
+            annotation.get("semantics") == "force_keep"
+            or annotation.get("kind") in ("foreground", "keep")
+        )
+        if explicit_erase:
+            alpha_draw.polygon(points, fill=2)
+        elif explicit_keep:
+            alpha_draw.polygon(points, fill=1)
 
     locked = base.copy()
-    locked.paste(alpha_locked_candidate, mask=edit_mask)
+    locked.paste(candidate_rgba, mask=edit_mask)
     erase_mask = alpha_action.point(lambda value: 255 if value == 2 else 0)
     locked_alpha = locked.getchannel("A")
     locked_alpha.paste(0, mask=erase_mask)
@@ -458,7 +463,7 @@ def finalize_job(
                 if mapping_kind != "result_refinement_canvas":
                     raise ValueError("result_refinement requires a result_refinement_canvas mapping")
                 candidate = crop_mapped_imagegen_canvas(
-                    candidate.convert("RGB") if annotations else candidate,
+                    candidate,
                     mapping,
                     image_width,
                     image_height,

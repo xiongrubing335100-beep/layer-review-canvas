@@ -403,7 +403,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             self.assertEqual(output.mode, "RGBA")
             self.assertEqual(output.size, (4, 4))
             self.assertEqual(output.getpixel((0, 0)), (10, 20, 30, 255))
-            self.assertEqual(output.getpixel((1, 1)), (200, 100, 50, 128))
+            self.assertEqual(output.getpixel((1, 1)), (200, 100, 50, 255))
             self.assertEqual(output.getpixel((3, 3)), (70, 80, 90, 0))
         with Image.open(self.source) as base:
             self.assertEqual(base.getpixel((1, 1)), (40, 50, 60, 128))
@@ -450,7 +450,59 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             self.assertEqual(output.getpixel((2, 2)), (10, 20, 30, 255))
             self.assertEqual(output.getpixel((3, 3)), (70, 80, 90, 0))
 
-    def test_result_refinement_later_annotation_wins_for_overlapping_erase(self):
+    def test_result_refinement_force_keep_uses_candidate_rgba_over_transparent_base(self):
+        base = Image.new("RGBA", (3, 3), (10, 20, 30, 255))
+        base.putpixel((1, 1), (40, 50, 60, 0))
+        candidate = Image.new("RGBA", (3, 3), (200, 100, 50, 192))
+
+        output = MODULE.apply_result_refinement_pixel_lock(candidate, base, [{
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "foreground",
+            "semantics": "force_keep",
+            "order_index": 0,
+            "source_polygon_pixels": [
+                {"x": 1, "y": 1},
+                {"x": 2, "y": 1},
+                {"x": 2, "y": 2},
+                {"x": 1, "y": 2},
+            ],
+        }])
+
+        self.assertEqual(output.getpixel((1, 1)), (200, 100, 50, 192))
+        self.assertEqual(output.getpixel((0, 0)), (10, 20, 30, 255))
+
+    def test_result_refinement_force_keep_after_erase_restores_candidate_rgba(self):
+        polygon = [
+            {"x": 1, "y": 1},
+            {"x": 2, "y": 1},
+            {"x": 2, "y": 2},
+            {"x": 1, "y": 2},
+        ]
+        base = Image.new("RGBA", (3, 3), (10, 20, 30, 255))
+        base.putpixel((1, 1), (40, 50, 60, 64))
+        candidate = Image.new("RGBA", (3, 3), (200, 100, 50, 192))
+
+        output = MODULE.apply_result_refinement_pixel_lock(candidate, base, [{
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "foreground",
+            "semantics": "force_keep",
+            "order_index": 1,
+            "source_polygon_pixels": polygon,
+        }, {
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "background",
+            "semantics": "force_exclude",
+            "order_index": 0,
+            "source_polygon_pixels": polygon,
+        }])
+
+        self.assertEqual(output.getpixel((1, 1)), (200, 100, 50, 192))
+        self.assertEqual(output.getpixel((0, 0)), (10, 20, 30, 255))
+
+    def test_result_refinement_boundary_after_erase_does_not_cancel_erase(self):
         polygon = [
             {"x": 0, "y": 0},
             {"x": 1, "y": 0},
@@ -483,7 +535,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         )
 
         with Image.open(report["output_path"]) as output:
-            self.assertEqual(output.getpixel((0, 0)), (200, 100, 50, 255))
+            self.assertEqual(output.getpixel((0, 0)), (200, 100, 50, 0))
 
     def test_result_refinement_text_only_can_edit_full_rgba_canvas(self):
         mapping_path = self.configure_result_refinement([])
