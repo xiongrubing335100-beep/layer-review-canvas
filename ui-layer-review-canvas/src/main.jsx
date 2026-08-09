@@ -81,7 +81,7 @@ import { arrangeImageDocuments } from './canvas-layout.js';
 import { canvasDeletionPlan, shouldHandleCanvasDelete } from './canvas-deletion.js';
 import { analyzeFastCategories } from './fast-category-analysis.js';
 import { resolvePanelVisibility } from './workbench-layout.js';
-import { annotationForPlan } from './annotation-plan.js';
+import { annotationForPlan, selectionForPenOverlay } from './annotation-plan.js';
 import { PenPathOverlay } from './PenPathOverlay.jsx';
 import './styles.css';
 
@@ -548,6 +548,7 @@ function App() {
   const [categoryAnalysisStage, setCategoryAnalysisStage] = useState('idle');
   const [draftMark, setDraftMark] = useState(null);
   const [selectedMarkId, setSelectedMarkId] = useState(null);
+  const [reviewPenSelections, setReviewPenSelections] = useState(() => new Map());
   const [showOriginalOnly, setShowOriginalOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingJobId, setCancellingJobId] = useState(null);
@@ -573,7 +574,6 @@ function App() {
   const resultEditPreviewRef = useRef(null);
   const resultEditGestureRef = useRef(null);
   const reviewPenPathsRef = useRef(new Map());
-  const reviewPenSelectionRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
   const linkPreviewPathRef = useRef(null);
@@ -618,7 +618,7 @@ function App() {
 
   const restoreImageDocument = (document) => {
     reviewPenPathsRef.current.clear();
-    reviewPenSelectionRef.current.clear();
+    setReviewPenSelections(new Map());
     setActiveImageId(document?.imageId || '');
     setSourceImage(document?.sourceDataUrl || document?.sourceImage || '');
     setSourceDataUrl(document?.sourceDataUrl || '');
@@ -739,10 +739,8 @@ function App() {
     [selectedMarks],
   );
   const selectedPenSelection = useMemo(() => {
-    if (!selectedPenPaths.some((path) => path.id === selectedMarkId)) return null;
-    const emittedSelection = reviewPenSelectionRef.current.get(selectedId);
-    return emittedSelection?.pathId === selectedMarkId ? emittedSelection : { pathId: selectedMarkId };
-  }, [selectedId, selectedMarkId, selectedPenPaths]);
+    return selectionForPenOverlay(reviewPenSelections, selectedId, selectedMarkId, selectedPenPaths);
+  }, [reviewPenSelections, selectedId, selectedMarkId, selectedPenPaths]);
   const groupedNodes = useMemo(() => categoryOrder.map((category) => ({
     category,
     items: nodes.filter((node) => node.category === category),
@@ -1480,7 +1478,7 @@ function App() {
     setNodeInsertMenu(null);
     setAlignmentMenuOpen(false);
     reviewPenPathsRef.current.clear();
-    reviewPenSelectionRef.current.clear();
+    setReviewPenSelections(new Map());
     setMarks([]);
     setCandidateContext(null);
     setResultViewer(null);
@@ -2047,7 +2045,12 @@ function App() {
     const remaining = nodes.filter((node) => node.id !== selected.id);
     const next = remaining[Math.min(selectedIndex, remaining.length - 1)];
     reviewPenPathsRef.current.delete(selected.id);
-    reviewPenSelectionRef.current.delete(selected.id);
+    setReviewPenSelections((current) => {
+      if (!current.has(selected.id)) return current;
+      const nextSelections = new Map(current);
+      nextSelections.delete(selected.id);
+      return nextSelections;
+    });
     setNodes(remaining);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selected.id));
     setCanvasSelectedKeys((current) => current.filter((key) => key !== deletedKey));
@@ -2099,7 +2102,11 @@ function App() {
 
     splitIds.forEach((nodeId) => {
       reviewPenPathsRef.current.delete(nodeId);
-      reviewPenSelectionRef.current.delete(nodeId);
+    });
+    setReviewPenSelections((current) => {
+      const nextSelections = new Map(current);
+      splitIds.forEach((nodeId) => nextSelections.delete(nodeId));
+      return nextSelections.size === current.size ? current : nextSelections;
     });
     setNodes(remainingNodes);
     setMarks((current) => current.filter((mark) => !splitIds.has(mark.layer_id)));
@@ -2144,6 +2151,16 @@ function App() {
     const current = selected.requirement.trim();
     if (current.includes(value)) return;
     updateSelected({ requirement: current ? `${current}\n${value}。` : `${value}。`, status: selected.status === 'accepted' ? 'candidate' : selected.status });
+  };
+
+  const updateReviewPenSelection = (layerId, selection) => {
+    setReviewPenSelections((current) => {
+      if (selection ? current.get(layerId) === selection : !current.has(layerId)) return current;
+      const nextSelections = new Map(current);
+      if (selection) nextSelections.set(layerId, selection);
+      else nextSelections.delete(layerId);
+      return nextSelections;
+    });
   };
 
   const selectMaskTool = (tool) => {
@@ -2477,7 +2494,7 @@ function App() {
 
   const updatePenPaths = ({ paths: nextPaths, draft, selection }) => {
     reviewPenPathsRef.current.set(selectedId, nextPaths);
-    reviewPenSelectionRef.current.set(selectedId, selection);
+    updateReviewPenSelection(selectedId, selection);
     const persistedPaths = nextPaths.map((path) => ({
       ...path,
       layer_id: selectedId,
@@ -2495,7 +2512,7 @@ function App() {
     const last = selectedMarks.at(-1);
     if (!last) return;
     reviewPenPathsRef.current.delete(selectedId);
-    reviewPenSelectionRef.current.delete(selectedId);
+    updateReviewPenSelection(selectedId, null);
     setMarks((current) => current.filter((mark) => (
       mark.layer_id !== selectedId || mark.id !== last.id
     )));
@@ -2506,7 +2523,7 @@ function App() {
   const deleteSelectedMark = () => {
     if (!selectedMarkId) return;
     reviewPenPathsRef.current.delete(selectedId);
-    reviewPenSelectionRef.current.delete(selectedId);
+    updateReviewPenSelection(selectedId, null);
     setMarks((current) => current.filter((mark) => (
       mark.layer_id !== selectedId || mark.id !== selectedMarkId
     )));
@@ -2516,7 +2533,7 @@ function App() {
 
   const clearMarks = () => {
     reviewPenPathsRef.current.delete(selectedId);
-    reviewPenSelectionRef.current.delete(selectedId);
+    updateReviewPenSelection(selectedId, null);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selectedId));
     setSelectedMarkId(null);
     setDraftMark(null);
@@ -3006,6 +3023,7 @@ function App() {
     const commonProps = {
       onPointerDown: (event) => {
         event.stopPropagation();
+        updateReviewPenSelection(selectedId, null);
         setSelectedMarkId(mark.id);
       },
     };
@@ -3304,7 +3322,13 @@ function App() {
                       type="button"
                       key={mark.id}
                       className={selectedMarkId === mark.id ? 'annotation-history__item annotation-history__item--selected' : 'annotation-history__item'}
-                      onClick={() => setSelectedMarkId(mark.id)}
+                      onClick={() => {
+                        updateReviewPenSelection(
+                          selectedId,
+                          mark.shape === 'bezier_path' ? { pathId: mark.id } : null,
+                        );
+                        setSelectedMarkId(mark.id);
+                      }}
                     >
                       {mark.shape === 'bezier_path' ? <PenTool size={12} /> : mark.shape === 'stroke' ? <Brush size={12} /> : <Square size={12} />}
                       {mark.kind === 'foreground' ? '保留' : mark.kind === 'background' ? '排除' : '边界'}{mark.shape === 'bezier_path' ? '路径' : '笔划'} {index + 1}

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { annotationForPlan } from './annotation-plan.js';
+import * as annotationPlan from './annotation-plan.js';
+import { createPenEditorState, reducePenEditor } from './pen-editor-state.js';
+
+const { annotationForPlan } = annotationPlan;
 
 function closedFixture() {
   return {
@@ -56,4 +59,67 @@ test('preserves rectangle and legacy stroke annotations while normalizing legacy
   assert.equal(legacyStroke.kind, 'boundary');
   assert.equal(legacyStroke.semantics, 'edge_override');
   assert.deepEqual(legacyStroke.source_points_pixels, [{ x: 100, y: 100 }, { x: 600, y: 300 }]);
+});
+
+test('derives the latest anchor selection when a parent rerenders with unchanged paths', () => {
+  const paths = [{ id: 'pen-1' }];
+  const pathSelection = { pathId: 'pen-1' };
+  const anchorSelection = { pathId: 'pen-1', anchorIndex: 2 };
+  const before = new Map([['layer-1', pathSelection]]);
+  const after = new Map(before);
+  after.set('layer-1', anchorSelection);
+
+  assert.strictEqual(
+    annotationPlan.selectionForPenOverlay(before, 'layer-1', 'pen-1', paths),
+    pathSelection,
+  );
+  assert.strictEqual(
+    annotationPlan.selectionForPenOverlay(after, 'layer-1', 'pen-1', paths),
+    anchorSelection,
+  );
+  assert.equal(
+    annotationPlan.selectionForPenOverlay(after, 'layer-1', 'pen-1', paths)?.anchorIndex,
+    2,
+  );
+});
+
+test('derives pen selection independently for each layer', () => {
+  const layerOneSelection = { pathId: 'pen-1', anchorIndex: 1 };
+  const selections = new Map([['layer-1', layerOneSelection]]);
+
+  assert.strictEqual(
+    annotationPlan.selectionForPenOverlay(selections, 'layer-1', 'pen-1', [{ id: 'pen-1' }]),
+    layerOneSelection,
+  );
+  assert.deepEqual(
+    annotationPlan.selectionForPenOverlay(selections, 'layer-2', 'pen-2', [{ id: 'pen-2' }]),
+    { pathId: 'pen-2' },
+  );
+});
+
+test('Delete removes the selected anchor after the parent selection rerender, not the whole path', () => {
+  const path = {
+    ...closedFixture(),
+    anchors: [
+      ...closedFixture().anchors,
+      { x: 1, y: 1, in: { x: 1, y: 1 }, out: { x: 1, y: 1 }, handlesLinked: true },
+    ],
+  };
+  const paths = [path];
+  const rerenderedSelections = new Map([
+    ['layer-1', { pathId: path.id, anchorIndex: 1 }],
+  ]);
+  const selection = annotationPlan.selectionForPenOverlay(
+    rerenderedSelections,
+    'layer-1',
+    path.id,
+    paths,
+  );
+  const stateAfterParentRender = { ...createPenEditorState(paths), selection };
+
+  const deleted = reducePenEditor(stateAfterParentRender, { type: 'delete-selection' });
+
+  assert.equal(deleted.paths.length, 1);
+  assert.equal(deleted.paths[0].anchors.length, 3);
+  assert.equal(deleted.paths[0].anchors.some((anchor) => anchor.x === 1 && anchor.y === 0), false);
 });

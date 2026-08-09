@@ -19,6 +19,14 @@ function semanticForKind(kind) {
   return 'edge_override';
 }
 
+export function selectionForPenOverlay(selectionByLayer, layerId, selectedMarkId, paths) {
+  if (!paths?.some((path) => path.id === selectedMarkId)) return null;
+  const emittedSelection = selectionByLayer?.get?.(layerId);
+  return emittedSelection?.pathId === selectedMarkId
+    ? emittedSelection
+    : { pathId: selectedMarkId };
+}
+
 export function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
   const region = pixelBounds(bounds, sourceSize);
   const kind = normalizedKind(mark.kind);
