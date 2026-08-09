@@ -38,6 +38,34 @@ export function canSubmitResultRefinement({ prompt, paths, draft }) {
   return { ok: true, reason: null };
 }
 
+function appendRevisionJob(currentJobs, revisionJob) {
+  const jobs = Array.isArray(currentJobs) ? currentJobs : [];
+  if (jobs.some((job) => job.id === revisionJob.id)) return jobs;
+  return [...jobs, revisionJob];
+}
+
+export async function recordResultRefinementDelivery({
+  delivery,
+  revisionJob,
+  setJobs,
+  sendFollowUpMessage,
+  markMessageSent,
+}) {
+  const followsCurrentConversation = delivery.delivery_channel === 'current_conversation';
+  if (followsCurrentConversation) await sendFollowUpMessage(delivery.prompt);
+  setJobs((current) => appendRevisionJob(current, revisionJob));
+
+  let acknowledgementError = null;
+  if (followsCurrentConversation) {
+    try {
+      await markMessageSent(delivery.job_id);
+    } catch (error) {
+      acknowledgementError = error;
+    }
+  }
+  return { followUpPosted: followsCurrentConversation, acknowledgementError };
+}
+
 export function buildResultRefinementPlan({
   pngSize,
   placement,
@@ -50,6 +78,8 @@ export function buildResultRefinementPlan({
   const canvas = positivePixelSize(pngSize);
   const pixelRegion = { x: 0, y: 0, ...canvas };
   const requirement = String(prompt || '').trim();
+  const validPaths = paths.filter(isClosedPath);
+  const pathScoped = validPaths.length > 0;
   return {
     version: '0.7',
     task: 'refine_split_result',
@@ -89,16 +119,17 @@ export function buildResultRefinementPlan({
       review_snapshot: {
         placement: { ...placement },
       },
-      mask_annotations: paths
-        .filter(isClosedPath)
+      mask_annotations: validPaths
         .map((path, index) => annotationForPlan(path, fullCanvasPercent, canvas, index)),
       mask_policy: {
         selected_region: 'existing_result_full_canvas',
+        edit_scope: pathScoped ? 'closed_paths_only' : 'full_result_canvas',
         keep_region: 'force_include_existing_result_pixels',
         exclude_region: 'force_remove_to_transparent',
         overlapping_keep_exclude: 'later_annotation_wins',
         manual_boundary: 'highest_priority_edge_override',
-        preserve_unmarked_pixels: true,
+        preserve_unmarked_pixels: pathScoped,
+        preserve_existing_alpha_outside_annotations: pathScoped,
       },
       execution_mode: layer.executionMode || 'fast',
       processing_route: 'result_refinement',
@@ -116,10 +147,15 @@ export function buildResultRefinementPlan({
       output_scope: 'selected_layers_only',
       auto_add_layers: false,
       edit_base: 'existing_split_result_png',
-      preserve_unmarked_pixels: true,
+      preserve_unmarked_pixels: pathScoped,
       preserve_existing_alpha: true,
       final_png_canvas: 'exact_existing_result_canvas',
-      visible_pixels: 'existing_result_pixel_locked_outside_annotations',
+      visible_pixels: pathScoped
+        ? 'existing_result_pixel_locked_outside_annotations'
+        : 'full_canvas_editable',
+      alpha_edit_scope: pathScoped
+        ? 'locked_outside_closed_paths'
+        : 'full_canvas_editable_preserve_alpha_structure',
     },
   };
 }

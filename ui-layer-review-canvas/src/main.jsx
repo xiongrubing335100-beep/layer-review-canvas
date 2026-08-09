@@ -86,6 +86,7 @@ import { PenPathOverlay } from './PenPathOverlay.jsx';
 import {
   buildResultRefinementPlan,
   canSubmitResultRefinement,
+  recordResultRefinementDelivery,
   readPngPixelSize,
 } from './result-refinement.js';
 import { resolveNodeResultState } from './result-version-state.js';
@@ -2642,12 +2643,7 @@ function App() {
 
       const result = await submitLayerReviewPlan(payload);
       submissionResult = result;
-      if (result.delivery_channel === 'current_conversation') {
-        await sendMcpAppFollowUpMessage(result.prompt);
-        followUpPosted = true;
-        await markLayerReviewMessageSent(result.job_id);
-      }
-      setJobs((current) => [...current, {
+      const revisionJob = {
         id: result.job_id,
         projectId,
         imageId: activeImageId,
@@ -2673,11 +2669,21 @@ function App() {
         parentJobId: latestSelectedResult.job.id,
         editKind: 'result_refinement',
         refinementSnapshot,
-      }]);
+      };
+      const deliveryOutcome = await recordResultRefinementDelivery({
+        delivery: result,
+        revisionJob,
+        setJobs,
+        sendFollowUpMessage: sendMcpAppFollowUpMessage,
+        markMessageSent: markLayerReviewMessageSent,
+      });
+      followUpPosted = deliveryOutcome.followUpPosted;
       addActivity(result.delivery_channel === 'current_conversation'
         ? `${selected.name} 的二次精修已发送到当前会话`
         : `${selected.name} 的二次精修已交给会话监听，等待当前任务确认`);
-      setToast('结果修整已提交，原结果版本已保留');
+      setToast(deliveryOutcome.acknowledgementError
+        ? '结果修整已发送并保留本地记录，状态回写未确认'
+        : '结果修整已提交，原结果版本已保留');
       setResultEditDraft(null);
     } catch (error) {
       if (submissionResult?.job_id && !followUpPosted) {
