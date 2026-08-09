@@ -1,4 +1,9 @@
 import { annotationForPlan } from './annotation-plan.js';
+import {
+  RESULT_REFINEMENT_ROI_POLICY,
+  deriveRefinementPolicy,
+  refinementSubmissionState,
+} from './result-refinement-policy.js';
 
 const fullCanvasPercent = { x: 0, y: 0, width: 100, height: 100 };
 const preDeliveryStatuses = new Set([
@@ -35,7 +40,10 @@ export async function readPngPixelSize(blob, createBitmap = globalThis.createIma
   }
 }
 
-export function canSubmitResultRefinement({ prompt, paths, draft }) {
+export function canSubmitResultRefinement({ prompt, paths, draft, operation, canvas }) {
+  if (operation || canvas) {
+    return refinementSubmissionState({ prompt, paths, draft, operation, canvas });
+  }
   if (draft) return { ok: false, reason: '请先闭合或取消当前钢笔路径' };
   const hasPrompt = String(prompt || '').trim().length > 0;
   const hasClosedPath = Array.isArray(paths) && paths.some(isClosedPath);
@@ -94,6 +102,11 @@ export function buildResultRefinementPlan({
   placement,
   prompt,
   paths = [],
+  operation = {
+    mode: 'path_scoped',
+    subject_path_ids: [],
+    alpha_include_path_ids: [],
+  },
   baseResult,
   layer,
   project,
@@ -102,9 +115,29 @@ export function buildResultRefinementPlan({
   const pixelRegion = { x: 0, y: 0, ...canvas };
   const requirement = String(prompt || '').trim();
   const validPaths = paths.filter(isClosedPath);
-  const pathScoped = validPaths.length > 0;
+  const baseAnnotations = validPaths
+    .map((path, index) => annotationForPlan(path, fullCanvasPercent, canvas, index));
+  const refinementPolicy = deriveRefinementPolicy({
+    prompt,
+    annotations: baseAnnotations,
+    operation,
+    canvas,
+  });
+  const roleByPathId = new Map([
+    ...refinementPolicy.repair_path_ids.map((id) => [id, 'repair']),
+    ...refinementPolicy.erase_path_ids.map((id) => [id, 'erase']),
+    ...refinementPolicy.protect_path_ids.map((id) => [id, 'protect']),
+    ...refinementPolicy.subject_path_ids.map((id) => [id, 'subject']),
+  ]);
+  const annotations = baseAnnotations.map((annotation) => ({
+    ...annotation,
+    ...(roleByPathId.has(annotation.id)
+      ? { operation_role: roleByPathId.get(annotation.id) }
+      : {}),
+  }));
+  const pathScoped = operation.mode !== 'full_canvas_explicit' && validPaths.length > 0;
   return {
-    version: '0.7',
+    version: '0.8',
     task: 'refine_split_result',
     project_id: project.projectId,
     image_id: project.imageId,
@@ -127,9 +160,12 @@ export function buildResultRefinementPlan({
       name: layer.name,
       requirement,
       refinement_requirement: requirement || null,
+      refinement_operation: operation,
+      normalized_user_requirement: refinementPolicy.normalized_user_requirement,
+      roi_policy: { ...RESULT_REFINEMENT_ROI_POLICY },
       execution_route_hint: 'result_refinement',
       repair_engine: 'imagegen',
-      maximum_imagegen_calls: 2,
+      maximum_imagegen_calls: refinementPolicy.maximum_imagegen_calls,
       transparency_strategy: 'preserve_existing_alpha',
       rmbg_required: false,
       structure_validation_required: true,
@@ -142,8 +178,7 @@ export function buildResultRefinementPlan({
       review_snapshot: {
         placement: { ...placement },
       },
-      mask_annotations: validPaths
-        .map((path, index) => annotationForPlan(path, fullCanvasPercent, canvas, index)),
+      mask_annotations: annotations,
       mask_policy: {
         selected_region: 'existing_result_full_canvas',
         edit_scope: pathScoped ? 'closed_paths_only' : 'full_result_canvas',

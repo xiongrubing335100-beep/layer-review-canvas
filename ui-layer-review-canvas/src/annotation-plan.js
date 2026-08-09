@@ -27,9 +27,16 @@ export function selectionForPenOverlay(selectionByLayer, layerId, selectedMarkId
     : { pathId: selectedMarkId };
 }
 
-export function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
+export function annotationForPlan(
+  mark,
+  bounds,
+  sourceSize,
+  orderIndex,
+  { operationRole = null } = {},
+) {
   const region = pixelBounds(bounds, sourceSize);
   const kind = normalizedKind(mark.kind);
+  const operationRoleField = operationRole == null ? {} : { operation_role: operationRole };
   if (mark.shape === 'rect') {
     const sourceRectPercent = {
       x: bounds.x + (mark.x / 100) * bounds.width,
@@ -40,6 +47,7 @@ export function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
     return {
       id: mark.id,
       order_index: orderIndex,
+      ...operationRoleField,
       kind,
       semantics: semanticForKind(kind),
       shape: 'rect',
@@ -54,6 +62,7 @@ export function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
     return {
       id: mark.id,
       order_index: orderIndex,
+      ...operationRoleField,
       kind,
       semantics: semanticForKind(kind),
       shape: 'bezier_path',
@@ -75,6 +84,7 @@ export function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
   return {
     id: mark.id,
     order_index: orderIndex,
+    ...operationRoleField,
     kind,
     semantics: semanticForKind(kind),
     shape: 'stroke',

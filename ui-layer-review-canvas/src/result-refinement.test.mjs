@@ -42,12 +42,17 @@ function openFixture() {
   return { ...closedFixture(), id: 'draft-1', closed: false };
 }
 
-function buildFixturePlan({ prompt, paths }) {
+function buildFixturePlan({ prompt, paths, operation = {
+  mode: 'path_scoped',
+  subject_path_ids: [],
+  alpha_include_path_ids: [],
+} }) {
   return buildResultRefinementPlan({
     pngSize: { width: 1536, height: 837 },
     placement: { x: 422, y: 1252, width: 156, height: 85 },
     prompt,
     paths,
+    operation,
     baseResult: {
       jobId: 'base-job',
       versionId: 'base-v1',
@@ -59,17 +64,29 @@ function buildFixturePlan({ prompt, paths }) {
   });
 }
 
-test('text alone can submit a PNG refinement', () => {
+test('text alone cannot implicitly submit a path-scoped PNG refinement', () => {
   assert.deepEqual(
-    canSubmitResultRefinement({ prompt: '增强按钮高光', paths: [], draft: null }),
-    { ok: true, reason: null },
+    canSubmitResultRefinement({
+      prompt: '增强按钮高光', paths: [], draft: null,
+      operation: { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] },
+      canvas: { width: 1536, height: 837 },
+    }),
+    { ok: false, reason: '局部二次编辑必须添加至少一条有效闭合路径', warnings: [] },
   );
 });
 
-test('a closed path alone can submit a PNG refinement', () => {
+test('a boundary path alone cannot submit without a modification target', () => {
   assert.deepEqual(
-    canSubmitResultRefinement({ prompt: '  ', paths: [closedFixture()], draft: null }),
-    { ok: true, reason: null },
+    canSubmitResultRefinement({
+      prompt: '  ', paths: [closedFixture()], draft: null,
+      operation: { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] },
+      canvas: { width: 1536, height: 837 },
+    }),
+    {
+      ok: false,
+      reason: '修复路径必须填写修改目标',
+      warnings: ['局部修复路径范围较大，可能产生重新构图'],
+    },
   );
 });
 
@@ -113,6 +130,7 @@ test('PNG pixel decoding closes its ImageBitmap when dimensions are invalid', as
 test('the refinement plan separates PNG pixels from logical placement', () => {
   const plan = buildFixturePlan({ prompt: '增强按钮高光', paths: [closedFixture()] });
 
+  assert.equal(plan.version, '0.8');
   assert.equal(plan.task, 'refine_split_result');
   assert.equal(plan.parent_job_id, 'base-job');
   assert.equal(plan.source.canvas.width, 1536);
@@ -127,6 +145,20 @@ test('the refinement plan separates PNG pixels from logical placement', () => {
   assert.equal(plan.layers[0].execution_route_hint, 'result_refinement');
   assert.equal(plan.layers[0].repair_engine, 'imagegen');
   assert.equal(plan.layers[0].maximum_imagegen_calls, 2);
+  assert.deepEqual(plan.layers[0].refinement_operation, {
+    mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [],
+  });
+  assert.equal(plan.layers[0].normalized_user_requirement, '增强按钮高光');
+  assert.deepEqual(plan.layers[0].roi_policy, {
+    strategy: 'per_repair_path_native_tiles',
+    scale_mode: 'native_1_to_1',
+    context_padding_ratio: 0.08,
+    minimum_padding_ratio: 0.03,
+    maximum_padding_ratio: 0.15,
+    warn_coverage_ratio: 0.4,
+    block_coverage_ratio: 0.7,
+    tile_overlap_pixels: 32,
+  });
   assert.equal(plan.layers[0].transparency_strategy, 'preserve_existing_alpha');
   assert.equal(plan.layers[0].rmbg_required, false);
   assert.equal(plan.layers[0].structure_validation_required, true);
@@ -135,11 +167,16 @@ test('the refinement plan separates PNG pixels from logical placement', () => {
   assert.equal(plan.layers[0].output_resolution_policy, 'existing_result_pixels');
   assert.equal(plan.layers[0].requirement, '增强按钮高光');
   assert.equal(plan.layers[0].mask_annotations[0].shape, 'bezier_path');
+  assert.equal(plan.layers[0].mask_annotations[0].operation_role, 'repair');
   assert.equal(plan.constraints.preserve_existing_alpha, true);
 });
 
-test('text-only refinement keeps the full PNG editable without enabling path-scoped locks', () => {
-  const plan = buildFixturePlan({ prompt: '整体增强高光', paths: [] });
+test('explicit text-only full-canvas refinement keeps the full PNG editable', () => {
+  const plan = buildFixturePlan({
+    prompt: '整体增强高光',
+    paths: [],
+    operation: { mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [] },
+  });
   const layer = plan.layers[0];
 
   assert.equal(layer.mask_annotations.length, 0);

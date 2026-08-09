@@ -61,6 +61,18 @@ test('preserves rectangle and legacy stroke annotations while normalizing legacy
   assert.deepEqual(legacyStroke.source_points_pixels, [{ x: 100, y: 100 }, { x: 600, y: 300 }]);
 });
 
+test('serializes an explicit operation role only when one is provided', () => {
+  const bounds = { x: 0, y: 0, width: 100, height: 100 };
+  const sourceSize = { width: 100, height: 100 };
+  const repair = annotationForPlan(closedFixture(), bounds, sourceSize, 0, {
+    operationRole: 'repair',
+  });
+  const compatible = annotationForPlan(closedFixture(), bounds, sourceSize, 1);
+
+  assert.equal(repair.operation_role, 'repair');
+  assert.equal(Object.hasOwn(compatible, 'operation_role'), false);
+});
+
 test('derives the latest anchor selection when a parent rerenders with unchanged paths', () => {
   const paths = [{ id: 'pen-1' }];
   const pathSelection = { pathId: 'pen-1' };
