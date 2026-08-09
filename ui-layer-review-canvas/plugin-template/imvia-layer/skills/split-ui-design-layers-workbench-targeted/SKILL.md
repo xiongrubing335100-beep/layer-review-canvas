@@ -11,7 +11,8 @@ Treat the submitted workbench plan and its authoritative `layers[]` as the compl
 
 - Read the plan JSON before editing. For fast `direct_crop`, `alpha_extract`, and `codex_rgba`, use the
   submitted exact crop and do not reopen the full source image. Read the full source only for
-  `quality`, `targeted_repair`, `kvBackground`, or refinement that needs background context.
+  `quality`, `targeted_repair`, or `kvBackground`; for `result_refinement`, read and attach only the
+  current successful base PNG.
 - Process exactly the records in `layers[]`, in `layer_index` order.
 - Do not add, split, merge, rename, omit, or rediscover records.
 - Do not perform whole-page diagnosis or create another manifest.
@@ -70,8 +71,8 @@ preserve crop-relative coordinates, the mask-priority result, and final RGBA out
 crop pixel dimensions except when `output_resolution_policy: native_imagegen_content` applies to a
 `targeted_repair` RMBG record.
 
-For `fast`, do not create candidates speculatively or perform full-page analysis. Call ImageGen
-only for `targeted_repair` or `codex_rgba`, and never exceed `maximum_imagegen_calls`. Create the
+For `fast`, do not create candidates speculatively or perform full-page analysis. Call ImageGen only for `targeted_repair`, `codex_rgba`, or `result_refinement`, and never exceed
+`maximum_imagegen_calls`. Create the
 first required working result and immediately run the first-candidate gate below. Accept a passing
 result without another call. Only when that result fails may one targeted ImageGen retry address
 the failed checks; if the retry fails, stop. For `quality`, keep the same route and call ceiling but
@@ -87,6 +88,10 @@ a logical selection crop, or any other visual context.
 - When closed Bézier pen paths exist, the text requirement and those paths define the complete
   mutable scope. Every path must be closed; an open draft is not an annotation.
 - Outside that scope, all 未标注 RGBA 像素 are locked byte-for-byte to the base PNG.
+- Inside a submitted closed path, RGBA and alpha may change only as explicitly requested by the
+  submitted text requirement.
+- For a text-only refinement, RGBA and alpha may change across the full canvas only as explicitly
+  requested by the submitted text requirement.
 - Use the PNG's actual pixel width and height, never its logical selection or placement dimensions.
 - Preserve the base PNG's alpha channel and transparent structure. The generated candidate must be
   an RGBA PNG at exactly the base PNG pixel dimensions.
@@ -94,18 +99,15 @@ a logical selection crop, or any other visual context.
   `output_resolution_policy: existing_result_pixels`. 不得调用 RMBG for preparation,
   generation, finalization, or retry.
 
-Run the preparation command exactly with the active job and layer identifiers:
-
-```sh
-python3 scripts/prepare-targeted-imagegen-canvas.py --job-id <jobId> --layer-id <layerId>
-```
+Run the preparation command exactly as supplied in the workbench message: use its resolved Python invocation,
+the absolute path to `scripts/prepare-targeted-imagegen-canvas.py`, and its active
+`--job-id <jobId> --layer-id <layerId>` arguments. Do not replace that invocation with `python3` or
+replace the absolute script path with a repository-relative path.
 
 Give ImageGen only the returned reference canvas. Save its RGBA PNG candidate in `generated/`, then
-run the finalization command exactly with the returned mapping JSON:
-
-```sh
-python3 scripts/finalize-targeted-job.py --job-id <jobId> --layer-id <layerId> --generated-input <PNG> --imagegen-mapping <JSON>
-```
+run the finalization command exactly as supplied in the workbench message: reuse the resolved Python
+invocation, the absolute path to `scripts/finalize-targeted-job.py`, and the returned mapping JSON
+with `--job-id <jobId> --layer-id <layerId> --generated-input <PNG> --imagegen-mapping <JSON>`.
 
 Complete all inspection before finalization. When this finalizer succeeds, it must be the last tool
 call in the Codex turn; immediately return the finalizer-approved PNG path and end the reply. Do not
@@ -160,7 +162,7 @@ Use the shortest source-pixel-first route:
 2. Do not create alternate candidates before the first-candidate gate or perform full-page analysis.
 3. Use `targeted_repair` only when the requirement explicitly needs approved text removal, hole filling, or occlusion completion. Create one first working result.
 4. Immediately validate that result for the dimensions required by `output_resolution_policy`, annotation conformance, obvious exclusions, and structural integrity. When all four pass, accept it and skip repair-mask generation and source-locked recomposition.
-5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. For `codex_rgba` and `targeted_repair`, the candidate must preserve the prepared native canvas and content region. Retry a canvas-size failure once; never stretch an arbitrary ImageGen canvas into the requested crop.
+5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. For `codex_rgba`, `targeted_repair`, and `result_refinement`, the candidate must preserve the prepared native canvas and content region. Retry a canvas-size failure once; never stretch an arbitrary ImageGen canvas into the requested crop.
 6. Run the mandatory count, dimensions, alpha, annotation-conformance, and obvious-exclusion checks. Annotation conformance must honor forced keep and exclude annotations; when they overlap, the larger `order_index` wins.
 7. Emit no more than one progress message before final delivery.
 
@@ -169,7 +171,8 @@ Use the shortest source-pixel-first route:
 Use the complete targeted route:
 
 1. Execute the same selected route for the submitted region, with one source-locked local candidate when validation requires it.
-2. Apply generation only to approved repair holes under `targeted_repair`.
+2. Apply generation only to approved repair holes under `targeted_repair`, a semantic matte under
+   `codex_rgba`, or the submitted mutable scope under `result_refinement`.
 3. Compare the candidate against source pixels, annotations, geometry, material continuity, and alpha edges.
 4. If a check fails, perform at most one targeted retry for the failed area only.
 5. Run the complete acceptance gate before delivery.
@@ -185,7 +188,7 @@ For every submitted record:
 1. Use the preflight specification for `source_region_pixels`, `mask_annotations`, `requirement`, `remove_background`, `execution_mode`, context attachments, logical placement dimensions, and output resolution policy.
 2. Build the working crop from the exact selected rectangle. Do not broaden it to nearby controls or visually similar repeated items.
 3. Apply submitted annotations and complete the requested split structure.
-4. Follow the selected execution mode and route. In fast `direct_crop` and `alpha_extract`, execute directly. In fast `targeted_repair` and `codex_rgba`, run the first-candidate gate and short-circuit accepted work before any retry.
+4. Follow the selected execution mode and route. In fast `direct_crop` and `alpha_extract`, execute directly. In fast `targeted_repair`, `codex_rgba`, and `result_refinement`, run the first-candidate gate and short-circuit accepted work before any retry.
    For `targeted_repair`, first run `scripts/prepare-targeted-imagegen-canvas.py` with the current
    `jobId` and `layerId`. Give ImageGen only the returned fixed reference canvas, require the entire
    native canvas to remain unchanged, and edit only approved holes inside the returned
@@ -198,6 +201,9 @@ For every submitted record:
    and dark preview backgrounds after the source RGB has been composed with the matte.
    Reject missing strokes, fragmented glyphs, altered wording, changed proportions, opaque
    backplates, or modified source material. Retry once only for failed checks. Do not fall back to RMBG.
+   For `result_refinement`, first run the workbench-supplied command whose absolute script path ends
+   in `scripts/prepare-targeted-imagegen-canvas.py`. Attach only the returned reference canvas to
+   ImageGen, enforce the submitted text-only or closed-path mutable scope, and never call RMBG.
 5. For `targeted_repair`, pass the native generated canvas plus the returned mapping JSON to
    `scripts/finalize-targeted-job.py --imagegen-mapping`; the finalizer validates the full canvas
    and extracts only the declared content region. If the record uses RMBG with
@@ -270,7 +276,9 @@ Produce only the selected component. When the requirement asks for a clean base,
 
 - Prefer original visible RGB wherever the boundary is reliable.
 - Lock unaffected source pixels during text removal and occlusion repair.
-- Use ImageGen only for approved hidden-pixel repair under `targeted_repair`; never redesign the complete selected component.
+- Use ImageGen only for approved hidden-pixel repair under `targeted_repair`, semantic matte work
+  under `codex_rgba`, or the submitted mutable scope under `result_refinement`; never redesign the
+  complete selected component.
 - Reject candidates that change proportions, gradients, bevel depth, icon identity, compression texture, or source geometry outside an approved repair hole.
 - Do not substitute blur, clone smearing, broad inpainting, or a similar-looking generated component for a failed repair.
 - When `remove_background` is true, follow `transparency_strategy`. A `codex_rgba` ImageGen result

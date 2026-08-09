@@ -161,6 +161,9 @@ test('README documents complete Bezier pen paths and PNG revision retention', ()
   assert.match(readme, /Option/);
   assert.match(readme, /当前成功 PNG/);
   assert.match(readme, /legacy.*画笔数据/i);
+  assert.match(readme, /历史成功文件与任务记录/);
+  assert.match(readme, /画布只显示当前 base 结果节点/);
+  assert.doesNotMatch(readme, /历史成功版本保留为独立结果节点/);
 });
 
 test('read-only legacy annotations remain selectable above the pen canvas', () => {

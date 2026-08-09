@@ -15,13 +15,48 @@ const base = {
   outputDirectory: 'C:/jobs/job-1/final',
   reviewCropPaths: ['C:/jobs/job-1/01-selection.png'],
 };
+const workbenchSkill = await readFile(new URL('../plugin-template/imvia-layer/skills/split-ui-design-layers-workbench-targeted/SKILL.md', import.meta.url), 'utf8');
 
 test('the workbench skill documents PNG result refinement source locking', async () => {
-  const skill = await readFile(new URL('../plugin-template/imvia-layer/skills/split-ui-design-layers-workbench-targeted/SKILL.md', import.meta.url), 'utf8');
-  assert.match(skill, /result_refinement/);
-  assert.match(skill, /当前成功 PNG/);
-  assert.match(skill, /未标注 RGBA 像素/);
-  assert.match(skill, /不得调用 RMBG/);
+  assert.match(workbenchSkill, /result_refinement/);
+  assert.match(workbenchSkill, /当前成功 PNG/);
+  assert.match(workbenchSkill, /未标注 RGBA 像素/);
+  assert.match(workbenchSkill, /不得调用 RMBG/);
+});
+
+test('the workbench skill treats result refinement as a first-class fast ImageGen route', () => {
+  assert.match(
+    workbenchSkill,
+    /For `fast`,[\s\S]*?Call ImageGen only for `targeted_repair`, `codex_rgba`, or `result_refinement`/,
+  );
+  assert.match(
+    workbenchSkill,
+    /In fast `targeted_repair`, `codex_rgba`, and `result_refinement`, run the first-candidate gate/,
+  );
+  assert.match(
+    workbenchSkill,
+    /For `result_refinement`, first run[\s\S]*?prepare-targeted-imagegen-canvas\.py/,
+  );
+});
+
+test('the workbench skill documents the complete result refinement mutation scope', () => {
+  assert.match(workbenchSkill, /Attach only that base PNG/);
+  assert.match(workbenchSkill, /text-only[\s\S]*?full base PNG canvas editable/i);
+  assert.match(workbenchSkill, /closed Bézier pen paths[\s\S]*?complete\s+mutable scope/);
+  assert.match(workbenchSkill, /未标注 RGBA 像素[\s\S]*?locked byte-for-byte/);
+  assert.match(workbenchSkill, /actual pixel width and height[\s\S]*?never its logical selection/);
+  assert.match(workbenchSkill, /Inside a submitted closed path, RGBA and alpha may change/);
+  assert.match(workbenchSkill, /For a text-only refinement, RGBA and alpha may change across the full canvas/);
+  assert.match(workbenchSkill, /不得调用 RMBG/);
+});
+
+test('the workbench skill delegates exact commands to the resolved runtime and stops after finalization', () => {
+  assert.match(workbenchSkill, /resolved Python invocation/);
+  assert.match(workbenchSkill, /absolute path[\s\S]*?prepare-targeted-imagegen-canvas\.py/);
+  assert.match(workbenchSkill, /absolute path[\s\S]*?finalize-targeted-job\.py/);
+  assert.doesNotMatch(workbenchSkill, /python3 scripts\/(?:prepare-targeted-imagegen-canvas|finalize-targeted-job)\.py/);
+  assert.match(workbenchSkill, /last tool call in the Codex turn/);
+  assert.match(workbenchSkill, /immediately return the finalizer-approved PNG path and end the reply/);
 });
 
 test('compact prompt points to the authoritative plan without duplicating requirements', () => {
@@ -314,4 +349,38 @@ test('text-only result refinement makes the full base PNG canvas editable', () =
   assert.match(prompt, /纯文字|text-only/i);
   assert.match(prompt, /全画布可编辑|full canvas.*editable/i);
   assert.doesNotMatch(prompt, /路径外.*RGBA.*锁定/);
+});
+
+test('result refinement prompt reuses the configured Python runtime and absolute script paths', () => {
+  const previousCommand = process.env.IMVIA_LAYER_PYTHON_COMMAND;
+  const previousArgs = process.env.IMVIA_LAYER_PYTHON_ARGS;
+  process.env.IMVIA_LAYER_PYTHON_COMMAND = 'py';
+  process.env.IMVIA_LAYER_PYTHON_ARGS = '["-3"]';
+  try {
+    const prompt = buildWorkbenchPrompt({
+      ...base,
+      jobPath: '/workspace/imvia/output/jobs/job-1/layer-review-plan.json',
+      plan: {
+        task: 'refine_split_result',
+        source: { canvas: { width: 1536, height: 837 } },
+        layers: [{
+          id: 'button',
+          name: '发送按钮',
+          requirement: '增强边缘高光',
+          execution_route_hint: 'result_refinement',
+          transparency_strategy: 'preserve_existing_alpha',
+          mask_annotations: [],
+        }],
+      },
+    });
+
+    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
+    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input <PNG> --imagegen-mapping <JSON>/);
+    assert.doesNotMatch(prompt, /python3 scripts\//);
+  } finally {
+    if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
+    else process.env.IMVIA_LAYER_PYTHON_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.IMVIA_LAYER_PYTHON_ARGS;
+    else process.env.IMVIA_LAYER_PYTHON_ARGS = previousArgs;
+  }
 });

@@ -339,8 +339,8 @@ export function buildWorkbenchPrompt({
       hasClosedPaths
         ? '只允许执行权威计划中已提交的文字要求，并且仅可修改已提交的闭合路径区域；路径外所有未标记 RGBA 像素必须逐像素锁定。'
         : '这是纯文字（text-only）精修，没有闭合路径范围；整张 base PNG 全画布可编辑，但必须保持既有透明结构并严格遵守提交的文字要求。',
-      `python3 scripts/prepare-targeted-imagegen-canvas.py --job-id ${jobId} --layer-id ${layerId}`,
-      `python3 scripts/finalize-targeted-job.py --job-id ${jobId} --layer-id ${layerId} --generated-input <PNG> --imagegen-mapping <JSON>`,
+      `${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id ${layerId}`,
+      `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --generated-input <PNG> --imagegen-mapping <JSON>`,
       '上述结果最终处理器必须是本 turn 最后一个工具调用；调用后禁止预览、读取或再次校验。',
     ];
   });
