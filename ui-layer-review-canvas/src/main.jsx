@@ -26,6 +26,7 @@ import {
   Minimize2,
   Move,
   PanelLeft,
+  PenTool,
   PencilLine,
   Plus,
   ScanSearch,
@@ -80,6 +81,8 @@ import { arrangeImageDocuments } from './canvas-layout.js';
 import { canvasDeletionPlan, shouldHandleCanvasDelete } from './canvas-deletion.js';
 import { analyzeFastCategories } from './fast-category-analysis.js';
 import { resolvePanelVisibility } from './workbench-layout.js';
+import { annotationForPlan } from './annotation-plan.js';
+import { PenPathOverlay } from './PenPathOverlay.jsx';
 import './styles.css';
 
 const categoryMeta = {
@@ -363,50 +366,6 @@ function connectionPath(sourceX, sourceY, targetX, targetY) {
   return `M ${sourceX} ${sourceY} C ${sourceX + direction * handle} ${sourceY}, ${targetX - direction * handle} ${targetY}, ${targetX} ${targetY}`;
 }
 
-function annotationForPlan(mark, bounds, sourceSize, orderIndex) {
-  const region = pixelBounds(bounds, sourceSize);
-  if (mark.shape === 'rect') {
-    const sourceRectPercent = {
-      x: bounds.x + (mark.x / 100) * bounds.width,
-      y: bounds.y + (mark.y / 100) * bounds.height,
-      width: (mark.width / 100) * bounds.width,
-      height: (mark.height / 100) * bounds.height,
-    };
-    return {
-      id: mark.id,
-      order_index: orderIndex,
-      kind: mark.kind,
-      semantics: mark.kind === 'foreground' ? 'force_keep' : 'force_exclude',
-      shape: 'rect',
-      coordinate_space: 'selected_region_percent',
-      region_percent: { x: mark.x, y: mark.y, width: mark.width, height: mark.height },
-      source_rect_percent: sourceRectPercent,
-      source_rect_pixels: pixelBounds(sourceRectPercent, sourceSize),
-    };
-  }
-
-  const sourcePointsPixels = mark.points.map((point) => ({
-    x: Math.round(region.x + (point.x / 100) * region.width),
-    y: Math.round(region.y + (point.y / 100) * region.height),
-  }));
-  return {
-    id: mark.id,
-    order_index: orderIndex,
-    kind: mark.kind,
-    semantics: mark.kind === 'foreground'
-      ? 'force_keep'
-      : mark.kind === 'background'
-        ? 'force_exclude'
-        : 'edge_override',
-    shape: 'stroke',
-    coordinate_space: 'selected_region_percent',
-    points: mark.points,
-    source_points_pixels: sourcePointsPixels,
-    brush_size_percent: mark.brush_size_percent,
-    brush_size_source_pixels: Math.max(1, Math.round((mark.brush_size_percent / 100) * region.width)),
-  };
-}
-
 function IconButton({ label, children, className = '', ...props }) {
   return (
     <button className={`icon-button ${className}`} type="button" aria-label={label} data-tooltip={label} {...props}>
@@ -542,6 +501,10 @@ function defaultReviewMode() {
   return 'guided';
 }
 
+function normalizeStoredReviewMark(mark) {
+  return mark?.kind === 'brush' ? { ...mark, kind: 'boundary' } : mark;
+}
+
 const FROZEN_THEME = 'dark';
 
 function App() {
@@ -585,7 +548,6 @@ function App() {
   const [categoryAnalysisStage, setCategoryAnalysisStage] = useState('idle');
   const [draftMark, setDraftMark] = useState(null);
   const [selectedMarkId, setSelectedMarkId] = useState(null);
-  const [brushSize, setBrushSize] = useState(24);
   const [showOriginalOnly, setShowOriginalOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingJobId, setCancellingJobId] = useState(null);
@@ -608,9 +570,10 @@ function App() {
   const canvasRef = useRef(null);
   const guidedImageRef = useRef(null);
   const annotationPreviewRef = useRef(null);
-  const annotationGestureRef = useRef(null);
   const resultEditPreviewRef = useRef(null);
   const resultEditGestureRef = useRef(null);
+  const reviewPenPathsRef = useRef(new Map());
+  const reviewPenSelectionRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
   const linkPreviewPathRef = useRef(null);
@@ -654,6 +617,8 @@ function App() {
   };
 
   const restoreImageDocument = (document) => {
+    reviewPenPathsRef.current.clear();
+    reviewPenSelectionRef.current.clear();
     setActiveImageId(document?.imageId || '');
     setSourceImage(document?.sourceDataUrl || document?.sourceImage || '');
     setSourceDataUrl(document?.sourceDataUrl || '');
@@ -666,7 +631,7 @@ function App() {
     setResultNodePositions(document?.resultNodePositions || {});
     setManualResultNodes(document?.manualResultNodes || []);
     setManualEdges(document?.manualEdges || []);
-    setMarks(document?.marks || []);
+    setMarks((document?.marks || []).map(normalizeStoredReviewMark));
   };
 
   const activateImageDocument = (imageId) => {
@@ -694,8 +659,8 @@ function App() {
   });
   const selected = nodes.find((node) => node.id === selectedId) ?? nodes[0] ?? emptySelectedNode;
   const selectedIndex = nodes.findIndex((node) => node.id === selected.id);
-  const annotationModeActive = Boolean(boundaryOpen && maskTool && !showOriginalOnly);
-  const visibleCandidateContext = annotationModeActive
+  const annotationSessionActive = Boolean(boundaryOpen && maskTool);
+  const visibleCandidateContext = annotationSessionActive
     ? selected.bounds
     : candidateContext ?? expandedBounds(selected.bounds);
   const candidateSelectionBounds = boundsInsideContext(selected.bounds, visibleCandidateContext);
@@ -760,7 +725,24 @@ function App() {
   const batchReadyNodeIds = nodes
     .filter((node) => node.status === 'accepted' && !sentNodeIds.has(node.id))
     .map((node) => node.id);
-  const selectedMarks = marks.filter((mark) => mark.layer_id === selectedId);
+  const selectedMarks = useMemo(
+    () => marks.filter((mark) => mark.layer_id === selectedId),
+    [marks, selectedId],
+  );
+  const storedSelectedPenPaths = useMemo(
+    () => selectedMarks.filter((mark) => mark.shape === 'bezier_path'),
+    [selectedMarks],
+  );
+  const selectedPenPaths = reviewPenPathsRef.current.get(selectedId) ?? storedSelectedPenPaths;
+  const selectedLegacyMarks = useMemo(
+    () => selectedMarks.filter((mark) => mark.shape !== 'bezier_path'),
+    [selectedMarks],
+  );
+  const selectedPenSelection = useMemo(() => {
+    if (!selectedPenPaths.some((path) => path.id === selectedMarkId)) return null;
+    const emittedSelection = reviewPenSelectionRef.current.get(selectedId);
+    return emittedSelection?.pathId === selectedMarkId ? emittedSelection : { pathId: selectedMarkId };
+  }, [selectedId, selectedMarkId, selectedPenPaths]);
   const groupedNodes = useMemo(() => categoryOrder.map((category) => ({
     category,
     items: nodes.filter((node) => node.category === category),
@@ -1324,7 +1306,6 @@ function App() {
     setSelectedMarkId(null);
     setCandidatePreviewExpanded(false);
     setCandidateContext(expandedBounds(selected.bounds));
-    annotationGestureRef.current = null;
   }, [selectedId]);
 
   useEffect(() => {
@@ -1498,6 +1479,8 @@ function App() {
     setHiddenCanvasResultKeys([]);
     setNodeInsertMenu(null);
     setAlignmentMenuOpen(false);
+    reviewPenPathsRef.current.clear();
+    reviewPenSelectionRef.current.clear();
     setMarks([]);
     setCandidateContext(null);
     setResultViewer(null);
@@ -2063,6 +2046,8 @@ function App() {
     const deletedKey = splitNodeKey(selected.id);
     const remaining = nodes.filter((node) => node.id !== selected.id);
     const next = remaining[Math.min(selectedIndex, remaining.length - 1)];
+    reviewPenPathsRef.current.delete(selected.id);
+    reviewPenSelectionRef.current.delete(selected.id);
     setNodes(remaining);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selected.id));
     setCanvasSelectedKeys((current) => current.filter((key) => key !== deletedKey));
@@ -2112,6 +2097,10 @@ function App() {
     ];
     const remainingNodes = nodes.filter((node) => !splitIds.has(node.id));
 
+    splitIds.forEach((nodeId) => {
+      reviewPenPathsRef.current.delete(nodeId);
+      reviewPenSelectionRef.current.delete(nodeId);
+    });
     setNodes(remainingNodes);
     setMarks((current) => current.filter((mark) => !splitIds.has(mark.layer_id)));
     setManualResultNodes((current) => current.filter((node) => !manualResultIds.has(node.id)));
@@ -2161,22 +2150,19 @@ function App() {
     if (maskTool === tool && !showOriginalOnly) {
       setMaskTool(null);
       setDraftMark(null);
-      annotationGestureRef.current = null;
       setToast('已退出边界工具');
       return;
     }
     setMaskTool(tool);
+    setDraftMark(null);
     setShowOriginalOnly(false);
     setBoundaryOpen(true);
-    const label = tool === 'foreground' ? '保留画笔' : tool === 'background' ? '排除画笔' : '边界画笔';
+    const label = tool === 'foreground' ? '保留钢笔' : tool === 'background' ? '排除钢笔' : '边界钢笔';
     setToast(`${label}已开启，请在右侧大预览中操作`);
   };
 
   const toggleOriginalOnly = () => {
     setShowOriginalOnly((current) => !current);
-    setMaskTool(null);
-    setDraftMark(null);
-    annotationGestureRef.current = null;
     setToast(showOriginalOnly ? '已显示精修标注' : '已临时隐藏精修标注');
   };
 
@@ -2186,7 +2172,6 @@ function App() {
         setMaskTool(null);
         setDraftMark(null);
         setSelectedMarkId(null);
-        annotationGestureRef.current = null;
       }
       return !current;
     });
@@ -2490,100 +2475,51 @@ function App() {
     };
   };
 
-  const startAnnotation = (event) => {
-    if (!boundaryOpen || !maskTool || showOriginalOnly || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const point = annotationPoint(event);
-    const id = `${selectedId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const mark = {
-      id,
+  const updatePenPaths = ({ paths: nextPaths, draft, selection }) => {
+    reviewPenPathsRef.current.set(selectedId, nextPaths);
+    reviewPenSelectionRef.current.set(selectedId, selection);
+    const persistedPaths = nextPaths.map((path) => ({
+      ...path,
       layer_id: selectedId,
-      kind: maskTool,
-      shape: 'stroke',
-      points: [{ x: point.x, y: point.y }],
-      brush_size_px: brushSize,
-      brush_size_percent: (brushSize / point.previewWidth) * 100,
-    };
-    annotationGestureRef.current = {
-      pointerId: event.pointerId,
-      anchor: point,
-      mark,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setSelectedMarkId(null);
-    setDraftMark(mark);
-  };
-
-  const moveAnnotation = (event) => {
-    const gesture = annotationGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    const point = annotationPoint(event);
-    let next;
-    if (gesture.mark.shape === 'rect') {
-      next = {
-        ...gesture.mark,
-        x: Math.min(gesture.anchor.x, point.x),
-        y: Math.min(gesture.anchor.y, point.y),
-        width: Math.abs(point.x - gesture.anchor.x),
-        height: Math.abs(point.y - gesture.anchor.y),
-      };
-    } else {
-      const previous = gesture.mark.points.at(-1);
-      const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-      if (distance < 0.22) return;
-      next = { ...gesture.mark, points: [...gesture.mark.points, { x: point.x, y: point.y }] };
-    }
-    gesture.mark = next;
-    setDraftMark(next);
-  };
-
-  const finishAnnotation = (event) => {
-    const gesture = annotationGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const mark = gesture.mark;
-    annotationGestureRef.current = null;
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    setDraftMark(null);
-
-    if (mark.shape === 'rect' && (mark.width < 1 || mark.height < 1)) {
-      setToast('请在大预览中拖动，画出一个区域框');
-      return;
-    }
-    setMarks((current) => [...current, mark]);
-    setSelectedMarkId(mark.id);
-  };
-
-  const cancelAnnotation = (event) => {
-    const gesture = annotationGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    annotationGestureRef.current = null;
-    setDraftMark(null);
+      kind: path.kind === 'brush' ? 'boundary' : path.kind,
+    }));
+    setMarks((current) => [
+      ...current.filter((mark) => mark.layer_id !== selectedId || mark.shape !== 'bezier_path'),
+      ...persistedPaths,
+    ]);
+    setDraftMark(draft);
+    setSelectedMarkId(selection?.pathId ?? null);
   };
 
   const undoLastMark = () => {
     const last = selectedMarks.at(-1);
     if (!last) return;
-    setMarks((current) => current.filter((mark) => mark.id !== last.id));
+    reviewPenPathsRef.current.delete(selectedId);
+    reviewPenSelectionRef.current.delete(selectedId);
+    setMarks((current) => current.filter((mark) => (
+      mark.layer_id !== selectedId || mark.id !== last.id
+    )));
     setSelectedMarkId((current) => (current === last.id ? null : current));
     setToast('已撤销上一步标注');
   };
 
   const deleteSelectedMark = () => {
     if (!selectedMarkId) return;
-    setMarks((current) => current.filter((mark) => mark.id !== selectedMarkId));
+    reviewPenPathsRef.current.delete(selectedId);
+    reviewPenSelectionRef.current.delete(selectedId);
+    setMarks((current) => current.filter((mark) => (
+      mark.layer_id !== selectedId || mark.id !== selectedMarkId
+    )));
     setSelectedMarkId(null);
     setToast('已删除选中的标注');
   };
 
   const clearMarks = () => {
+    reviewPenPathsRef.current.delete(selectedId);
+    reviewPenSelectionRef.current.delete(selectedId);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selectedId));
     setSelectedMarkId(null);
     setDraftMark(null);
-    annotationGestureRef.current = null;
     setToast('当前项目的边界标注已清空');
   };
 
@@ -3065,9 +3001,9 @@ function App() {
     openSourceFilePicker();
   };
 
-  const renderAnnotationMark = (mark, draft = false) => {
+  const renderLegacyAnnotationMark = (mark) => {
     const selectedClass = selectedMarkId === mark.id ? 'annotation-mark--selected' : '';
-    const commonProps = draft ? {} : {
+    const commonProps = {
       onPointerDown: (event) => {
         event.stopPropagation();
         setSelectedMarkId(mark.id);
@@ -3077,7 +3013,7 @@ function App() {
       return (
         <rect
           key={mark.id}
-          className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass} ${draft ? 'annotation-mark--draft' : ''}`}
+          className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass}`}
           x={mark.x}
           y={mark.y}
           width={mark.width}
@@ -3091,7 +3027,7 @@ function App() {
       return (
         <circle
           key={mark.id}
-          className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass} ${draft ? 'annotation-mark--draft' : ''}`}
+          className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass}`}
           cx={mark.points[0].x}
           cy={mark.points[0].y}
           r="0.7"
@@ -3103,7 +3039,7 @@ function App() {
     return (
       <polyline
         key={mark.id}
-        className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass} ${draft ? 'annotation-mark--draft' : ''}`}
+        className={`annotation-mark annotation-mark--${mark.kind} ${selectedClass}`}
         points={mark.points.map((point) => `${point.x},${point.y}`).join(' ')}
         style={{ strokeWidth: `${mark.brush_size_px}px` }}
         vectorEffect="non-scaling-stroke"
@@ -3113,10 +3049,21 @@ function App() {
   };
 
   const renderAnnotationOverlay = () => (
-    <svg className="annotation-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="边界精修标注">
-      {selectedMarks.map((mark) => renderAnnotationMark(mark))}
-      {draftMark ? renderAnnotationMark(draftMark, true) : null}
-    </svg>
+    <>
+      {selectedLegacyMarks.length ? (
+        <svg className="annotation-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="旧版边界精修标注">
+          {selectedLegacyMarks.map((mark) => renderLegacyAnnotationMark(mark))}
+        </svg>
+      ) : null}
+      <PenPathOverlay
+        paths={selectedPenPaths}
+        draft={draftMark}
+        selection={selectedPenSelection}
+        activeKind={maskTool || 'foreground'}
+        onChange={updatePenPaths}
+        ariaLabel="边界精修钢笔标注"
+      />
+    </>
   );
 
   const renderRequestPanel = () => {
@@ -3311,34 +3258,27 @@ function App() {
           <div className="boundary-section">
           <button type="button" className="boundary-toggle" onClick={toggleBoundary} aria-expanded={boundaryOpen}>
             <CheckCircle2 size={18} />
-            <span><strong>{selectedMarks.length ? '边界已调整' : '边界精修'}</strong><small>{selectedMarks.length ? `${selectedMarks.length} 个精修笔划` : '在右侧大预览中精确编辑'}</small></span>
+            <span><strong>{selectedMarks.length ? '边界已调整' : '边界精修'}</strong><small>{selectedMarks.length ? `${selectedMarks.length} 个精修标注` : '在右侧大预览中精确编辑'}</small></span>
             <ChevronDown size={16} className={boundaryOpen ? 'chevron-open' : ''} />
           </button>
           {boundaryOpen ? (
             <div className="boundary-tools">
               <div className="boundary-tool-grid">
-                <button type="button" aria-pressed={maskTool === 'foreground' && !showOriginalOnly} className={maskTool === 'foreground' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--foreground' : 'boundary-tool'} onClick={() => selectMaskTool('foreground')}><Brush size={16} /> 保留画笔</button>
-                <button type="button" aria-pressed={maskTool === 'background' && !showOriginalOnly} className={maskTool === 'background' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--background' : 'boundary-tool'} onClick={() => selectMaskTool('background')}><Brush size={16} /> 排除画笔</button>
-                <button type="button" aria-pressed={maskTool === 'brush' && !showOriginalOnly} className={maskTool === 'brush' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--brush' : 'boundary-tool'} onClick={() => selectMaskTool('brush')}><Brush size={16} /> 边界画笔</button>
+                <button type="button" aria-pressed={maskTool === 'foreground' && !showOriginalOnly} className={maskTool === 'foreground' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--foreground' : 'boundary-tool'} onClick={() => selectMaskTool('foreground')}><PenTool size={16} /> 保留钢笔</button>
+                <button type="button" aria-pressed={maskTool === 'background' && !showOriginalOnly} className={maskTool === 'background' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--background' : 'boundary-tool'} onClick={() => selectMaskTool('background')}><PenTool size={16} /> 排除钢笔</button>
+                <button type="button" aria-pressed={maskTool === 'boundary' && !showOriginalOnly} className={maskTool === 'boundary' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--boundary' : 'boundary-tool'} onClick={() => selectMaskTool('boundary')}><PenTool size={16} /> 边界钢笔</button>
                 <button type="button" aria-pressed={showOriginalOnly} className={showOriginalOnly ? 'boundary-tool boundary-tool--active' : 'boundary-tool'} onClick={toggleOriginalOnly}><Hand size={16} /> {showOriginalOnly ? '显示标注' : '隐藏标注'}</button>
               </div>
-              {maskTool && !showOriginalOnly ? (
-                <label className="brush-size-control">
-                  <span>画笔大小</span>
-                  <input type="range" min="1" max="52" step="1" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
-                  <strong>{brushSize}px</strong>
-                </label>
-              ) : null}
               <p className="boundary-help">
                 {showOriginalOnly
                   ? '当前只显示框选区域原图，再点“显示标注”继续编辑。'
                   : maskTool === 'foreground'
-                    ? '在右侧大预览中涂抹，绿色笔划内的像素必须保留。'
+                    ? '点击添加锚点，拖动可建立曲线手柄；闭合区域内的像素必须保留。'
                     : maskTool === 'background'
-                      ? '在右侧大预览中涂抹，橙色笔划内的内容需要排除。'
-                      : maskTool === 'brush'
-                        ? '沿目标边缘拖动画笔，绘制紫色边界修整线。'
-                        : '请选择一种画笔。选中后可再次点击同一按钮退出。'}
+                      ? '点击添加锚点，拖动可建立曲线手柄；闭合区域内的内容需要排除。'
+                      : maskTool === 'boundary'
+                        ? '沿目标边缘添加锚点，点击起点闭合路径；Alt 拖动可断开手柄联动。'
+                        : '请选择一种钢笔。选中后可再次点击同一按钮退出。'}
               </p>
               <div className="refinement-prompt">
                 <label htmlFor="refinement-prompt">
@@ -3366,8 +3306,8 @@ function App() {
                       className={selectedMarkId === mark.id ? 'annotation-history__item annotation-history__item--selected' : 'annotation-history__item'}
                       onClick={() => setSelectedMarkId(mark.id)}
                     >
-                      {mark.shape === 'stroke' ? <Brush size={12} /> : <Square size={12} />}
-                      {mark.kind === 'foreground' ? '保留笔划' : mark.kind === 'background' ? '排除笔划' : '边界笔划'} {index + 1}
+                      {mark.shape === 'bezier_path' ? <PenTool size={12} /> : mark.shape === 'stroke' ? <Brush size={12} /> : <Square size={12} />}
+                      {mark.kind === 'foreground' ? '保留' : mark.kind === 'background' ? '排除' : '边界'}{mark.shape === 'bezier_path' ? '路径' : '笔划'} {index + 1}
                     </button>
                   ))}
                 </div>
@@ -3818,13 +3758,10 @@ function App() {
                   bounds={visibleCandidateContext}
                   previewRef={annotationPreviewRef}
                   interactive
-                  className={`region-preview--guided region-preview--editable ${candidatePreviewExpanded ? 'region-preview--expanded' : ''} ${annotationModeActive ? `region-preview--tool-${maskTool}` : 'region-preview--crop-editor'}`}
-                  onPointerDown={annotationModeActive ? startAnnotation : (event) => startCandidateSelection(event, 'draw')}
-                  onPointerMove={annotationModeActive ? moveAnnotation : undefined}
-                  onPointerUp={annotationModeActive ? finishAnnotation : undefined}
-                  onPointerCancel={annotationModeActive ? cancelAnnotation : undefined}
+                  className={`region-preview--guided region-preview--editable ${candidatePreviewExpanded ? 'region-preview--expanded' : ''} ${annotationSessionActive ? `region-preview--tool-${maskTool}` : 'region-preview--crop-editor'}`}
+                  onPointerDown={annotationSessionActive ? undefined : (event) => startCandidateSelection(event, 'draw')}
                 >
-                  {annotationModeActive ? renderAnnotationOverlay() : (
+                  {annotationSessionActive ? (showOriginalOnly ? null : renderAnnotationOverlay()) : (
                     <span
                       className="candidate-selection-frame"
                       style={{
@@ -3841,16 +3778,16 @@ function App() {
                       <i className="selection-handle selection-handle--se" onPointerDown={(event) => startCandidateSelection(event, 'se')} />
                     </span>
                   )}
-                  {boundaryOpen && annotationModeActive ? (
+                  {boundaryOpen && annotationSessionActive ? (
                     <span className="annotation-mode-indicator">
                       {showOriginalOnly
                         ? '标注已隐藏'
                         : maskTool === 'foreground'
-                          ? '拖动绘制保留框'
+                          ? '点击添加保留路径锚点'
                           : maskTool === 'background'
-                            ? '拖动绘制排除框'
-                            : maskTool === 'brush'
-                              ? `画笔 ${brushSize}px`
+                            ? '点击添加排除路径锚点'
+                            : maskTool === 'boundary'
+                              ? '点击添加边界路径锚点'
                               : '请在右侧选择精修工具'}
                     </span>
                   ) : null}

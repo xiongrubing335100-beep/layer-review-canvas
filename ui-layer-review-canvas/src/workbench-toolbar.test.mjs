@@ -107,9 +107,41 @@ test('topbar conversation status stays inside its grid column', () => {
 
 test('crop preview omits the redundant drag instruction while keeping annotation feedback', () => {
   assert.doesNotMatch(source, /拖动框选，或拖动边框与四角调整/);
-  assert.match(source, /boundaryOpen && annotationModeActive/);
+  assert.match(source, /boundaryOpen && annotationSessionActive/);
   assert.match(source, /标注已隐藏/);
-  assert.match(source, /拖动绘制保留框/);
+  assert.match(source, /点击添加保留路径锚点/);
+});
+
+test('hiding annotations keeps the active pen session out of crop mode', () => {
+  const toggleOriginalOnly = source.slice(
+    source.indexOf('const toggleOriginalOnly = () =>'),
+    source.indexOf('const toggleBoundary = () =>'),
+  );
+
+  assert.match(source, /const annotationSessionActive = Boolean\(boundaryOpen && maskTool\);/);
+  assert.match(source, /onPointerDown=\{annotationSessionActive \? undefined/);
+  assert.match(source, /annotationSessionActive \? \(showOriginalOnly \? null : renderAnnotationOverlay\(\)\)/);
+  assert.doesNotMatch(toggleOriginalOnly, /setMaskTool\(null\)/);
+});
+
+test('layer review exposes pen tools and no brush-size controls', () => {
+  const reviewPanel = source.slice(
+    source.indexOf('<section className="inspector-section inspector-section--boundary">'),
+    source.indexOf('<div className="guided-actions">'),
+  );
+
+  assert.match(reviewPanel, /<PenTool size=\{16\} \/> \u4fdd\u7559\u94a2\u7b14/);
+  assert.match(reviewPanel, /<PenTool size=\{16\} \/> \u6392\u9664\u94a2\u7b14/);
+  assert.match(reviewPanel, /<PenTool size=\{16\} \/> \u8fb9\u754c\u94a2\u7b14/);
+  assert.doesNotMatch(reviewPanel, /\u753b\u7b14\u5927\u5c0f|brushSize|<Brush size=\{16\}/);
+});
+
+test('read-only legacy annotations remain selectable above the pen canvas', () => {
+  assert.match(
+    styles,
+    /\.annotation-overlay\s*\{[^}]*z-index:\s*8;[^}]*pointer-events:\s*none;/,
+  );
+  assert.match(styles, /\.annotation-mark\s*\{[\s\S]*?pointer-events:\s*visiblePainted;/);
 });
 
 test('topbar context shares the guided sidebar alignment edge', () => {

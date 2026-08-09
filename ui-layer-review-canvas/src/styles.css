@@ -1190,12 +1190,12 @@ button:disabled { cursor: default; opacity: .48; }
 .candidate-selection-frame .selection-handle--se { right: 0; bottom: 0; }
 
 .region-preview--tool-foreground,
-.region-preview--tool-background { cursor: crosshair; }
-.region-preview--tool-brush { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%23ffffff' stroke-width='1'/%3E%3Ccircle cx='12' cy='12' r='1' fill='%23ffffff'/%3E%3C/svg%3E") 12 12, crosshair; }
+.region-preview--tool-background,
+.region-preview--tool-boundary { cursor: crosshair; }
 
 .annotation-overlay {
   position: absolute;
-  z-index: 6;
+  z-index: 8;
   inset: 0;
   width: 100%;
   height: 100%;
@@ -1257,12 +1257,15 @@ rect.annotation-mark {
 
 rect.annotation-mark--foreground { fill: rgba(65, 229, 164, .19); stroke: #41e5a4; }
 rect.annotation-mark--background { fill: rgba(255, 143, 91, .2); stroke: #ff8f5b; }
+rect.annotation-mark--boundary { fill: rgba(196, 128, 255, .18); stroke: #c480ff; }
 polyline.annotation-mark--foreground { fill: none; stroke: rgba(65, 229, 164, .78); stroke-linecap: round; stroke-linejoin: round; }
 polyline.annotation-mark--background { fill: none; stroke: rgba(255, 143, 91, .8); stroke-linecap: round; stroke-linejoin: round; }
-polyline.annotation-mark--brush { fill: none; stroke: rgba(196, 128, 255, .62); stroke-linecap: round; stroke-linejoin: round; }
+polyline.annotation-mark--brush,
+polyline.annotation-mark--boundary { fill: none; stroke: rgba(196, 128, 255, .62); stroke-linecap: round; stroke-linejoin: round; }
 circle.annotation-mark--foreground { fill: rgba(65, 229, 164, .78); stroke: #d8ffed; stroke-width: 2px; }
 circle.annotation-mark--background { fill: rgba(255, 143, 91, .8); stroke: #ffe3d4; stroke-width: 2px; }
-circle.annotation-mark--brush { fill: rgba(196, 128, 255, .72); stroke: #f0d9ff; stroke-width: 2px; }
+circle.annotation-mark--brush,
+circle.annotation-mark--boundary { fill: rgba(196, 128, 255, .72); stroke: #f0d9ff; stroke-width: 2px; }
 .annotation-mark--selected { filter: drop-shadow(0 0 4px #fff); }
 rect.annotation-mark--selected { stroke: #fff; }
 .annotation-mark--draft { opacity: .72; pointer-events: none; }
@@ -1582,22 +1585,6 @@ rect.annotation-mark--selected { stroke: #fff; }
 .candidate-option-badge { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding: 3px 5px; border-radius: 4px; color: #8ce8b7; background: #203b2b; font-size: 8px; }
 
 .boundary-help { margin: 8px 0 0; color: #92a097; font-size: 9px; line-height: 1.45; }
-
-.brush-size-control {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 7px 8px;
-  border: 1px solid #44384d;
-  border-radius: 5px;
-  color: #cdb4e2;
-  background: #28212d;
-  font-size: 9px;
-}
-.brush-size-control input { width: 100%; accent-color: #b779ea; }
-.brush-size-control strong { min-width: 34px; color: #ead9f7; text-align: right; }
 
 .refinement-prompt {
   display: grid;
@@ -2231,15 +2218,6 @@ rect.annotation-mark--selected { stroke: #fff; }
 }
 .boundary-tool--active { border-color: #698777; background: #203027; }
 .boundary-tools .text-action { margin-top: 9px; }
-.brush-size-control {
-  border-color: #38473d;
-  border-radius: 5px;
-  color: #a9b6ac;
-  background: #151d17;
-}
-.brush-size-control input { accent-color: var(--accent); }
-.brush-size-control strong { color: #dce7de; }
-
 .guided-actions {
   gap: 5px;
   margin: 18px -18px 0;
@@ -2808,7 +2786,6 @@ body,
 .layer-row__copy strong,
 .guided-result-panel__header > div:first-child strong,
 .region-readout strong,
-.brush-size-control strong,
 .result-editor__brush-size strong {
   color: var(--text-strong);
 }
@@ -2937,7 +2914,6 @@ body,
 .requirement-shortcuts button,
 .region-readout > span,
 .boundary-tool,
-.brush-size-control,
 .guided-actions .icon-button,
 .processing-option__icon,
 .result-editor__toolbar,
@@ -2948,7 +2924,6 @@ body,
 
 .requirement-shortcuts button,
 .boundary-tool,
-.brush-size-control,
 .result-editor__tool,
 .result-editor__actions button { color: #aaa; }
 
@@ -4368,7 +4343,6 @@ body,
 
 :root[data-theme='light'] .requirement-shortcuts button,
 :root[data-theme='light'] .boundary-tool,
-:root[data-theme='light'] .brush-size-control,
 :root[data-theme='light'] .guided-actions .icon-button,
 :root[data-theme='light'] .processing-option__icon,
 :root[data-theme='light'] .result-editor__toolbar,
