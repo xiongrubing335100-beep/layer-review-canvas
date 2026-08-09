@@ -296,6 +296,7 @@ test('result refinement metadata preserves existing PNG alpha and pixels', () =>
   assert.equal(metadata.output_resolution_policy, 'existing_result_pixels');
   assert.equal(metadata.imagegen_input_kind, 'existing_result_png');
   assert.equal(metadata.imagegen_canvas_policy, 'prepared_result_locked_canvas');
+  assert.equal(metadata.maximum_imagegen_calls, null);
   assert.deepEqual(metadata.expected_output, {
     width: 1536,
     height: 837,

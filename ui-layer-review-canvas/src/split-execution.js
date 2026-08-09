@@ -87,7 +87,9 @@ export function buildRouteMetadata({
   const requiresGlobalContext = isQuality
     || category === 'kvBackground'
     || (isRepair && globalContextIntent.test(String(requirement)));
-  const maximumImagegenCalls = isRepair || isResultRefinement || transparency === 'codex_rgba' ? 2 : 0;
+  const maximumImagegenCalls = isResultRefinement
+    ? null
+    : isRepair || transparency === 'codex_rgba' ? 2 : 0;
   const codexAlphaMatte = transparency === 'codex_rgba';
   return {
     repair_engine: isRepair || isResultRefinement ? 'imagegen' : 'none',

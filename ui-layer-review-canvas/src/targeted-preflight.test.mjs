@@ -77,6 +77,16 @@ function pngFixture(width, height, {
 }
 
 const validResultPng = pngFixture(1536, 837);
+const roiPolicy = {
+  strategy: 'per_repair_path_native_tiles',
+  scale_mode: 'native_1_to_1',
+  context_padding_ratio: 0.08,
+  minimum_padding_ratio: 0.03,
+  maximum_padding_ratio: 0.15,
+  warn_coverage_ratio: 0.4,
+  block_coverage_ratio: 0.7,
+  tile_overlap_pixels: 32,
+};
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'targeted-preflight-'));
@@ -132,20 +142,59 @@ function closedPath(width = 1536, height = 837) {
   };
 }
 
-async function resultRefinementContext({ requirement = '增强按钮高光', paths = [] } = {}) {
+function polygonPath(id, kind, points, width = 100, height = 100) {
+  const alreadyClosed = points.at(-1)?.x === points[0]?.x && points.at(-1)?.y === points[0]?.y;
+  const vertices = alreadyClosed ? points.slice(0, -1) : points;
+  const polygon = alreadyClosed ? points : [...points, points[0]];
+  return {
+    id,
+    order_index: 0,
+    kind,
+    semantics: kind === 'boundary' ? 'edge_override' : 'mask',
+    shape: 'bezier_path',
+    coordinate_space: 'selected_region_normalized',
+    anchors: vertices.map((point) => ({
+      x: point.x / width,
+      y: point.y / height,
+      in: { x: point.x / width, y: point.y / height },
+      out: { x: point.x / width, y: point.y / height },
+      handlesLinked: true,
+    })),
+    closed: true,
+    source_polygon_pixels: polygon,
+  };
+}
+
+async function resultRefinementContext({
+  requirement = '增强按钮高光',
+  paths = [],
+  operation = null,
+  width = 1536,
+  height = 837,
+} = {}) {
   const context = await fixture();
-  await writeFile(context.sourcePath, validResultPng);
+  await writeFile(context.sourcePath, width === 1536 && height === 837
+    ? validResultPng
+    : pngFixture(width, height));
+  const refinementOperation = operation || (paths.length > 0
+    ? { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] }
+    : { mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [] });
   context.plan.task = 'refine_split_result';
-  context.plan.source.canvas = { width: 1536, height: 837 };
+  context.plan.version = '0.8';
+  context.plan.source.canvas = { width, height };
   context.plan.layers[0] = {
     ...context.plan.layers[0],
     requirement,
+    normalized_user_requirement: String(requirement).trim().replace(/\s+/g, ' '),
+    refinement_operation: refinementOperation,
+    roi_policy: { ...roiPolicy },
     execution_route_hint: 'result_refinement',
     transparency_strategy: 'preserve_existing_alpha',
     rmbg_required: false,
     output_resolution_policy: 'existing_result_pixels',
-    expected_output: { width: 1536, height: 837, original_source_x: 0, original_source_y: 0 },
-    source_region_pixels: { x: 0, y: 0, width: 1536, height: 837 },
+    maximum_imagegen_calls: 2,
+    expected_output: { width, height, original_source_x: 0, original_source_y: 0 },
+    source_region_pixels: { x: 0, y: 0, width, height },
     mask_annotations: paths,
   };
   delete context.plan.layers[0].review_snapshot.local_crop_path;
@@ -228,7 +277,7 @@ test('preflight rejects output path escape, missing files, invalid size, and lay
 test('preflight rejects layer ids that are unsafe on POSIX or Windows', async () => {
   const context = await fixture();
   try {
-    for (const layerId of ['../escape', '..\\escape', 'C:\\escape', '/tmp/escape', '\\\\server\\share']) {
+    for (const layerId of ['../escape', '..\\escape', 'C:\\escape', '/tmp/escape', '\\\\server\\share', 123, {}]) {
       await assert.rejects(
         buildTargetedExecutionSpec({
           ...context,
@@ -328,13 +377,216 @@ test('preflight accepts result refinement without a separate crop preview', asyn
   }
 });
 
-test('preflight accepts a path-only result refinement with valid closed Bezier pixels', async () => {
-  const context = await resultRefinementContext({ requirement: '  ', paths: [closedPath()] });
+test('preflight accepts an erase-only result refinement without ImageGen calls', async () => {
+  const erasePath = polygonPath('erase-copy', 'erase', [
+    { x: 10, y: 10 }, { x: 30, y: 10 }, { x: 30, y: 30 }, { x: 10, y: 30 },
+  ]);
+  const context = await resultRefinementContext({ requirement: '  ', paths: [erasePath], width: 100, height: 100 });
+  context.plan.layers[0].maximum_imagegen_calls = 0;
   try {
     const spec = await buildTargetedExecutionSpec(context);
 
     assert.equal(spec.layers[0].requirement, '');
-    assert.deepEqual(spec.layers[0].mask_annotations, [closedPath()]);
+    assert.deepEqual(spec.layers[0].erase_path_ids, ['erase-copy']);
+    assert.deepEqual(spec.layers[0].repair_path_ids, []);
+    assert.equal(spec.layers[0].expected_roi_tile_count, 0);
+    assert.equal(spec.layers[0].maximum_imagegen_calls, 0);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects text-only local mode and accepts explicit full-canvas text editing', async () => {
+  const context = await resultRefinementContext({
+    operation: { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] },
+  });
+  try {
+    await assert.rejects(buildTargetedExecutionSpec(context), /局部.*闭合路径/);
+
+    context.plan.layers[0].refinement_operation.mode = 'full_canvas_explicit';
+    const spec = await buildTargetedExecutionSpec(context);
+    assert.equal(spec.layers[0].refinement_operation.mode, 'full_canvas_explicit');
+    assert.equal(spec.layers[0].expected_roi_tile_count, 1);
+    assert.equal(spec.layers[0].maximum_imagegen_calls, 2);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight independently derives path roles, coverage, tile count, and normalized requirement', async () => {
+  const paths = [
+    polygonPath('subject', 'boundary', [
+      { x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 },
+    ]),
+    polygonPath('repair', 'boundary', [
+      { x: 30, y: 30 }, { x: 50, y: 30 }, { x: 50, y: 50 }, { x: 30, y: 50 },
+    ]),
+    polygonPath('erase', 'background', [
+      { x: 60, y: 60 }, { x: 70, y: 60 }, { x: 70, y: 70 }, { x: 60, y: 70 },
+    ]),
+    polygonPath('protect', 'foreground', [
+      { x: 75, y: 75 }, { x: 85, y: 75 }, { x: 85, y: 85 }, { x: 75, y: 85 },
+    ]),
+  ];
+  const operation = {
+    mode: 'keep_inside_delete_outside',
+    subject_path_ids: ['subject'],
+    alpha_include_path_ids: ['repair'],
+  };
+  const context = await resultRefinementContext({
+    requirement: '  补全\n  金币  ', paths, operation, width: 100, height: 100,
+  });
+  Object.assign(context.plan.layers[0], {
+    repair_path_ids: ['tampered'],
+    erase_path_ids: [],
+    protect_path_ids: [],
+    subject_path_ids: [],
+    alpha_include_path_ids: [],
+    repair_coverage_ratio: 0,
+    expected_roi_tile_count: 99,
+  });
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+    const layer = spec.layers[0];
+    assert.equal(layer.normalized_user_requirement, '补全 金币');
+    assert.deepEqual(layer.repair_path_ids, ['repair']);
+    assert.deepEqual(layer.erase_path_ids, ['erase']);
+    assert.deepEqual(layer.protect_path_ids, ['protect']);
+    assert.deepEqual(layer.subject_path_ids, ['subject']);
+    assert.deepEqual(layer.alpha_include_path_ids, ['repair']);
+    assert.equal(layer.repair_coverage_ratio, 0.04);
+    assert.equal(layer.expected_roi_tile_count, 1);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight counts padded native repair tiles with 32-pixel overlap', async () => {
+  const repair = polygonPath('wide-repair', 'boundary', [
+    { x: 500, y: 300 }, { x: 3480, y: 300 }, { x: 3480, y: 700 }, { x: 500, y: 700 },
+  ], 4000, 1000);
+  const context = await resultRefinementContext({ paths: [repair], width: 4000, height: 1000 });
+  context.plan.layers[0].maximum_imagegen_calls = 6;
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+    assert.equal(spec.layers[0].expected_roi_tile_count, 3);
+    assert.equal(spec.layers[0].maximum_imagegen_calls, 6);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects invalid operation references and unsafe or duplicate path ids', async () => {
+  const subject = polygonPath('subject', 'boundary', [
+    { x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 },
+  ]);
+  const erase = polygonPath('erase', 'erase', [
+    { x: 30, y: 30 }, { x: 40, y: 30 }, { x: 40, y: 40 }, { x: 30, y: 40 },
+  ]);
+  const context = await resultRefinementContext({ requirement: '', paths: [subject, erase], width: 100, height: 100 });
+  context.plan.layers[0].maximum_imagegen_calls = 2;
+  try {
+    context.plan.layers[0].refinement_operation = {
+      mode: 'keep_inside_delete_outside', subject_path_ids: ['missing'], alpha_include_path_ids: [],
+    };
+    await assert.rejects(buildTargetedExecutionSpec(context), /subject_path_ids.*boundary/);
+
+    context.plan.layers[0].refinement_operation.subject_path_ids = ['erase'];
+    await assert.rejects(buildTargetedExecutionSpec(context), /subject_path_ids.*boundary/);
+
+    context.plan.layers[0].refinement_operation = {
+      mode: 'unknown', subject_path_ids: [], alpha_include_path_ids: [],
+    };
+    await assert.rejects(buildTargetedExecutionSpec(context), /operation mode/);
+
+    context.plan.layers[0].refinement_operation = {
+      mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [],
+    };
+    context.plan.layers[0].mask_annotations[0].id = '../repair';
+    await assert.rejects(buildTargetedExecutionSpec(context), /path id|路径 id/i);
+
+    context.plan.layers[0].mask_annotations[0].id = 'erase';
+    await assert.rejects(buildTargetedExecutionSpec(context), /重复|duplicate/i);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects self-intersecting and zero-area polygons', async () => {
+  const invalidPolygons = [
+    polygonPath('bow-tie', 'boundary', [
+      { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 100, y: 0 },
+    ]),
+    polygonPath('flat', 'boundary', [
+      { x: 0, y: 10 }, { x: 50, y: 10 }, { x: 100, y: 10 },
+    ]),
+  ];
+  for (const invalidPath of invalidPolygons) {
+    const context = await resultRefinementContext({ paths: [invalidPath], width: 100, height: 100 });
+    try {
+      await assert.rejects(buildTargetedExecutionSpec(context), /自交|面积/);
+    } finally {
+      await rm(context.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('preflight enforces normalized requirements and structured text authority', async () => {
+  const repair = polygonPath('repair', 'boundary', [
+    { x: 10, y: 10 }, { x: 30, y: 10 }, { x: 30, y: 30 }, { x: 10, y: 30 },
+  ]);
+  const context = await resultRefinementContext({ requirement: '', paths: [repair], width: 100, height: 100 });
+  try {
+    await assert.rejects(buildTargetedExecutionSpec(context), /修复路径.*修改目标/);
+
+    context.plan.layers[0].requirement = '把路径外删除';
+    context.plan.layers[0].normalized_user_requirement = '把路径外删除';
+    await assert.rejects(buildTargetedExecutionSpec(context), /仅保留路径内/);
+
+    context.plan.layers[0].requirement = '对整图进行调整';
+    context.plan.layers[0].normalized_user_requirement = '对整图进行调整';
+    await assert.rejects(buildTargetedExecutionSpec(context), /整图编辑/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight recomputes the 40% warning and blocks an actual 80% repair polygon', async () => {
+  const warning = polygonPath('warning', 'boundary', [
+    { x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 100 }, { x: 0, y: 100 },
+  ]);
+  const context = await resultRefinementContext({ paths: [warning], width: 100, height: 100 });
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+    assert.equal(spec.layers[0].repair_coverage_ratio, 0.5);
+    assert.deepEqual(spec.layers[0].refinement_warnings, ['局部修复路径范围较大，可能产生重新构图']);
+
+    context.plan.layers[0].mask_annotations = [polygonPath('blocking', 'boundary', [
+      { x: 0, y: 0 }, { x: 80, y: 0 }, { x: 80, y: 100 }, { x: 0, y: 100 },
+    ])];
+    await assert.rejects(buildTargetedExecutionSpec(context), /覆盖超过 70%/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects tampered plan version, ROI scale policy, call budget, and normalized text', async () => {
+  const context = await resultRefinementContext();
+  try {
+    context.plan.version = '0.7';
+    await assert.rejects(buildTargetedExecutionSpec(context), /0\.8/);
+
+    context.plan.version = '0.8';
+    context.plan.layers[0].roi_policy.scale_mode = 'fit';
+    await assert.rejects(buildTargetedExecutionSpec(context), /native_1_to_1|1:1/);
+
+    context.plan.layers[0].roi_policy = { ...roiPolicy };
+    context.plan.layers[0].maximum_imagegen_calls = 99;
+    await assert.rejects(buildTargetedExecutionSpec(context), /调用上限.*策略|预算/);
+
+    context.plan.layers[0].maximum_imagegen_calls = 2;
+    context.plan.layers[0].normalized_user_requirement = '被篡改';
+    await assert.rejects(buildTargetedExecutionSpec(context), /normalized_user_requirement/);
   } finally {
     await rm(context.root, { recursive: true, force: true });
   }
@@ -437,9 +689,13 @@ test('preflight rejects CRC-valid trailing garbage inside concatenated IDAT data
 });
 
 test('preflight requires result refinement text or a valid closed Bezier path', async () => {
-  const context = await resultRefinementContext({ requirement: ' \n ', paths: [] });
+  const context = await resultRefinementContext({
+    requirement: ' \n ',
+    paths: [],
+    operation: { mode: 'path_scoped', subject_path_ids: [], alpha_include_path_ids: [] },
+  });
   try {
-    await assert.rejects(buildTargetedExecutionSpec(context), /要求.*闭合路径/);
+    await assert.rejects(buildTargetedExecutionSpec(context), /局部.*闭合路径/);
 
     context.plan.layers[0].mask_annotations = [{ ...closedPath(), closed: false }];
     await assert.rejects(buildTargetedExecutionSpec(context), /closed|闭合/);
