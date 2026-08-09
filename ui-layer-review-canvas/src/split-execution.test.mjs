@@ -285,6 +285,25 @@ test('targeted repair with RMBG declares native ImageGen content resolution outp
   });
 });
 
+test('result refinement metadata preserves existing PNG alpha and pixels', () => {
+  const metadata = buildRouteMetadata({
+    executionRoute: 'result_refinement',
+    sourceRegionPixels: { x: 0, y: 0, width: 1536, height: 837 },
+  });
+
+  assert.equal(metadata.transparency_strategy, 'preserve_existing_alpha');
+  assert.equal(metadata.rmbg_required, false);
+  assert.equal(metadata.output_resolution_policy, 'existing_result_pixels');
+  assert.equal(metadata.imagegen_input_kind, 'existing_result_png');
+  assert.equal(metadata.imagegen_canvas_policy, 'prepared_result_locked_canvas');
+  assert.deepEqual(metadata.expected_output, {
+    width: 1536,
+    height: 837,
+    original_source_x: 0,
+    original_source_y: 0,
+  });
+});
+
 test('buildRouteMetadata requires global context for occlusion, backgrounds, and quality mode', () => {
   assert.equal(buildRouteMetadata({
     category: 'uiComponent',

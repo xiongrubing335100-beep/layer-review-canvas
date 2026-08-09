@@ -322,6 +322,28 @@ export function buildWorkbenchPrompt({
     ))
     .map((layer) => layer.name || layer.id)
     .filter(Boolean);
+  const resultRefinementLayers = (plan?.layers || [])
+    .filter((layer) => layer.execution_route_hint === 'result_refinement');
+  const resultRefinementLines = resultRefinementLayers.flatMap((layer) => {
+    const layerId = layer.id || '<layerId>';
+    const canvas = plan?.source?.canvas || layer.expected_output || {};
+    const dimensions = Number.isInteger(canvas.width) && Number.isInteger(canvas.height)
+      ? `${canvas.width}×${canvas.height}`
+      : '计划声明的输入像素尺寸';
+    const hasClosedPaths = Array.isArray(layer.mask_annotations)
+      && layer.mask_annotations.some((annotation) => (
+        annotation?.shape === 'bezier_path' && annotation.closed === true
+      ));
+    return [
+      `PNG 结果精修层：${layer.name || layerId}。附加图片是权威 base PNG；输入像素尺寸 ${dimensions} 就是强制输出尺寸，禁止缩放或改变画布，且不得运行 RMBG。`,
+      hasClosedPaths
+        ? '只允许执行权威计划中已提交的文字要求，并且仅可修改已提交的闭合路径区域；路径外所有未标记 RGBA 像素必须逐像素锁定。'
+        : '这是纯文字（text-only）精修，没有闭合路径范围；整张 base PNG 全画布可编辑，但必须保持既有透明结构并严格遵守提交的文字要求。',
+      `python3 scripts/prepare-targeted-imagegen-canvas.py --job-id ${jobId} --layer-id ${layerId}`,
+      `python3 scripts/finalize-targeted-job.py --job-id ${jobId} --layer-id ${layerId} --generated-input <PNG> --imagegen-mapping <JSON>`,
+      '上述结果最终处理器必须是本 turn 最后一个工具调用；调用后禁止预览、读取或再次校验。',
+    ];
+  });
   const nativeResolutionRmbgLayers = (plan?.layers || [])
     .filter((layer) => (
       layer.execution_route_hint === 'targeted_repair'
@@ -364,6 +386,7 @@ export function buildWorkbenchPrompt({
     targetedRepairLayers.length
       ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持整张标准画布不变。将原生结果保存到 generated/ 后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。返回画布尺寸变化则失败；禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
       : '',
+    ...resultRefinementLines,
     nativeResolutionRmbgLayers.length
       ? `高分辨率透明输出层：${nativeResolutionRmbgLayers.join('、')}。最终处理器必须让原生 content_region 分辨率直接进入 BRIA RMBG，并回传同分辨率透明 PNG；框选宽高仅作为画布逻辑尺寸和定位元数据。禁止在 RMBG 前缩小到框选尺寸。`
       : '',
@@ -384,28 +407,28 @@ export function buildWorkbenchTurnInput({
   sourcePath,
   reviewCropPaths,
 }) {
+  if (plan.task === 'refine_split_result') {
+    return [
+      { type: 'text', text: prompt, text_elements: [] },
+      ...selectExecutionAttachments({}, { task: plan.task, sourcePath, reviewCropPaths }),
+    ];
+  }
   if (!isExecutionFeatureEnabled('route_aware_context_v1')) {
     const legacyNeedsSource = plan.layers.some((layer) => (
       layer.execution_mode === 'quality'
       || layer.execution_route_hint === 'targeted_repair'
       || layer.category === 'kvBackground'
-    )) || plan.task === 'refine_split_result';
+    ));
     return [
       { type: 'text', text: prompt, text_elements: [] },
       ...(legacyNeedsSource ? [{ type: 'localImage', path: sourcePath, detail: 'high' }] : []),
       ...reviewCropPaths.map((path) => ({ type: 'localImage', path, detail: 'high' })),
     ];
   }
-  const attachments = plan.task === 'refine_split_result'
-    ? selectExecutionAttachments({}, {
-      task: plan.task,
-      sourcePath,
-      reviewCropPaths,
-    })
-    : plan.layers.flatMap((layer) => selectExecutionAttachments(layer, {
-      sourcePath,
-      reviewCropPaths,
-    }));
+  const attachments = plan.layers.flatMap((layer) => selectExecutionAttachments(layer, {
+    sourcePath,
+    reviewCropPaths,
+  }));
   const uniqueAttachments = [...new Map(attachments.map((item) => [item.path, item])).values()];
   return [
     { type: 'text', text: prompt, text_elements: [] },

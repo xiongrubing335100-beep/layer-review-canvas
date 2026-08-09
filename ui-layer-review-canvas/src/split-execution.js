@@ -79,25 +79,34 @@ export function buildRouteMetadata({
   sourceRegionPixels = {},
 }) {
   const isRepair = executionRoute === 'targeted_repair';
+  const isResultRefinement = executionRoute === 'result_refinement';
   const isQuality = executionMode === 'quality';
-  const transparency = transparencyStrategy({ category, removeBackground });
+  const transparency = isResultRefinement
+    ? 'preserve_existing_alpha'
+    : transparencyStrategy({ category, removeBackground });
   const requiresGlobalContext = isQuality
     || category === 'kvBackground'
     || (isRepair && globalContextIntent.test(String(requirement)));
-  const maximumImagegenCalls = isRepair || transparency === 'codex_rgba' ? 2 : 0;
+  const maximumImagegenCalls = isRepair || isResultRefinement || transparency === 'codex_rgba' ? 2 : 0;
   const codexAlphaMatte = transparency === 'codex_rgba';
   return {
-    repair_engine: isRepair ? 'imagegen' : 'none',
+    repair_engine: isRepair || isResultRefinement ? 'imagegen' : 'none',
     requires_global_context: requiresGlobalContext,
     maximum_imagegen_calls: maximumImagegenCalls,
     transparency_strategy: transparency,
     rmbg_required: transparency === 'rembg',
-    structure_validation_required: transparency === 'codex_rgba',
-    imagegen_input_kind: codexAlphaMatte ? 'codex_alpha_matte' : null,
-    imagegen_canvas_policy: codexAlphaMatte ? 'prepared_source_locked_canvas' : null,
-    ...(isRepair && transparency === 'rembg'
-      ? { output_resolution_policy: 'native_imagegen_content' }
-      : {}),
+    structure_validation_required: codexAlphaMatte || isResultRefinement,
+    imagegen_input_kind: isResultRefinement
+      ? 'existing_result_png'
+      : codexAlphaMatte ? 'codex_alpha_matte' : null,
+    imagegen_canvas_policy: isResultRefinement
+      ? 'prepared_result_locked_canvas'
+      : codexAlphaMatte ? 'prepared_source_locked_canvas' : null,
+    ...(isResultRefinement
+      ? { output_resolution_policy: 'existing_result_pixels' }
+      : isRepair && transparency === 'rembg'
+        ? { output_resolution_policy: 'native_imagegen_content' }
+        : {}),
     expected_output: {
       width: Number.isFinite(sourceRegionPixels.width) ? sourceRegionPixels.width : null,
       height: Number.isFinite(sourceRegionPixels.height) ? sourceRegionPixels.height : null,

@@ -228,7 +228,6 @@ test('refinement attaches the existing transparent source without a crop', () =>
   const input = buildWorkbenchTurnInput({
     ...base,
     prompt: 'run',
-    reviewCropPaths: [],
     plan: {
       task: 'refine_split_result',
       layers: [{ execution_mode: 'fast' }],
@@ -237,4 +236,73 @@ test('refinement attaches the existing transparent source without a crop', () =>
   assert.deepEqual(input.filter((item) => item.type === 'localImage').map((item) => item.path), [
     base.sourcePath,
   ]);
+});
+
+test('refinement still attaches only the source when route-aware context is disabled', () => {
+  const previous = process.env.IMVIA_ROUTE_AWARE_CONTEXT_V1;
+  process.env.IMVIA_ROUTE_AWARE_CONTEXT_V1 = '0';
+  try {
+    const input = buildWorkbenchTurnInput({
+      ...base,
+      prompt: 'run',
+      plan: {
+        task: 'refine_split_result',
+        layers: [{ execution_mode: 'fast' }],
+      },
+    });
+    assert.deepEqual(input.filter((item) => item.type === 'localImage').map((item) => item.path), [
+      base.sourcePath,
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.IMVIA_ROUTE_AWARE_CONTEXT_V1;
+    else process.env.IMVIA_ROUTE_AWARE_CONTEXT_V1 = previous;
+  }
+});
+
+test('result refinement prompt treats the attached PNG as the locked authoritative base', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 1536, height: 837 } },
+      layers: [{
+        id: 'button',
+        name: '发送按钮',
+        requirement: '增强边缘高光',
+        execution_route_hint: 'result_refinement',
+        transparency_strategy: 'preserve_existing_alpha',
+        mask_annotations: [{ shape: 'bezier_path', closed: true }],
+      }],
+    },
+  });
+
+  assert.match(prompt, /附加.*权威.*base PNG|attached.*authoritative.*base PNG/i);
+  assert.match(prompt, /闭合路径.*之外.*RGBA.*锁定|路径外.*RGBA.*锁定/);
+  assert.match(prompt, /1536\s*[×x]\s*837/);
+  assert.match(prompt, /不得.*RMBG|禁止.*RMBG/);
+  assert.match(prompt, /prepare-targeted-imagegen-canvas\.py.*--job-id job-1.*--layer-id button/);
+  assert.match(prompt, /finalize-targeted-job\.py.*--job-id job-1.*--layer-id button.*--generated-input <PNG>.*--imagegen-mapping <JSON>/);
+  assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
+});
+
+test('text-only result refinement makes the full base PNG canvas editable', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 1536, height: 837 } },
+      layers: [{
+        id: 'button',
+        name: '发送按钮',
+        requirement: '整体增强高光',
+        execution_route_hint: 'result_refinement',
+        transparency_strategy: 'preserve_existing_alpha',
+        mask_annotations: [],
+      }],
+    },
+  });
+
+  assert.match(prompt, /纯文字|text-only/i);
+  assert.match(prompt, /全画布可编辑|full canvas.*editable/i);
+  assert.doesNotMatch(prompt, /路径外.*RGBA.*锁定/);
 });

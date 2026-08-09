@@ -36,6 +36,61 @@ async function fixture() {
   return { root, jobId, jobDirectory, finalDirectory, sourcePath, cropPath, plan };
 }
 
+function pngHeader(width, height) {
+  const bytes = Buffer.alloc(33);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes, 0);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write('IHDR', 12, 'ascii');
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  bytes[24] = 8;
+  bytes[25] = 6;
+  return bytes;
+}
+
+function closedPath(width = 1536, height = 837) {
+  return {
+    id: 'path-1',
+    order_index: 0,
+    kind: 'boundary',
+    semantics: 'edge_override',
+    shape: 'bezier_path',
+    coordinate_space: 'selected_region_normalized',
+    anchors: [
+      { x: 0, y: 0, in: { x: 0, y: 0 }, out: { x: 0, y: 0 }, handlesLinked: true },
+      { x: 1, y: 0, in: { x: 1, y: 0 }, out: { x: 1, y: 0 }, handlesLinked: true },
+      { x: 0, y: 1, in: { x: 0, y: 1 }, out: { x: 0, y: 1 }, handlesLinked: true },
+    ],
+    closed: true,
+    source_polygon_pixels: [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: 0, y: height },
+      { x: 0, y: 0 },
+    ],
+  };
+}
+
+async function resultRefinementContext({ requirement = '增强按钮高光', paths = [] } = {}) {
+  const context = await fixture();
+  await writeFile(context.sourcePath, pngHeader(1536, 837));
+  context.plan.task = 'refine_split_result';
+  context.plan.source.canvas = { width: 1536, height: 837 };
+  context.plan.layers[0] = {
+    ...context.plan.layers[0],
+    requirement,
+    execution_route_hint: 'result_refinement',
+    transparency_strategy: 'preserve_existing_alpha',
+    rmbg_required: false,
+    output_resolution_policy: 'existing_result_pixels',
+    expected_output: { width: 1536, height: 837, original_source_x: 0, original_source_y: 0 },
+    source_region_pixels: { x: 0, y: 0, width: 1536, height: 837 },
+    mask_annotations: paths,
+  };
+  delete context.plan.layers[0].review_snapshot.local_crop_path;
+  return context;
+}
+
 test('buildTargetedExecutionSpec returns a compact machine-readable spec', async () => {
   const context = await fixture();
   try {
@@ -171,6 +226,106 @@ test('preflight rejects the unsupported targeted repair plus Codex RGBA combinat
       }),
       /targeted_repair.*codex_rgba/,
     );
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight accepts result refinement without a separate crop preview', async () => {
+  const context = await resultRefinementContext();
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+
+    assert.equal(spec.layers[0].crop_path, context.sourcePath);
+    assert.equal(spec.layers[0].transparency_strategy, 'preserve_existing_alpha');
+    assert.equal(spec.layers[0].output_resolution_policy, 'existing_result_pixels');
+    assert.deepEqual(spec.layers[0].expected_output, {
+      width: 1536,
+      height: 837,
+      original_source_x: 0,
+      original_source_y: 0,
+    });
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight accepts a path-only result refinement with valid closed Bezier pixels', async () => {
+  const context = await resultRefinementContext({ requirement: '  ', paths: [closedPath()] });
+  try {
+    const spec = await buildTargetedExecutionSpec(context);
+
+    assert.equal(spec.layers[0].requirement, '');
+    assert.deepEqual(spec.layers[0].mask_annotations, [closedPath()]);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight requires the refinement task, readable PNG, exact dimensions, and alpha contract', async () => {
+  const context = await resultRefinementContext();
+  try {
+    context.plan.task = 'split_ui_layers';
+    await assert.rejects(buildTargetedExecutionSpec(context), /refine_split_result/);
+
+    context.plan.task = 'refine_split_result';
+    await writeFile(context.sourcePath, 'not a png');
+    await assert.rejects(buildTargetedExecutionSpec(context), /PNG/);
+
+    await writeFile(context.sourcePath, pngHeader(1536, 837));
+    context.plan.source.canvas.width = 1535;
+    await assert.rejects(buildTargetedExecutionSpec(context), /PNG.*尺寸|尺寸.*PNG/);
+
+    context.plan.source.canvas.width = 1536;
+    context.plan.layers[0].expected_output.width = 1535;
+    await assert.rejects(buildTargetedExecutionSpec(context), /期望输出.*PNG|PNG.*期望输出/);
+
+    context.plan.layers[0].expected_output.width = 1536;
+    context.plan.layers[0].transparency_strategy = 'rembg';
+    await assert.rejects(buildTargetedExecutionSpec(context), /preserve_existing_alpha/);
+
+    context.plan.layers[0].transparency_strategy = 'preserve_existing_alpha';
+    context.plan.layers[0].rmbg_required = true;
+    await assert.rejects(buildTargetedExecutionSpec(context), /RMBG/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight requires result refinement text or a valid closed Bezier path', async () => {
+  const context = await resultRefinementContext({ requirement: ' \n ', paths: [] });
+  try {
+    await assert.rejects(buildTargetedExecutionSpec(context), /要求.*闭合路径/);
+
+    context.plan.layers[0].mask_annotations = [{ ...closedPath(), closed: false }];
+    await assert.rejects(buildTargetedExecutionSpec(context), /closed|闭合/);
+
+    context.plan.layers[0].mask_annotations = [{ ...closedPath(), anchors: closedPath().anchors.slice(0, 2) }];
+    await assert.rejects(buildTargetedExecutionSpec(context), /anchor|锚点/);
+
+    context.plan.layers[0].mask_annotations = [{
+      ...closedPath(),
+      source_polygon_pixels: closedPath().source_polygon_pixels.slice(0, 2),
+    }];
+    await assert.rejects(buildTargetedExecutionSpec(context), /source_polygon_pixels|扁平/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects non-finite or out-of-bounds refinement path coordinates', async () => {
+  const context = await resultRefinementContext({ requirement: '', paths: [closedPath()] });
+  try {
+    context.plan.layers[0].mask_annotations[0].anchors[1].x = 1.01;
+    await assert.rejects(buildTargetedExecutionSpec(context), /anchor|锚点/);
+
+    context.plan.layers[0].mask_annotations[0] = closedPath();
+    context.plan.layers[0].mask_annotations[0].anchors[1].out.x = Number.POSITIVE_INFINITY;
+    await assert.rejects(buildTargetedExecutionSpec(context), /anchor|锚点|控制柄/);
+
+    context.plan.layers[0].mask_annotations[0] = closedPath();
+    context.plan.layers[0].mask_annotations[0].source_polygon_pixels[1].x = 1537;
+    await assert.rejects(buildTargetedExecutionSpec(context), /source_polygon_pixels|扁平|边界/);
   } finally {
     await rm(context.root, { recursive: true, force: true });
   }
