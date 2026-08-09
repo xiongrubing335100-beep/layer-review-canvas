@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const source = await readFile(new URL('./main.jsx', import.meta.url), 'utf8');
 const styles = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+const penOverlay = await readFile(new URL('./PenPathOverlay.jsx', import.meta.url), 'utf8');
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const bridgeWidget = await readFile(new URL('../public/layer-review-bridge-widget.js', import.meta.url), 'utf8');
 const bridgeServer = await readFile(new URL('../layer-review-mcp-server.mjs', import.meta.url), 'utf8');
@@ -86,12 +87,15 @@ test('uploaded images run the local fast category analyzer and leave the loading
   assert.match(source, /categoryAnalysisRunRef\.current \+= 1/);
 });
 
-test('conversation presence precedes project context and empty projects show no status', () => {
-  assert.ok(
-    source.indexOf('conversation-bridge-indicator') < source.indexOf('className="project-context"'),
-    'conversation presence should render before project context',
+test('topbar keeps confirmation progress but omits the repeated current-project filename', () => {
+  const topbar = source.slice(
+    source.indexOf('<header className="topbar">'),
+    source.indexOf('<ModeSwitch value={reviewMode}'),
   );
-  assert.match(source, /hasSource \? <small>\{`\$\{acceptedCount\} \/ \$\{nodes\.length\} 已确认`\}<\/small> : null/);
+
+  assert.match(topbar, /hasSource \? <small>\{`\$\{acceptedCount\} \/ \$\{nodes\.length\} 已确认`\}<\/small> : null/);
+  assert.doesNotMatch(topbar, /<span>当前项目<\/span>/);
+  assert.doesNotMatch(topbar, /<strong>\{sourceName \|\| '未选择图片'\}<\/strong>/);
   assert.doesNotMatch(source, />暂无</);
 });
 
@@ -106,11 +110,93 @@ test('topbar conversation status stays inside its grid column', () => {
   );
 });
 
-test('crop preview omits the redundant drag instruction while keeping annotation feedback', () => {
+test('topbar uses a compact centered brand and an adjacent ready state', () => {
+  const topbar = source.slice(
+    source.indexOf('<header className="topbar">'),
+    source.indexOf('<ModeSwitch value={reviewMode}'),
+  );
+
+  assert.match(topbar, /<strong>Imvia Layer<\/strong>/);
+  assert.doesNotMatch(topbar, /交互式图层验收/);
+  assert.match(topbar, /conversationBridge\.online \? '已就绪'/);
+  assert.match(styles, /\.product-identity\s*\{[\s\S]*?display:\s*flex;[\s\S]*?gap:\s*14px;/);
+  assert.match(styles, /\.brand-lockup\s*\{[\s\S]*?align-items:\s*center;/);
+});
+
+test('pen overlays use a pen cursor, circular green anchors, and animated dashed paths', () => {
+  assert.match(penOverlay, /<ellipse[\s\S]*?className=\{`pen-anchor/);
+  assert.match(penOverlay, /rx=\{anchorRadii\.rx\}/);
+  assert.match(penOverlay, /ry=\{anchorRadii\.ry\}/);
+  assert.match(styles, /\.pen-overlay\s*\{[\s\S]*?cursor:\s*url\("data:image\/svg\+xml/);
+  assert.match(styles, /\.pen-anchor\s*\{[\s\S]*?fill:\s*#41e5a4/);
+  assert.match(styles, /\.pen-path--draft\s*\{[\s\S]*?stroke-dasharray:\s*6 4/);
+  assert.match(styles, /@keyframes pen-path-march/);
+  assert.match(styles, /\.pen-path,[\s\S]*?\.pen-preview\s*\{[\s\S]*?animation:\s*pen-path-march/);
+});
+
+test('expanded crop preview preserves its source aspect ratio', () => {
+  assert.match(source, /'--region-preview-aspect':\s*aspect/);
+  assert.match(
+    styles,
+    /\.candidate-preview-panel--expanded \.region-preview--expanded\s*\{[\s\S]*?aspect-ratio:\s*var\(--region-preview-aspect\);[\s\S]*?height:\s*auto;/,
+  );
+  const expandedRule = styles.slice(
+    styles.indexOf('.candidate-preview-panel--expanded .region-preview--expanded'),
+    styles.indexOf('@media (max-width: 860px)', styles.indexOf('.candidate-preview-panel--expanded .region-preview--expanded')),
+  );
+  assert.doesNotMatch(expandedRule, /height:\s*100%/);
+});
+
+test('guided inspector omits the crop dimension and coordinate card', () => {
+  const inspectorOutput = source.slice(
+    source.indexOf('<section className="inspector-section inspector-section--output">'),
+    source.indexOf('<section className="inspector-section inspector-section--boundary">'),
+  );
+  assert.doesNotMatch(inspectorOutput, /className=\{`region-readout|className="region-readout"/);
+});
+
+test('refinement prompt uses compact supporting text', () => {
+  assert.match(
+    styles,
+    /\.refinement-prompt__field\s*\{[\s\S]*?font:\s*inherit;[\s\S]*?font-size:\s*10px;/,
+  );
+});
+
+test('result panel omits the repeated selected layer title', () => {
+  const resultHeader = source.slice(
+    source.indexOf('<header className="guided-result-panel__header">'),
+    source.indexOf('<div className="guided-result-panel__actions">'),
+  );
+  assert.match(resultHeader, /Codex 拆分结果/);
+  assert.doesNotMatch(resultHeader, /<strong>\{selected\.name\}<\/strong>/);
+});
+
+test('crop preview keeps pen guidance and expand controls below the image surface', () => {
+  const candidatePanel = source.slice(
+    source.indexOf('<div className={`candidate-preview-panel'),
+    source.indexOf('</div>\n            </div>\n\n            <section className={`guided-result-panel'),
+  );
+  const previewEnd = candidatePanel.indexOf('</RegionPreview>');
+  const toolbarStart = candidatePanel.indexOf('className="candidate-preview-toolbar"');
+
   assert.doesNotMatch(source, /拖动框选，或拖动边框与四角调整/);
-  assert.match(source, /boundaryOpen && annotationSessionActive/);
-  assert.match(source, /标注已隐藏/);
-  assert.match(source, /点击添加保留路径锚点/);
+  assert.ok(previewEnd >= 0, 'candidate preview should close before its controls');
+  assert.ok(toolbarStart > previewEnd, 'pen guidance and expand controls should render below the preview');
+  assert.match(candidatePanel.slice(toolbarStart), /标注已隐藏/);
+  assert.match(candidatePanel.slice(toolbarStart), /点击添加保留路径锚点/);
+  assert.match(candidatePanel.slice(toolbarStart), /className="candidate-preview-toggle"/);
+  assert.doesNotMatch(candidatePanel.slice(0, previewEnd), /annotation-mode-indicator|candidate-preview-toggle/);
+  assert.doesNotMatch(candidatePanel, /className="candidate-summary"|<p>\{selected\.requirement\}<\/p>/);
+});
+
+test('guided sidebar omits the repeated source filename and places KV background below UI components', () => {
+  const sidebar = source.slice(
+    source.indexOf('<aside className={`sidebar sidebar--left'),
+    source.indexOf('</aside>', source.indexOf('<aside className={`sidebar sidebar--left')),
+  );
+
+  assert.doesNotMatch(sidebar, /<h1>\{sourceName \|\| '未选择图片'\}<\/h1>/);
+  assert.match(source, /const categoryOrder = \['kvTitle', 'kvElement', 'ordinaryText', 'uiComponent', 'kvBackground'\];/);
 });
 
 test('hiding annotations keeps the active pen session out of crop mode', () => {
@@ -178,7 +264,7 @@ test('topbar context shares the guided sidebar alignment edge', () => {
   assert.match(styles, /\.topbar\s*\{[\s\S]*?--workbench-left-edge:\s*288px;[\s\S]*?--topbar-inline-pad:\s*28px;/);
   assert.match(
     styles,
-    /\.product-identity\s*\{[\s\S]*?grid-template-columns:[\s\S]*?calc\(var\(--workbench-left-edge\) - var\(--topbar-inline-pad\) - 178px\)/,
+    /\.product-identity\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;/,
   );
   assert.match(styles, /@media \(max-width: 1240px\)\s*\{[\s\S]*?--workbench-left-edge:\s*258px;[\s\S]*?--topbar-inline-pad:\s*20px;/);
 });

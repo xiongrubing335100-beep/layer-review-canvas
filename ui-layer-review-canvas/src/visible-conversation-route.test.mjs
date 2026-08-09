@@ -43,5 +43,5 @@ test('all MCP workbench submissions post directly to the current conversation', 
   assert.match(viteSource, /prompt,/);
   assert.match(mainSource, /host_accepted/);
   assert.match(mainSource, /cancelableDeliveryStatuses/);
-  assert.match(mainSource, /当前会话消息通道已连接/);
+  assert.match(mainSource, /已就绪/);
 });

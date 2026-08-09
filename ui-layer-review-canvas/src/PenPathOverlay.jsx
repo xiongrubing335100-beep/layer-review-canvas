@@ -43,11 +43,19 @@ function eventPoint(event, svg) {
   };
 }
 
+function screenSpaceRadii(overlaySize, radius) {
+  return {
+    rx: (radius * 100) / Math.max(1, overlaySize.width),
+    ry: (radius * 100) / Math.max(1, overlaySize.height),
+  };
+}
+
 function EditablePenPath({
   path,
   selected,
   draft = false,
   previewPoint,
+  overlaySize,
   onSelectPath,
   onStartAnchorDrag,
   onStartHandleDrag,
@@ -78,33 +86,38 @@ function EditablePenPath({
       {(selected || draft) ? path.anchors.map((anchor, anchorIndex) => {
         const anchorPoint = svgPoint(anchor);
         const isFirstDraftAnchor = draft && anchorIndex === 0 && path.anchors.length >= 3;
+        const anchorRadii = screenSpaceRadii(overlaySize, isFirstDraftAnchor ? 7 : 5);
+        const handleRadii = screenSpaceRadii(overlaySize, 4);
         return (
           <g className="pen-control" key={`${path.id}-${anchorIndex}`}>
             {selected ? (
               <>
                 <line className="pen-control-line" x1={anchorPoint.x} y1={anchorPoint.y} x2={svgPoint(anchor.in).x} y2={svgPoint(anchor.in).y} />
                 <line className="pen-control-line" x1={anchorPoint.x} y1={anchorPoint.y} x2={svgPoint(anchor.out).x} y2={svgPoint(anchor.out).y} />
-                <circle
+                <ellipse
                   className="pen-handle"
                   cx={svgPoint(anchor.in).x}
                   cy={svgPoint(anchor.in).y}
-                  r=".65"
+                  rx={handleRadii.rx}
+                  ry={handleRadii.ry}
                   onPointerDown={(event) => onStartHandleDrag(event, path.id, anchorIndex, 'in')}
                 />
-                <circle
+                <ellipse
                   className="pen-handle"
                   cx={svgPoint(anchor.out).x}
                   cy={svgPoint(anchor.out).y}
-                  r=".65"
+                  rx={handleRadii.rx}
+                  ry={handleRadii.ry}
                   onPointerDown={(event) => onStartHandleDrag(event, path.id, anchorIndex, 'out')}
                 />
               </>
             ) : null}
-            <circle
+            <ellipse
               className={`pen-anchor ${isFirstDraftAnchor ? 'pen-anchor--close' : ''}`}
               cx={anchorPoint.x}
               cy={anchorPoint.y}
-              r={isFirstDraftAnchor ? '1.25' : '.85'}
+              rx={anchorRadii.rx}
+              ry={anchorRadii.ry}
               onPointerDown={isFirstDraftAnchor
                 ? (event) => { event.stopPropagation(); onCloseDraft(event); }
                 : (event) => onStartAnchorDrag(event, path.id, anchorIndex, draft)}
@@ -136,6 +149,29 @@ export const PenPathOverlay = forwardRef(function PenPathOverlay({
   const svgRef = useRef(null);
   const dragRef = useRef(null);
   const [previewPoint, setPreviewPoint] = useState(null);
+  const [overlaySize, setOverlaySize] = useState({ width: 100, height: 100 });
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return undefined;
+    const updateSize = () => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      setOverlaySize((current) => (
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height }
+      ));
+    };
+    updateSize();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateSize);
+      return () => window.removeEventListener('resize', updateSize);
+    }
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const synced = syncPenEditorStateFromProps({
@@ -276,6 +312,7 @@ export const PenPathOverlay = forwardRef(function PenPathOverlay({
         <EditablePenPath
           key={path.id}
           path={path}
+          overlaySize={overlaySize}
           selected={selectedPathId === path.id}
           onSelectPath={(event) => {
             event.stopPropagation();
@@ -297,6 +334,7 @@ export const PenPathOverlay = forwardRef(function PenPathOverlay({
       {editorState.draft ? (
         <EditablePenPath
           path={editorState.draft}
+          overlaySize={overlaySize}
           draft
           previewPoint={previewPoint}
           onCloseDraft={(event) => {

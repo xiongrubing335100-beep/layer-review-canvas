@@ -133,7 +133,7 @@ const categoryMeta = {
   },
 };
 
-const categoryOrder = ['kvTitle', 'kvElement', 'kvBackground', 'ordinaryText', 'uiComponent'];
+const categoryOrder = ['kvTitle', 'kvElement', 'ordinaryText', 'uiComponent', 'kvBackground'];
 
 const routeMeta = {
   extract: { label: '原图提取', color: 'mint', icon: Layers3 },
@@ -418,6 +418,7 @@ function RegionPreview({
       : className.includes('guided')
         ? 330
         : 510;
+  const expandedPreviewHeight = typeof window === 'undefined' ? 720 : Math.max(160, window.innerHeight - 214);
   return (
     <div
       ref={previewRef}
@@ -426,6 +427,8 @@ function RegionPreview({
         width: compact ? `${compactWidth}px` : undefined,
         height: compact ? `${compactHeight}px` : undefined,
         aspectRatio: aspect,
+        '--region-preview-aspect': aspect,
+        '--region-preview-expanded-max-width': `${Math.max(24, Math.round(aspect * expandedPreviewHeight))}px`,
         maxWidth: compact || !maxPreviewHeight
           ? undefined
           : `min(100%, ${Math.max(24, Math.round(aspect * maxPreviewHeight))}px)`,
@@ -3231,22 +3234,6 @@ function App() {
             <span className="processing-option__switch" aria-hidden="true" />
           </label>
 
-          <div className={`region-readout ${submittedPixels ? 'region-readout--versions' : ''}`}>
-            <span>
-              <small>当前框选</small>
-              <strong>{pixels.width} x {pixels.height}</strong>
-              <em>位置 {pixels.x}, {pixels.y}</em>
-            </span>
-            {submittedPixels ? (
-              <span>
-                <small>{latestSelectedResult?.image ? '已产出版本' : '已提交版本'}</small>
-                <strong>{submittedPixels.width} x {submittedPixels.height}</strong>
-                <em>位置 {submittedPixels.x}, {submittedPixels.y}</em>
-              </span>
-            ) : (
-              <span><strong>{pixels.x}, {pixels.y}</strong><small>左上坐标</small></span>
-            )}
-          </div>
           {selectionChanged ? (
             <div className="selection-version-note">
               <Move size={14} />
@@ -3521,7 +3508,7 @@ function App() {
         <div className="product-identity">
           <div className="brand-lockup">
             <div className="brand-mark"><img src="/imvia-logo.png" alt="" /></div>
-            <div><strong>Imvia Layer</strong><span>交互式图层验收</span></div>
+            <strong>Imvia Layer</strong>
           </div>
           <div
             className={`conversation-bridge-indicator ${
@@ -3534,13 +3521,11 @@ function App() {
             <span className="conversation-bridge-indicator__dot" />
             <span className="conversation-bridge-indicator__label">
               {conversationBridge.checked
-                ? (conversationBridge.online ? '当前会话消息通道已连接' : '请从当前会话打开插件')
-                : '检测当前会话消息通道'}
+                ? (conversationBridge.online ? '已就绪' : '未连接')
+                : '检测中'}
             </span>
           </div>
-          <div className="project-context" title={sourceName || '未选择图片'}>
-            <span>当前项目</span>
-            <strong>{sourceName || '未选择图片'}</strong>
+          <div className="project-context" aria-label="拆分确认进度">
             {hasSource ? <small>{`${acceptedCount} / ${nodes.length} 已确认`}</small> : null}
           </div>
         </div>
@@ -3624,10 +3609,7 @@ function App() {
       >
         <aside className={`sidebar sidebar--left ${!panelVisibility.left ? 'sidebar--collapsed' : ''}`}>
           <div className="panel-title-row">
-            <div>
-              <span className="eyebrow">拆分栏目</span>
-              <h1>{sourceName || '未选择图片'}</h1>
-            </div>
+            <span className="eyebrow">拆分栏目</span>
           </div>
 
           {hasSource ? (
@@ -3790,8 +3772,10 @@ function App() {
                       <i className="selection-handle selection-handle--se" onPointerDown={(event) => startCandidateSelection(event, 'se')} />
                     </span>
                   )}
+                </RegionPreview>
+                <div className="candidate-preview-toolbar">
                   {boundaryOpen && annotationSessionActive ? (
-                    <span className="annotation-mode-indicator">
+                    <span className="candidate-preview-hint">
                       {showOriginalOnly
                         ? '标注已隐藏'
                         : maskTool === 'foreground'
@@ -3802,7 +3786,7 @@ function App() {
                               ? '点击添加边界路径锚点'
                               : '请在右侧选择精修工具'}
                     </span>
-                  ) : null}
+                  ) : <span aria-hidden="true" />}
                   <button
                     type="button"
                     className="candidate-preview-toggle"
@@ -3817,14 +3801,7 @@ function App() {
                   >
                     {candidatePreviewExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
                   </button>
-                </RegionPreview>
-                <div className="candidate-summary">
-                  <span>{categoryMeta[selected.category].label}</span>
-                  <ChevronRight size={14} />
-                  <strong>{selected.name}</strong>
-                  {selected.removeBackground ? <span className="candidate-option-badge"><Eraser size={12} /> 去背景</span> : null}
                 </div>
-                <p>{selected.requirement}</p>
               </div>
             </div>
 
@@ -3832,7 +3809,6 @@ function App() {
               <header className="guided-result-panel__header">
                 <div>
                   <span>Codex 拆分结果</span>
-                  <strong>{selected.name}</strong>
                 </div>
                 <div className="guided-result-panel__actions">
                   {latestSelectedResult?.image ? (
