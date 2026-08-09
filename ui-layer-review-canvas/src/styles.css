@@ -1203,6 +1203,47 @@ button:disabled { cursor: default; opacity: .48; }
   pointer-events: none;
 }
 
+.pen-overlay {
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  outline: none;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.pen-overlay:focus-visible { box-shadow: inset 0 0 0 1px rgba(150, 229, 186, .7); }
+.pen-overlay--disabled { pointer-events: none; cursor: default; }
+
+.pen-path {
+  stroke-width: .45px;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 6 4;
+  fill-opacity: .18;
+  cursor: pointer;
+}
+
+.pen-path--foreground { stroke: #41e5a4; fill: #41e5a4; }
+.pen-path--background { stroke: #ff8f5b; fill: #ff8f5b; }
+.pen-path--boundary { stroke: #c480ff; fill: #c480ff; }
+.pen-path--selected { stroke-width: .7px; fill-opacity: .25; }
+.pen-path--draft { stroke-dasharray: none; fill: none; cursor: crosshair; }
+
+.pen-preview { stroke-width: .45px; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.pen-preview--foreground { stroke: #41e5a4; }
+.pen-preview--background { stroke: #ff8f5b; }
+.pen-preview--boundary { stroke: #c480ff; }
+
+.pen-control-line { stroke: rgba(237, 245, 239, .75); stroke-width: .25px; vector-effect: non-scaling-stroke; pointer-events: none; }
+.pen-anchor, .pen-handle { vector-effect: non-scaling-stroke; stroke-width: .35px; cursor: grab; }
+.pen-anchor { fill: #101612; stroke: #eff8f1; }
+.pen-anchor--close { fill: #eafff1; stroke: #41e5a4; stroke-width: .6px; }
+.pen-handle { fill: #dce9e0; stroke: #0d1710; }
+.pen-anchor:active, .pen-handle:active { cursor: grabbing; }
+
 .annotation-mark {
   cursor: pointer;
   pointer-events: visiblePainted;
