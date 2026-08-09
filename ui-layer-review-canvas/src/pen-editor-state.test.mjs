@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appendAnchor, closePenPath, createPenPath } from './pen-path.js';
-import { createPenEditorState, reducePenEditor } from './pen-editor-state.js';
+import { createPenEditorState, focusPenOverlayOwner, reducePenEditor } from './pen-editor-state.js';
 
 function addClick(state, x, y, kind = 'foreground') {
   const down = reducePenEditor(state, { type: 'pointer-down', point: { x, y }, kind });
@@ -74,4 +74,23 @@ test('history keeps the most recent fifty complete snapshots', () => {
 
   assert.equal(state.history.length, 50);
   assert.equal(reducePenEditor(state, { type: 'undo' }).paths[0].anchors[0].x, .53);
+});
+
+test('allocates the next deterministic pen id after imported pen ids', () => {
+  const existing = createPenPath({ id: 'pen-2', kind: 'boundary', point: { x: .1, y: .1 } });
+  const state = reducePenEditor(createPenEditorState([existing]), {
+    type: 'pointer-down', point: { x: .2, y: .2 }, kind: 'foreground',
+  });
+
+  assert.equal(state.draft.id, 'pen-3');
+  assert.notEqual(state.draft.id, existing.id);
+});
+
+test('focuses the owning SVG before a child path control interaction', () => {
+  let focusCalls = 0;
+  const overlay = { focus: () => { focusCalls += 1; } };
+  const anchor = { ownerSVGElement: overlay };
+
+  assert.equal(focusPenOverlayOwner(anchor), overlay);
+  assert.equal(focusCalls, 1);
 });

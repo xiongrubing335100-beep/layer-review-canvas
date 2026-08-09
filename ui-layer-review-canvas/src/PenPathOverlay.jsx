@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPenEditorState, reducePenEditor } from './pen-editor-state.js';
+import { createPenEditorState, focusPenOverlayOwner, reducePenEditor } from './pen-editor-state.js';
 
 function svgPoint(point) {
   return { x: point.x * 100, y: point.y * 100 };
@@ -97,7 +97,7 @@ function EditablePenPath({
               cy={anchorPoint.y}
               r={isFirstDraftAnchor ? '1.25' : '.85'}
               onPointerDown={isFirstDraftAnchor
-                ? (event) => { event.stopPropagation(); onCloseDraft(); }
+                ? (event) => { event.stopPropagation(); onCloseDraft(event); }
                 : (event) => onStartAnchorDrag(event, path.id, anchorIndex, draft)}
               onDoubleClick={draft ? undefined : (event) => onToggleAnchorMode(event, path.id, anchorIndex)}
             />
@@ -156,7 +156,7 @@ export function PenPathOverlay({
   const beginDrag = (event, drag) => {
     if (disabled) return;
     event.stopPropagation();
-    svgRef.current?.focus();
+    focusPenOverlayOwner(event.currentTarget);
     svgRef.current?.setPointerCapture?.(event.pointerId);
     dragRef.current = { ...drag, moved: false };
     if (drag.type === 'anchor') apply({ type: 'select-anchor', pathId: drag.pathId, anchorIndex: drag.anchorIndex });
@@ -243,7 +243,11 @@ export function PenPathOverlay({
           key={path.id}
           path={path}
           selected={selectedPathId === path.id}
-          onSelectPath={(event) => { event.stopPropagation(); apply({ type: 'select-path', pathId: path.id }); }}
+          onSelectPath={(event) => {
+            event.stopPropagation();
+            focusPenOverlayOwner(event.currentTarget);
+            apply({ type: 'select-path', pathId: path.id });
+          }}
           onStartAnchorDrag={(event, pathId, anchorIndex, isDraft) => {
             if (!isDraft) beginDrag(event, { type: 'anchor', pathId, anchorIndex, pointerId: event.pointerId });
           }}
@@ -261,7 +265,10 @@ export function PenPathOverlay({
           path={editorState.draft}
           draft
           previewPoint={previewPoint}
-          onCloseDraft={() => apply({ type: 'close-draft' })}
+          onCloseDraft={(event) => {
+            focusPenOverlayOwner(event.currentTarget);
+            apply({ type: 'close-draft' });
+          }}
           onStartAnchorDrag={() => {}}
           onStartHandleDrag={() => {}}
           onToggleAnchorMode={() => {}}

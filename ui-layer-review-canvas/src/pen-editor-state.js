@@ -36,8 +36,28 @@ function hasSamePoint(first, second) {
   return first?.x === second?.x && first?.y === second?.y;
 }
 
-function createDraft(state, point, kind, pathId) {
-  const id = pathId ?? `pen-${state.nextPathId}`;
+function initialNextPathId(paths) {
+  return (paths ?? []).reduce((nextId, path) => {
+    const match = /^pen-(\d+)$/.exec(path?.id ?? '');
+    return match ? Math.max(nextId, Number(match[1]) + 1) : nextId;
+  }, 1);
+}
+
+function allocatePathId(state, preferredId) {
+  const ids = new Set(state.paths.map((path) => path.id));
+  if (preferredId && !ids.has(preferredId)) return { id: preferredId, nextPathId: state.nextPathId };
+  let nextPathId = Math.max(1, state.nextPathId);
+  while (ids.has(`pen-${nextPathId}`)) nextPathId += 1;
+  return { id: `pen-${nextPathId}`, nextPathId: nextPathId + 1 };
+}
+
+export function focusPenOverlayOwner(element) {
+  const owner = element?.ownerSVGElement ?? element;
+  owner?.focus?.();
+  return owner ?? null;
+}
+
+function createDraft(state, point, kind, id) {
   return {
     ...createPenPath({ id, kind: kind ?? 'foreground', point }),
     order: state.paths.length,
@@ -50,7 +70,7 @@ export function createPenEditorState(paths = []) {
     draft: null,
     selection: null,
     history: [],
-    nextPathId: Array.isArray(paths) ? paths.length + 1 : 1,
+    nextPathId: initialNextPathId(paths),
     draftHistoryStart: null,
     pointerStart: null,
   };
@@ -62,12 +82,13 @@ export function reducePenEditor(state, action = {}) {
   switch (action.type) {
     case 'pointer-down': {
       if (!action.point) return current;
+      const allocation = current.draft ? null : allocatePathId(current, action.pathId);
       const draft = current.draft
         ? appendAnchor(current.draft, action.point)
-        : createDraft(current, action.point, action.kind, action.pathId);
+        : createDraft(current, action.point, action.kind, allocation.id);
       return withHistory(current, {
         draft,
-        nextPathId: current.draft ? current.nextPathId : current.nextPathId + 1,
+        nextPathId: current.draft ? current.nextPathId : allocation.nextPathId,
         draftHistoryStart: current.draft ? current.draftHistoryStart : current.history.length,
         pointerStart: { anchorIndex: draft.anchors.length - 1, point: action.point },
       });
