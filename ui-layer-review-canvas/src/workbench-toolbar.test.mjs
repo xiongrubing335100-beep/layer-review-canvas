@@ -284,6 +284,26 @@ test('canvas selection supports keyboard deletion without hijacking text editing
   assert.match(source, /setHiddenCanvasResultKeys/);
 });
 
+test('deleting the selected layer clears its review pen feedback token', () => {
+  const deleteSelected = source.slice(
+    source.indexOf('const deleteSelected = () =>'),
+    source.indexOf('const deleteCanvasSelection = () =>'),
+  );
+
+  assert.match(deleteSelected, /setReviewPenFeedbackTokens/);
+  assert.match(deleteSelected, /nextTokens\.delete\(selected\.id\)/);
+});
+
+test('deleting selected canvas layers clears all matching review pen feedback tokens', () => {
+  const deleteCanvasSelection = source.slice(
+    source.indexOf('const deleteCanvasSelection = () =>'),
+    source.indexOf('useEffect\(\(\) => \{', source.indexOf('const deleteCanvasSelection = () =>')),
+  );
+
+  assert.match(deleteCanvasSelection, /setReviewPenFeedbackTokens/);
+  assert.match(deleteCanvasSelection, /splitIds\.forEach\(\(nodeId\) => nextTokens\.delete\(nodeId\)\)/);
+});
+
 test('completed result nodes expose a direct download action', () => {
   assert.match(source, /className="result-node__download"/);
   assert.match(source, /download=\{image\.name \|\| `\$\{node\.id\}\.png`\}/);

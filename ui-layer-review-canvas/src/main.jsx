@@ -2060,6 +2060,12 @@ function App() {
       nextSelections.delete(selected.id);
       return nextSelections;
     });
+    setReviewPenFeedbackTokens((current) => {
+      if (!current.has(selected.id)) return current;
+      const nextTokens = new Map(current);
+      nextTokens.delete(selected.id);
+      return nextTokens;
+    });
     setNodes(remaining);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selected.id));
     setCanvasSelectedKeys((current) => current.filter((key) => key !== deletedKey));
@@ -2116,6 +2122,11 @@ function App() {
       const nextSelections = new Map(current);
       splitIds.forEach((nodeId) => nextSelections.delete(nodeId));
       return nextSelections.size === current.size ? current : nextSelections;
+    });
+    setReviewPenFeedbackTokens((current) => {
+      const nextTokens = new Map(current);
+      splitIds.forEach((nodeId) => nextTokens.delete(nodeId));
+      return nextTokens.size === current.size ? current : nextTokens;
     });
     setNodes(remainingNodes);
     setMarks((current) => current.filter((mark) => !splitIds.has(mark.layer_id)));
