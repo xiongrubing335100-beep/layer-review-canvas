@@ -26,6 +26,7 @@ function withHistory(state, changes) {
     ...state,
     ...changes,
     history: [...state.history.slice(-(HISTORY_LIMIT - 1)), snapshot(state)],
+    future: [],
   };
 }
 
@@ -71,10 +72,19 @@ export function createPenEditorState(paths = []) {
     draft: null,
     selection: null,
     history: [],
+    future: [],
     nextPathId: initialNextPathId(paths),
     draftHistoryStart: null,
     pointerStart: null,
   };
+}
+
+export function penEditorActionForKeyboard(event = {}) {
+  const modifier = event.metaKey || event.ctrlKey;
+  const key = String(event.key || '').toLowerCase();
+  if (modifier && key === 'z') return { type: event.shiftKey ? 'redo' : 'undo' };
+  if (modifier && key === 'y') return { type: 'redo' };
+  return null;
 }
 
 export function syncPenEditorStateFromProps({
@@ -239,6 +249,19 @@ export function reducePenEditor(state, action = {}) {
         ...current,
         ...previous,
         history: current.history.slice(0, -1),
+        future: [...current.future.slice(-(HISTORY_LIMIT - 1)), snapshot(current)],
+        pointerStart: null,
+      };
+    }
+
+    case 'redo': {
+      const next = current.future.at(-1);
+      if (!next) return current;
+      return {
+        ...current,
+        ...next,
+        history: [...current.history.slice(-(HISTORY_LIMIT - 1)), snapshot(current)],
+        future: current.future.slice(0, -1),
         pointerStart: null,
       };
     }

@@ -35,6 +35,7 @@ import {
   Square,
   Trash2,
   Type,
+  Redo2,
   Undo2,
   Upload,
   WandSparkles,
@@ -571,6 +572,8 @@ function App() {
   const guidedImageRef = useRef(null);
   const annotationPreviewRef = useRef(null);
   const resultEditPreviewRef = useRef(null);
+  const reviewPenOverlayRef = useRef(null);
+  const resultPenOverlayRef = useRef(null);
   const reviewPenPathsRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
@@ -2194,15 +2197,13 @@ function App() {
   };
 
   const selectMaskTool = (tool) => {
+    reviewPenOverlayRef.current?.cancelDraft();
     if (maskTool === tool && !showOriginalOnly) {
       setMaskTool(null);
-      setDraftMark(null);
-      updateReviewPenFeedbackToken(selectedId, null);
       setToast('已退出边界工具');
       return;
     }
     setMaskTool(tool);
-    setDraftMark(null);
     setShowOriginalOnly(false);
     setBoundaryOpen(true);
     const label = tool === 'foreground' ? '保留钢笔' : tool === 'background' ? '排除钢笔' : '边界钢笔';
@@ -2541,41 +2542,31 @@ function App() {
   };
 
   const undoLastMark = () => {
-    const last = selectedMarks.at(-1);
-    if (!last) return;
-    reviewPenPathsRef.current.delete(selectedId);
-    updateReviewPenSelection(selectedId, null);
-    updateReviewPenFeedbackToken(selectedId, null);
-    setMarks((current) => current.filter((mark) => (
-      mark.layer_id !== selectedId || mark.id !== last.id
-    )));
-    setSelectedMarkId((current) => (current === last.id ? null : current));
+    reviewPenOverlayRef.current?.undo();
     setToast('已撤销上一步标注');
+  };
+
+  const redoLastMark = () => {
+    reviewPenOverlayRef.current?.redo();
+    setToast('已重做钢笔操作');
   };
 
   const deleteSelectedMark = () => {
     if (!selectedMarkId) return;
-    reviewPenPathsRef.current.delete(selectedId);
-    updateReviewPenSelection(selectedId, null);
-    updateReviewPenFeedbackToken(selectedId, null);
-    setMarks((current) => current.filter((mark) => (
-      mark.layer_id !== selectedId || mark.id !== selectedMarkId
-    )));
-    setSelectedMarkId(null);
+    reviewPenOverlayRef.current?.deleteSelection();
     setToast('已删除选中的标注');
   };
 
   const clearMarks = () => {
-    reviewPenPathsRef.current.delete(selectedId);
-    updateReviewPenSelection(selectedId, null);
-    updateReviewPenFeedbackToken(selectedId, null);
-    setMarks((current) => current.filter((mark) => mark.layer_id !== selectedId));
-    setSelectedMarkId(null);
-    setDraftMark(null);
+    reviewPenOverlayRef.current?.clear();
+    setMarks((current) => current.filter((mark) => (
+      mark.layer_id !== selectedId || mark.shape === 'bezier_path'
+    )));
     setToast('当前项目的边界标注已清空');
   };
 
   const toggleResultEditing = () => {
+    if (resultEditing) resultPenOverlayRef.current?.cancelDraft();
     setResultEditing((current) => {
       const next = !current;
       if (next) {
@@ -2605,6 +2596,11 @@ function App() {
     }
   };
 
+  const selectResultEditTool = (tool) => {
+    resultPenOverlayRef.current?.cancelDraft();
+    setResultEditTool(tool);
+  };
+
   const updateResultPenEditor = ({ paths, draft, selection, feedbackToken }) => {
     setResultEditPaths(paths);
     setResultEditDraft(draft);
@@ -2613,20 +2609,19 @@ function App() {
   };
 
   const undoResultPenEdit = () => {
-    setResultEditFeedbackToken(null);
-    if (resultEditDraft) {
-      setResultEditDraft(null);
-      return;
-    }
-    setResultEditPaths((current) => current.slice(0, -1));
-    setResultEditSelection(null);
+    resultPenOverlayRef.current?.undo();
+  };
+
+  const redoResultPenEdit = () => {
+    resultPenOverlayRef.current?.redo();
+  };
+
+  const deleteSelectedResultPenEdit = () => {
+    resultPenOverlayRef.current?.deleteSelection();
   };
 
   const clearResultPenEdit = () => {
-    setResultEditPaths([]);
-    setResultEditDraft(null);
-    setResultEditSelection(null);
-    setResultEditFeedbackToken(null);
+    resultPenOverlayRef.current?.clear();
   };
 
   const submitResultEdit = async () => {
@@ -3006,6 +3001,7 @@ function App() {
         </svg>
       ) : null}
       <PenPathOverlay
+        ref={reviewPenOverlayRef}
         paths={selectedPenPaths}
         draft={draftMark}
         selection={selectedPenSelection}
@@ -3270,8 +3266,9 @@ function App() {
                 </div>
               ) : null}
               <div className="annotation-actions">
-                <button type="button" onClick={undoLastMark} disabled={!selectedMarks.length}><Undo2 size={13} /> 撤销</button>
-                <button type="button" onClick={deleteSelectedMark} disabled={!selectedMarkId}><Trash2 size={13} /> 删除选中</button>
+                <button type="button" onClick={undoLastMark} disabled={!reviewPenOverlayRef.current?.canUndo}><Undo2 size={13} /> 撤销</button>
+                <button type="button" onClick={redoLastMark} disabled={!reviewPenOverlayRef.current?.canRedo}><Redo2 size={13} /> 重做</button>
+                <button type="button" onClick={deleteSelectedMark} disabled={!reviewPenOverlayRef.current?.canDeleteSelection}><Trash2 size={13} /> 删除选中</button>
                 <button type="button" onClick={clearMarks} disabled={!selectedMarks.length}>清空全部</button>
               </div>
             </div>
@@ -3843,7 +3840,7 @@ function App() {
                           type="button"
                           aria-pressed={resultEditTool === 'foreground'}
                           className={resultEditTool === 'foreground' ? 'result-editor__tool result-editor__tool--active result-editor__tool--foreground' : 'result-editor__tool'}
-                          onClick={() => setResultEditTool('foreground')}
+                          onClick={() => selectResultEditTool('foreground')}
                           disabled={Boolean(selectedPendingRevision)}
                         >
                           <PenTool size={14} /> 保留钢笔
@@ -3852,7 +3849,7 @@ function App() {
                           type="button"
                           aria-pressed={resultEditTool === 'background'}
                           className={resultEditTool === 'background' ? 'result-editor__tool result-editor__tool--active result-editor__tool--background' : 'result-editor__tool'}
-                          onClick={() => setResultEditTool('background')}
+                          onClick={() => selectResultEditTool('background')}
                           disabled={Boolean(selectedPendingRevision)}
                         >
                           <PenTool size={14} /> 擦除钢笔
@@ -3861,7 +3858,7 @@ function App() {
                           type="button"
                           aria-pressed={resultEditTool === 'boundary'}
                           className={resultEditTool === 'boundary' ? 'result-editor__tool result-editor__tool--active result-editor__tool--boundary' : 'result-editor__tool'}
-                          onClick={() => setResultEditTool('boundary')}
+                          onClick={() => selectResultEditTool('boundary')}
                           disabled={Boolean(selectedPendingRevision)}
                         >
                           <PenTool size={14} /> 边界钢笔
@@ -3886,6 +3883,7 @@ function App() {
                     >
                       {resultEditing ? (
                         <PenPathOverlay
+                          ref={resultPenOverlayRef}
                           paths={resultEditPaths}
                           draft={resultEditDraft}
                           selection={resultEditSelection}
@@ -3916,9 +3914,23 @@ function App() {
                             <button
                               type="button"
                               onClick={undoResultPenEdit}
-                              disabled={(!resultEditPaths.length && !resultEditDraft) || Boolean(selectedPendingRevision)}
+                              disabled={!resultPenOverlayRef.current?.canUndo || Boolean(selectedPendingRevision)}
                             >
                               <Undo2 size={13} /> 撤销
+                            </button>
+                            <button
+                              type="button"
+                              onClick={redoResultPenEdit}
+                              disabled={!resultPenOverlayRef.current?.canRedo || Boolean(selectedPendingRevision)}
+                            >
+                              <Redo2 size={13} /> 重做
+                            </button>
+                            <button
+                              type="button"
+                              onClick={deleteSelectedResultPenEdit}
+                              disabled={!resultPenOverlayRef.current?.canDeleteSelection || Boolean(selectedPendingRevision)}
+                            >
+                              <Trash2 size={13} /> 删除选中
                             </button>
                             <button
                               type="button"

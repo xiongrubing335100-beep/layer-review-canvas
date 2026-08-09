@@ -304,6 +304,40 @@ test('deleting selected canvas layers clears all matching review pen feedback to
   assert.match(deleteCanvasSelection, /splitIds\.forEach\(\(nodeId\) => nextTokens\.delete\(nodeId\)\)/);
 });
 
+test('both pen toolbars drive the shared overlay history and expose redo', () => {
+  assert.match(source, /ref=\{reviewPenOverlayRef\}/);
+  assert.match(source, /ref=\{resultPenOverlayRef\}/);
+  assert.match(source, /reviewPenOverlayRef\.current\?\.undo\(\)/);
+  assert.match(source, /reviewPenOverlayRef\.current\?\.redo\(\)/);
+  assert.match(source, /resultPenOverlayRef\.current\?\.undo\(\)/);
+  assert.match(source, /resultPenOverlayRef\.current\?\.redo\(\)/);
+  assert.match(source, /> 重做<\/button>/);
+});
+
+test('PNG refinement deletes the overlay selection through the shared reducer', () => {
+  assert.match(source, /resultPenOverlayRef\.current\?\.deleteSelection\(\)/);
+  assert.match(source, /> 删除选中<\/button>/);
+});
+
+test('tool switches and leaving PNG refinement cancel only the open pen draft', () => {
+  const selectMaskTool = source.slice(
+    source.indexOf('const selectMaskTool = (tool) =>'),
+    source.indexOf('const toggleOriginalOnly = () =>'),
+  );
+  const selectResultEditTool = source.slice(
+    source.indexOf('const selectResultEditTool = (tool) =>'),
+    source.indexOf('const updateResultPenEditor ='),
+  );
+  const toggleResultEditing = source.slice(
+    source.indexOf('const toggleResultEditing = () =>'),
+    source.indexOf('const openGuidedEditor ='),
+  );
+
+  assert.match(selectMaskTool, /reviewPenOverlayRef\.current\?\.cancelDraft\(\)/);
+  assert.match(selectResultEditTool, /resultPenOverlayRef\.current\?\.cancelDraft\(\)/);
+  assert.match(toggleResultEditing, /resultPenOverlayRef\.current\?\.cancelDraft\(\)/);
+});
+
 test('completed result nodes expose a direct download action', () => {
   assert.match(source, /className="result-node__download"/);
   assert.match(source, /download=\{image\.name \|\| `\$\{node\.id\}\.png`\}/);

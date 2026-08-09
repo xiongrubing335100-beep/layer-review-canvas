@@ -92,11 +92,35 @@ test('path operations are immutable and keep anchor coordinates normalized', () 
   assert.notStrictEqual(moved.anchors, appended.anchors);
 });
 
-test('switching an anchor mode toggles linked handles and deleting below three anchors invalidates a path', () => {
-  let path = curvedFixture();
-  path = toggleAnchorMode(path, 1);
-  assert.equal(path.anchors[1].handlesLinked, true);
-  assert.equal(isValidClosedPath(deleteAnchor(path, 1)), false);
+test('switching a straight corner to smooth changes geometry with finite symmetric handles', () => {
+  let path = createPenPath({ id: 'corners', kind: 'boundary', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  path = closePenPath(appendAnchor(path, { x: .5, y: .9 }));
+  const original = path.anchors[1];
+  const smooth = toggleAnchorMode(path, 1).anchors[1];
+
+  assert.notDeepEqual(smooth.in, original.in);
+  assert.notDeepEqual(smooth.out, original.out);
+  assert.ok([smooth.in.x, smooth.in.y, smooth.out.x, smooth.out.y].every(Number.isFinite));
+  assert.ok(Math.hypot(smooth.in.x - smooth.x, smooth.in.y - smooth.y) > .01);
+  assert.deepEqual(
+    { x: Number((smooth.in.x + smooth.out.x).toFixed(12)), y: Number((smooth.in.y + smooth.out.y).toFixed(12)) },
+    { x: Number((smooth.x * 2).toFixed(12)), y: Number((smooth.y * 2).toFixed(12)) },
+  );
+  assert.equal(smooth.handlesLinked, true);
+});
+
+test('switching a smooth anchor back to a corner collapses both handles', () => {
+  let path = createPenPath({ id: 'corners', kind: 'boundary', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  path = closePenPath(appendAnchor(path, { x: .5, y: .9 }));
+  const smoothPath = toggleAnchorMode(path, 1);
+  const corner = toggleAnchorMode(smoothPath, 1).anchors[1];
+
+  assert.deepEqual(corner.in, { x: corner.x, y: corner.y });
+  assert.deepEqual(corner.out, { x: corner.x, y: corner.y });
+  assert.equal(corner.handlesLinked, false);
+  assert.equal(isValidClosedPath(deleteAnchor(smoothPath, 1)), false);
   assert.equal(deleteAnchor(createPenPath({ id: 'only', kind: 'boundary', point: { x: .5, y: .5 } }), 0), null);
 });
 

@@ -19,6 +19,10 @@ function stableNumber(value) {
   return Number(value.toFixed(12));
 }
 
+function hasSameCoordinates(first, second) {
+  return first?.x === second?.x && first?.y === second?.y;
+}
+
 function straightAnchor(point) {
   const normalized = normalizedPoint(point);
   return {
@@ -167,13 +171,37 @@ export function moveHandle(path, index, side, point, { breakLink = false } = {})
 export function toggleAnchorMode(path, index) {
   const anchor = path?.anchors?.[index];
   if (!anchor) return path;
-  const handlesLinked = !anchor.handlesLinked;
+  const collapsed = hasSameCoordinates(anchor.in, anchor) && hasSameCoordinates(anchor.out, anchor);
+  if (!collapsed) {
+    return replaceAnchor(path, index, {
+      ...anchor,
+      in: { x: anchor.x, y: anchor.y },
+      out: { x: anchor.x, y: anchor.y },
+      handlesLinked: false,
+    });
+  }
+  const previous = path.anchors[index - 1] ?? (path.closed ? path.anchors.at(-1) : null);
+  const next = path.anchors[index + 1] ?? (path.closed ? path.anchors[0] : null);
+  let dx = (next?.x ?? anchor.x + 1) - (previous?.x ?? anchor.x - 1);
+  let dy = (next?.y ?? anchor.y) - (previous?.y ?? anchor.y);
+  let magnitude = Math.hypot(dx, dy);
+  if (!Number.isFinite(magnitude) || magnitude === 0) {
+    dx = 1;
+    dy = 0;
+    magnitude = 1;
+  }
+  const adjacentDistances = [previous, next]
+    .filter(Boolean)
+    .map((point) => Math.hypot(point.x - anchor.x, point.y - anchor.y))
+    .filter((distance) => Number.isFinite(distance) && distance > 0);
+  const handleLength = Math.min(.12, Math.max(.04, Math.min(...adjacentDistances, .32) / 3));
+  const offsetX = (dx / magnitude) * handleLength;
+  const offsetY = (dy / magnitude) * handleLength;
   return replaceAnchor(path, index, {
     ...anchor,
-    handlesLinked,
-    ...(handlesLinked ? {
-      in: { x: anchor.x * 2 - anchor.out.x, y: anchor.y * 2 - anchor.out.y },
-    } : {}),
+    in: { x: stableNumber(anchor.x - offsetX), y: stableNumber(anchor.y - offsetY) },
+    out: { x: stableNumber(anchor.x + offsetX), y: stableNumber(anchor.y + offsetY) },
+    handlesLinked: true,
   });
 }
 

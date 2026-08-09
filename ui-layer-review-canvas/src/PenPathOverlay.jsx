@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
   createPenEditorState,
   focusPenOverlayOwner,
+  penEditorActionForKeyboard,
   queuePenEditorEmission,
   reducePenEditor,
   syncPenEditorStateFromProps,
@@ -114,7 +115,7 @@ function EditablePenPath({
   );
 }
 
-export function PenPathOverlay({
+export const PenPathOverlay = forwardRef(function PenPathOverlay({
   paths = [],
   draft = null,
   selection = null,
@@ -123,7 +124,7 @@ export function PenPathOverlay({
   onChange,
   ariaLabel,
   feedbackToken = null,
-}) {
+}, ref) {
   const initialState = () => ({ ...createPenEditorState(paths), draft, selection });
   const [editorState, setEditorState] = useState(initialState);
   const stateRef = useRef(editorState);
@@ -159,6 +160,7 @@ export function PenPathOverlay({
       draft: next.draft,
       selection: next.selection,
       history: next.history,
+      future: next.future,
       feedbackToken: {
         origin: emissionOriginRef.current,
         sequence: emissionSequenceRef.current += 1,
@@ -170,6 +172,17 @@ export function PenPathOverlay({
     onChange?.(output);
     return next;
   };
+
+  useImperativeHandle(ref, () => ({
+    undo: () => apply({ type: 'undo' }),
+    redo: () => apply({ type: 'redo' }),
+    deleteSelection: () => apply({ type: 'delete-selection' }),
+    cancelDraft: () => apply({ type: 'cancel-draft' }),
+    clear: () => apply({ type: 'clear' }),
+    get canUndo() { return stateRef.current.history.length > 0; },
+    get canRedo() { return stateRef.current.future.length > 0; },
+    get canDeleteSelection() { return Boolean(stateRef.current.selection?.pathId); },
+  }));
 
   const beginDrag = (event, drag) => {
     if (disabled) return;
@@ -233,9 +246,10 @@ export function PenPathOverlay({
       apply({ type: 'delete-selection' });
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+    const action = penEditorActionForKeyboard(event);
+    if (action) {
       event.preventDefault();
-      apply({ type: 'undo' });
+      apply(action);
     }
   };
 
@@ -294,4 +308,4 @@ export function PenPathOverlay({
       ) : null}
     </svg>
   );
-}
+});

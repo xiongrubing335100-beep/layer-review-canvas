@@ -3,7 +3,12 @@ import test from 'node:test';
 import { appendAnchor, closePenPath, createPenPath } from './pen-path.js';
 import * as penEditorState from './pen-editor-state.js';
 
-const { createPenEditorState, focusPenOverlayOwner, reducePenEditor } = penEditorState;
+const {
+  createPenEditorState,
+  focusPenOverlayOwner,
+  penEditorActionForKeyboard,
+  reducePenEditor,
+} = penEditorState;
 
 function addClick(state, x, y, kind = 'foreground') {
   const down = reducePenEditor(state, { type: 'pointer-down', point: { x, y }, kind });
@@ -98,6 +103,45 @@ test('history keeps the most recent fifty complete snapshots', () => {
 
   assert.equal(state.history.length, 50);
   assert.equal(reducePenEditor(state, { type: 'undo' }).paths[0].anchors[0].x, .53);
+});
+
+test('undo and redo traverse complete snapshots and a new edit clears future history', () => {
+  const original = fourAnchorFixture();
+  const initial = createPenEditorState([original]);
+  const moved = reducePenEditor(initial, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .25, y: .2 },
+  });
+  const undone = reducePenEditor(moved, { type: 'undo' });
+  const redone = reducePenEditor(undone, { type: 'redo' });
+
+  assert.deepEqual(undone.paths, initial.paths);
+  assert.deepEqual(redone.paths, moved.paths);
+  assert.equal(redone.future.length, 0);
+
+  const branched = reducePenEditor(undone, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .4, y: .35 },
+  });
+  assert.equal(branched.future.length, 0);
+  assert.equal(reducePenEditor(branched, { type: 'redo' }), branched);
+});
+
+test('keyboard shortcuts map platform undo and redo commands without capturing plain keys', () => {
+  assert.deepEqual(penEditorActionForKeyboard({ key: 'z', metaKey: true }), { type: 'undo' });
+  assert.deepEqual(penEditorActionForKeyboard({ key: 'Z', ctrlKey: true, shiftKey: true }), { type: 'redo' });
+  assert.deepEqual(penEditorActionForKeyboard({ key: 'y', ctrlKey: true }), { type: 'redo' });
+  assert.equal(penEditorActionForKeyboard({ key: 'z' }), null);
+});
+
+test('anchor mode geometry changes are undoable and redoable', () => {
+  const original = fourAnchorFixture();
+  const toggled = reducePenEditor(createPenEditorState([original]), {
+    type: 'toggle-anchor-mode', pathId: original.id, anchorIndex: 0,
+  });
+  const undone = reducePenEditor(toggled, { type: 'undo' });
+  const redone = reducePenEditor(undone, { type: 'redo' });
+
+  assert.deepEqual(undone.paths[0].anchors[0], original.anchors[0]);
+  assert.deepEqual(redone.paths[0].anchors[0], toggled.paths[0].anchors[0]);
 });
 
 test('allocates the next deterministic pen id after imported pen ids', () => {
