@@ -85,6 +85,12 @@ import { resolvePanelVisibility } from './workbench-layout.js';
 import { annotationForPlan, selectionForPenOverlay } from './annotation-plan.js';
 import { PenPathOverlay } from './PenPathOverlay.jsx';
 import {
+  canDeleteReviewMark,
+  canInvokePenOverlayCommand,
+  invokePenOverlayCommand,
+  reduceReviewPenParentState,
+} from './review-pen-actions.js';
+import {
   buildResultRefinementPlan,
   canSubmitResultRefinement,
   mergeResultRefinementPollUpdate,
@@ -2196,8 +2202,35 @@ function App() {
     });
   };
 
+  const currentReviewPenParentState = () => ({
+    layerId: selectedId,
+    marks,
+    paths: selectedPenPaths,
+    draft: draftMark,
+    selection: selectedPenSelection,
+    feedbackToken: selectedPenFeedbackToken,
+    selectedMarkId,
+  });
+
+  const applyReviewPenParentState = (next) => {
+    if (next.paths.length) reviewPenPathsRef.current.set(selectedId, next.paths);
+    else reviewPenPathsRef.current.delete(selectedId);
+    setMarks(next.marks);
+    setDraftMark(next.draft);
+    updateReviewPenSelection(selectedId, next.selection);
+    updateReviewPenFeedbackToken(selectedId, next.feedbackToken);
+    setSelectedMarkId(next.selectedMarkId);
+  };
+
+  const cancelReviewPenDraft = () => {
+    if (invokePenOverlayCommand(reviewPenOverlayRef.current, 'cancelDraft')) return;
+    const current = currentReviewPenParentState();
+    const next = reduceReviewPenParentState(current, { type: 'cancel-draft' });
+    if (next !== current) applyReviewPenParentState(next);
+  };
+
   const selectMaskTool = (tool) => {
-    reviewPenOverlayRef.current?.cancelDraft();
+    cancelReviewPenDraft();
     if (maskTool === tool && !showOriginalOnly) {
       setMaskTool(null);
       setToast('已退出边界工具');
@@ -2542,26 +2575,47 @@ function App() {
   };
 
   const undoLastMark = () => {
-    reviewPenOverlayRef.current?.undo();
-    setToast('已撤销上一步标注');
+    if (invokePenOverlayCommand(reviewPenOverlayRef.current, 'undo')) {
+      setToast('已撤销上一步标注');
+    }
   };
 
   const redoLastMark = () => {
-    reviewPenOverlayRef.current?.redo();
-    setToast('已重做钢笔操作');
+    if (invokePenOverlayCommand(reviewPenOverlayRef.current, 'redo')) {
+      setToast('已重做钢笔操作');
+    }
   };
 
   const deleteSelectedMark = () => {
-    if (!selectedMarkId) return;
-    reviewPenOverlayRef.current?.deleteSelection();
+    const current = currentReviewPenParentState();
+    const selectedMark = current.marks.find((mark) => (
+      mark.layer_id === current.layerId && mark.id === current.selectedMarkId
+    ));
+    if (!selectedMark) return;
+    if (selectedMark.shape === 'bezier_path'
+      && invokePenOverlayCommand(reviewPenOverlayRef.current, 'deleteSelection')) {
+      setToast('已删除选中的标注');
+      return;
+    }
+    applyReviewPenParentState(reduceReviewPenParentState(current, { type: 'delete-selection' }));
     setToast('已删除选中的标注');
   };
 
   const clearMarks = () => {
-    reviewPenOverlayRef.current?.clear();
-    setMarks((current) => current.filter((mark) => (
-      mark.layer_id !== selectedId || mark.shape === 'bezier_path'
-    )));
+    const current = currentReviewPenParentState();
+    if (!current.marks.some((mark) => mark.layer_id === current.layerId) && !current.draft) return;
+    if (invokePenOverlayCommand(reviewPenOverlayRef.current, 'clear')) {
+      if (current.paths.length || current.draft) {
+        setMarks((latest) => latest.filter((mark) => (
+          mark.layer_id !== selectedId || mark.shape === 'bezier_path'
+        )));
+        setSelectedMarkId(null);
+      } else {
+        applyReviewPenParentState(reduceReviewPenParentState(current, { type: 'clear' }));
+      }
+    } else {
+      applyReviewPenParentState(reduceReviewPenParentState(current, { type: 'clear' }));
+    }
     setToast('当前项目的边界标注已清空');
   };
 
@@ -3266,9 +3320,9 @@ function App() {
                 </div>
               ) : null}
               <div className="annotation-actions">
-                <button type="button" onClick={undoLastMark} disabled={!reviewPenOverlayRef.current?.canUndo}><Undo2 size={13} /> 撤销</button>
-                <button type="button" onClick={redoLastMark} disabled={!reviewPenOverlayRef.current?.canRedo}><Redo2 size={13} /> 重做</button>
-                <button type="button" onClick={deleteSelectedMark} disabled={!reviewPenOverlayRef.current?.canDeleteSelection}><Trash2 size={13} /> 删除选中</button>
+                <button type="button" onClick={undoLastMark} disabled={!canInvokePenOverlayCommand(reviewPenOverlayRef.current, 'undo', { mounted: annotationSessionActive && !showOriginalOnly })}><Undo2 size={13} /> 撤销</button>
+                <button type="button" onClick={redoLastMark} disabled={!canInvokePenOverlayCommand(reviewPenOverlayRef.current, 'redo', { mounted: annotationSessionActive && !showOriginalOnly })}><Redo2 size={13} /> 重做</button>
+                <button type="button" onClick={deleteSelectedMark} disabled={!canDeleteReviewMark(currentReviewPenParentState())}><Trash2 size={13} /> 删除选中</button>
                 <button type="button" onClick={clearMarks} disabled={!selectedMarks.length}>清空全部</button>
               </div>
             </div>
