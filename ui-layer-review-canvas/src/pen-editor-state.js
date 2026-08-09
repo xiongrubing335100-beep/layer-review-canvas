@@ -83,9 +83,11 @@ export function syncPenEditorStateFromProps({
   paths = [],
   draft = null,
   selection = null,
+  feedbackToken = null,
 }) {
-  const emissionIndex = pendingEmissions.findIndex((emission) => (
-    paths === emission.paths
+  const emissionIndex = feedbackToken === null ? -1 : pendingEmissions.findIndex((emission) => (
+    feedbackToken === emission.feedbackToken
+    && paths === emission.paths
     && draft === emission.draft
     && selection === emission.selection
   ));

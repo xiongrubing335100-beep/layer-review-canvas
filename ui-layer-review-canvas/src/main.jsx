@@ -545,6 +545,7 @@ function App() {
   const [draftMark, setDraftMark] = useState(null);
   const [selectedMarkId, setSelectedMarkId] = useState(null);
   const [reviewPenSelections, setReviewPenSelections] = useState(() => new Map());
+  const [reviewPenFeedbackTokens, setReviewPenFeedbackTokens] = useState(() => new Map());
   const [showOriginalOnly, setShowOriginalOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingJobId, setCancellingJobId] = useState(null);
@@ -560,6 +561,7 @@ function App() {
   const [resultEditPaths, setResultEditPaths] = useState([]);
   const [resultEditDraft, setResultEditDraft] = useState(null);
   const [resultEditSelection, setResultEditSelection] = useState(null);
+  const [resultEditFeedbackToken, setResultEditFeedbackToken] = useState(null);
   const [submittingResultEdit, setSubmittingResultEdit] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
@@ -615,6 +617,7 @@ function App() {
   const restoreImageDocument = (document) => {
     reviewPenPathsRef.current.clear();
     setReviewPenSelections(new Map());
+    setReviewPenFeedbackTokens(new Map());
     setActiveImageId(document?.imageId || '');
     setSourceImage(document?.sourceDataUrl || document?.sourceImage || '');
     setSourceDataUrl(document?.sourceDataUrl || '');
@@ -737,6 +740,7 @@ function App() {
   const selectedPenSelection = useMemo(() => {
     return selectionForPenOverlay(reviewPenSelections, selectedId, selectedMarkId, selectedPenPaths);
   }, [reviewPenSelections, selectedId, selectedMarkId, selectedPenPaths]);
+  const selectedPenFeedbackToken = reviewPenFeedbackTokens.get(selectedId) ?? null;
   const groupedNodes = useMemo(() => categoryOrder.map((category) => ({
     category,
     items: nodes.filter((node) => node.category === category),
@@ -1314,6 +1318,7 @@ function App() {
     setResultEditPaths([]);
     setResultEditDraft(null);
     setResultEditSelection(null);
+    setResultEditFeedbackToken(null);
   }, [selectedId, latestSelectedJob?.id]);
 
   useEffect(() => {
@@ -1482,6 +1487,7 @@ function App() {
     setAlignmentMenuOpen(false);
     reviewPenPathsRef.current.clear();
     setReviewPenSelections(new Map());
+    setReviewPenFeedbackTokens(new Map());
     setMarks([]);
     setCandidateContext(null);
     setResultViewer(null);
@@ -2166,10 +2172,21 @@ function App() {
     });
   };
 
+  const updateReviewPenFeedbackToken = (layerId, feedbackToken) => {
+    setReviewPenFeedbackTokens((current) => {
+      if (feedbackToken ? current.get(layerId) === feedbackToken : !current.has(layerId)) return current;
+      const nextTokens = new Map(current);
+      if (feedbackToken) nextTokens.set(layerId, feedbackToken);
+      else nextTokens.delete(layerId);
+      return nextTokens;
+    });
+  };
+
   const selectMaskTool = (tool) => {
     if (maskTool === tool && !showOriginalOnly) {
       setMaskTool(null);
       setDraftMark(null);
+      updateReviewPenFeedbackToken(selectedId, null);
       setToast('已退出边界工具');
       return;
     }
@@ -2495,9 +2512,10 @@ function App() {
     };
   };
 
-  const updatePenPaths = ({ paths: nextPaths, draft, selection }) => {
+  const updatePenPaths = ({ paths: nextPaths, draft, selection, feedbackToken }) => {
     reviewPenPathsRef.current.set(selectedId, nextPaths);
     updateReviewPenSelection(selectedId, selection);
+    updateReviewPenFeedbackToken(selectedId, feedbackToken);
     const persistedPaths = nextPaths.map((path) => ({
       ...path,
       layer_id: selectedId,
@@ -2516,6 +2534,7 @@ function App() {
     if (!last) return;
     reviewPenPathsRef.current.delete(selectedId);
     updateReviewPenSelection(selectedId, null);
+    updateReviewPenFeedbackToken(selectedId, null);
     setMarks((current) => current.filter((mark) => (
       mark.layer_id !== selectedId || mark.id !== last.id
     )));
@@ -2527,6 +2546,7 @@ function App() {
     if (!selectedMarkId) return;
     reviewPenPathsRef.current.delete(selectedId);
     updateReviewPenSelection(selectedId, null);
+    updateReviewPenFeedbackToken(selectedId, null);
     setMarks((current) => current.filter((mark) => (
       mark.layer_id !== selectedId || mark.id !== selectedMarkId
     )));
@@ -2537,6 +2557,7 @@ function App() {
   const clearMarks = () => {
     reviewPenPathsRef.current.delete(selectedId);
     updateReviewPenSelection(selectedId, null);
+    updateReviewPenFeedbackToken(selectedId, null);
     setMarks((current) => current.filter((mark) => mark.layer_id !== selectedId));
     setSelectedMarkId(null);
     setDraftMark(null);
@@ -2573,13 +2594,15 @@ function App() {
     }
   };
 
-  const updateResultPenEditor = ({ paths, draft, selection }) => {
+  const updateResultPenEditor = ({ paths, draft, selection, feedbackToken }) => {
     setResultEditPaths(paths);
     setResultEditDraft(draft);
     setResultEditSelection(selection);
+    setResultEditFeedbackToken(feedbackToken);
   };
 
   const undoResultPenEdit = () => {
+    setResultEditFeedbackToken(null);
     if (resultEditDraft) {
       setResultEditDraft(null);
       return;
@@ -2592,6 +2615,7 @@ function App() {
     setResultEditPaths([]);
     setResultEditDraft(null);
     setResultEditSelection(null);
+    setResultEditFeedbackToken(null);
   };
 
   const submitResultEdit = async () => {
@@ -2688,6 +2712,7 @@ function App() {
         ? '结果修整已发送并保留本地记录，状态回写未确认'
         : '结果修整已提交，原结果版本已保留');
       setResultEditDraft(null);
+      setResultEditFeedbackToken(null);
     } catch (error) {
       if (submissionResult?.job_id && !followUpPosted) {
         await markLayerReviewMessageFailed(submissionResult.job_id, error).catch(() => {});
@@ -2973,6 +2998,7 @@ function App() {
         paths={selectedPenPaths}
         draft={draftMark}
         selection={selectedPenSelection}
+        feedbackToken={selectedPenFeedbackToken}
         activeKind={maskTool || 'foreground'}
         onChange={updatePenPaths}
         ariaLabel="边界精修钢笔标注"
@@ -3852,6 +3878,7 @@ function App() {
                           paths={resultEditPaths}
                           draft={resultEditDraft}
                           selection={resultEditSelection}
+                          feedbackToken={resultEditFeedbackToken}
                           activeKind={resultEditTool}
                           disabled={Boolean(selectedPendingRevision)}
                           onChange={updateResultPenEditor}

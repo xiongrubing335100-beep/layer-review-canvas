@@ -122,11 +122,14 @@ export function PenPathOverlay({
   disabled = false,
   onChange,
   ariaLabel,
+  feedbackToken = null,
 }) {
   const initialState = () => ({ ...createPenEditorState(paths), draft, selection });
   const [editorState, setEditorState] = useState(initialState);
   const stateRef = useRef(editorState);
   const emittedRef = useRef([]);
+  const emissionOriginRef = useRef({});
+  const emissionSequenceRef = useRef(0);
   const svgRef = useRef(null);
   const dragRef = useRef(null);
   const [previewPoint, setPreviewPoint] = useState(null);
@@ -138,12 +141,13 @@ export function PenPathOverlay({
       paths,
       draft,
       selection,
+      feedbackToken,
     });
     emittedRef.current = synced.pendingEmissions;
     if (synced.state === stateRef.current) return;
     stateRef.current = synced.state;
     setEditorState(synced.state);
-  }, [paths, draft, selection]);
+  }, [paths, draft, selection, feedbackToken]);
 
   const apply = (action) => {
     const next = reducePenEditor(stateRef.current, action);
@@ -155,6 +159,10 @@ export function PenPathOverlay({
       draft: next.draft,
       selection: next.selection,
       history: next.history,
+      feedbackToken: {
+        origin: emissionOriginRef.current,
+        sequence: emissionSequenceRef.current += 1,
+      },
     };
     emittedRef.current = queuePenEditorEmission(emittedRef.current, output, {
       enabled: typeof onChange === 'function',

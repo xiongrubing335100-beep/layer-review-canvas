@@ -25,13 +25,18 @@ function fourAnchorFixture() {
   return closePenPath(path);
 }
 
-function emittedOutput(state) {
+function emittedOutput(state, feedbackToken) {
   return {
     paths: state.paths,
     draft: state.draft,
     selection: state.selection,
     history: state.history,
+    feedbackToken,
   };
+}
+
+function feedbackToken(sequence) {
+  return { origin: 'test-overlay', sequence };
 }
 
 test('clicks append anchors and clicking the first anchor closes the draft', () => {
@@ -126,8 +131,8 @@ test('stale self-emitted props during a drag do not reset undo history', () => {
   const latestMove = reducePenEditor(firstMove, {
     type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
   });
-  const firstOutput = emittedOutput(firstMove);
-  const latestOutput = emittedOutput(latestMove);
+  const firstOutput = emittedOutput(firstMove, feedbackToken(1));
+  const latestOutput = emittedOutput(latestMove, feedbackToken(2));
 
   const staleSync = penEditorState.syncPenEditorStateFromProps({
     current: latestMove,
@@ -160,8 +165,8 @@ test('out-of-order self-emitted props are both ignored without losing undo histo
   const latestMove = reducePenEditor(firstMove, {
     type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
   });
-  const firstOutput = emittedOutput(firstMove);
-  const latestOutput = emittedOutput(latestMove);
+  const firstOutput = emittedOutput(firstMove, feedbackToken(1));
+  const latestOutput = emittedOutput(latestMove, feedbackToken(2));
 
   const latestSync = penEditorState.syncPenEditorStateFromProps({
     current: latestMove,
@@ -183,7 +188,7 @@ test('out-of-order self-emitted props are both ignored without losing undo histo
   assert.deepEqual(undone.paths[0].anchors[0], original.anchors[0]);
 });
 
-test('a controlled rollback with new prop references replaces pending local output', () => {
+test('a controlled rollback with cleared feedback token applies even with emitted prop references', () => {
   const original = fourAnchorFixture();
   const initial = createPenEditorState([original]);
   const firstMove = reducePenEditor(initial, {
@@ -192,27 +197,20 @@ test('a controlled rollback with new prop references replaces pending local outp
   const latestMove = reducePenEditor(firstMove, {
     type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
   });
-  const firstOutput = emittedOutput(firstMove);
-  const latestOutput = emittedOutput(latestMove);
-  const rollbackPaths = firstOutput.paths.map((path) => ({
-    ...path,
-    anchors: path.anchors.map((anchor) => ({
-      ...anchor,
-      in: { ...anchor.in },
-      out: { ...anchor.out },
-    })),
-  }));
+  const firstOutput = emittedOutput(firstMove, feedbackToken(1));
+  const latestOutput = emittedOutput(latestMove, feedbackToken(2));
 
   const rollbackSync = penEditorState.syncPenEditorStateFromProps({
     current: latestMove,
     pendingEmissions: [firstOutput, latestOutput],
-    paths: rollbackPaths,
+    paths: firstOutput.paths,
     draft: firstOutput.draft,
-    selection: firstOutput.selection ? { ...firstOutput.selection } : null,
+    selection: firstOutput.selection,
+    feedbackToken: null,
   });
 
   assert.notEqual(rollbackSync.state, latestMove);
-  assert.deepEqual(rollbackSync.state.paths, rollbackPaths);
+  assert.equal(rollbackSync.state.paths, firstOutput.paths);
   assert.deepEqual(rollbackSync.state.history, []);
   assert.deepEqual(rollbackSync.pendingEmissions, []);
 });
