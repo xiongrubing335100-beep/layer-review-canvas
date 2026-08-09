@@ -1,10 +1,19 @@
-import { access, open, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { buildRouteMetadata } from './split-execution.js';
 
 const allowedRoutes = new Set(['direct_crop', 'alpha_extract', 'codex_rgba', 'targeted_repair', 'result_refinement']);
 const jobIdPattern = /^layer-job-[a-zA-Z0-9._-]+$/;
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const maximumDecodedPngBytes = 512 * 1024 * 1024;
+const pngCrcTable = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return crc >>> 0;
+});
 
 function fail(message, code = 'PREFLIGHT_INVALID') {
   const error = new Error(message);
@@ -24,22 +33,99 @@ async function requireFile(filePath, label) {
   return filePath;
 }
 
-async function readPngSize(filePath) {
-  const file = await open(filePath, 'r');
-  try {
-    const header = Buffer.alloc(24);
-    const { bytesRead } = await file.read(header, 0, header.length, 0);
-    const isPng = bytesRead === header.length
-      && header.subarray(0, 8).equals(pngSignature)
-      && header.toString('ascii', 12, 16) === 'IHDR';
-    if (!isPng) throw fail('result_refinement 原图必须是可读 PNG');
-    const width = header.readUInt32BE(16);
-    const height = header.readUInt32BE(20);
-    if (width <= 0 || height <= 0) throw fail('result_refinement PNG 尺寸无效');
-    return { width, height };
-  } finally {
-    await file.close();
+function crc32(...buffers) {
+  let crc = 0xffffffff;
+  for (const buffer of buffers) {
+    for (const byte of buffer) crc = pngCrcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
   }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngFail(detail) {
+  return fail(`result_refinement PNG ${detail}`);
+}
+
+async function readPngSize(filePath) {
+  const png = await readFile(filePath);
+  if (png.length < pngSignature.length || !png.subarray(0, 8).equals(pngSignature)) {
+    throw pngFail('签名无效');
+  }
+
+  let offset = pngSignature.length;
+  let chunkIndex = 0;
+  let header = null;
+  let sawIdat = false;
+  let idatEnded = false;
+  let sawIend = false;
+  const compressedParts = [];
+  while (offset < png.length) {
+    if (sawIend) throw pngFail('IEND 后存在非法尾随数据');
+    if (png.length - offset < 12) throw pngFail('chunk 已截断');
+    const length = png.readUInt32BE(offset);
+    if (length > png.length - offset - 12) throw pngFail('chunk 数据已截断');
+    const typeStart = offset + 4;
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const typeBytes = png.subarray(typeStart, dataStart);
+    const data = png.subarray(dataStart, dataEnd);
+    const type = typeBytes.toString('ascii');
+    if (!/^[A-Za-z]{4}$/.test(type)) throw pngFail('chunk 类型无效');
+    if (png.readUInt32BE(dataEnd) !== crc32(typeBytes, data)) {
+      throw pngFail(`${type} CRC 校验失败`);
+    }
+    if (chunkIndex === 0 && type !== 'IHDR') throw pngFail('首个 chunk 必须是 IHDR');
+
+    if (type === 'IHDR') {
+      if (header || chunkIndex !== 0 || length !== 13) throw pngFail('IHDR 必须唯一、位于首块且长度为 13');
+      header = {
+        width: data.readUInt32BE(0),
+        height: data.readUInt32BE(4),
+        bitDepth: data[8],
+        colorType: data[9],
+        compression: data[10],
+        filter: data[11],
+        interlace: data[12],
+      };
+      if (header.width <= 0 || header.height <= 0) throw pngFail('尺寸无效');
+      if (header.bitDepth !== 8
+        || header.colorType !== 6
+        || header.compression !== 0
+        || header.filter !== 0
+        || header.interlace !== 0) {
+        throw pngFail('必须是 8-bit RGBA non-interlaced 格式');
+      }
+    } else if (type === 'IDAT') {
+      if (!header || idatEnded) throw pngFail('IDAT 顺序无效');
+      sawIdat = true;
+      compressedParts.push(data);
+    } else if (type === 'IEND') {
+      if (!header || !sawIdat || length !== 0) throw pngFail('IEND 无效或缺少 IDAT');
+      sawIend = true;
+    } else if (sawIdat) {
+      idatEnded = true;
+    }
+
+    offset = dataEnd + 4;
+    chunkIndex += 1;
+  }
+  if (!header || !sawIdat || !sawIend) throw pngFail('缺少完整 IHDR、IDAT 或 IEND');
+
+  const rowBytes = header.width * 4 + 1;
+  const decodedBytes = rowBytes * header.height;
+  if (!Number.isSafeInteger(decodedBytes) || decodedBytes > maximumDecodedPngBytes) {
+    throw pngFail('解压后像素数据过大');
+  }
+  let decoded;
+  try {
+    decoded = inflateSync(Buffer.concat(compressedParts), { maxOutputLength: decodedBytes });
+  } catch {
+    throw pngFail('IDAT zlib 数据无法解压');
+  }
+  if (decoded.length !== decodedBytes) throw pngFail('解压后的扫描行长度无效');
+  for (let y = 0; y < header.height; y += 1) {
+    if (decoded[y * rowBytes] > 4) throw pngFail('扫描行 filter byte 无效');
+  }
+  return { width: header.width, height: header.height };
 }
 
 function normalizeRequirement(value) {
@@ -180,11 +266,16 @@ export async function buildTargetedExecutionSpec({
       : null;
     if (isResultRefinement) {
       validateRefinementDimensions(plan, layer, output, refinementPngSize);
-      if (layer.transparency_strategy !== 'preserve_existing_alpha') {
+      if (layer.transparency_strategy !== undefined
+        && layer.transparency_strategy !== 'preserve_existing_alpha') {
         throw fail(`${layerName} 的 transparency_strategy 必须是 preserve_existing_alpha`);
       }
-      if (layer.rmbg_required === true) {
-        throw fail(`${layerName} 的 result_refinement 禁止运行 RMBG`);
+      if (layer.rmbg_required !== undefined && layer.rmbg_required !== false) {
+        throw fail(`${layerName} 的 result_refinement 要求 rmbg_required 严格为 false，禁止运行 RMBG`);
+      }
+      if (layer.output_resolution_policy !== undefined
+        && layer.output_resolution_policy !== 'existing_result_pixels') {
+        throw fail(`${layerName} 的 output_resolution_policy 必须是 existing_result_pixels`);
       }
       if (!normalizeRequirement(layer.requirement) && refinementAnnotations.length === 0) {
         throw fail(`${layerName} 必须包含文字要求或至少一条有效闭合路径`);

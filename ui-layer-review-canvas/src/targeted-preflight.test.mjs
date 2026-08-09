@@ -3,7 +3,77 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { deflateSync } from 'node:zlib';
 import { buildTargetedExecutionSpec } from './targeted-preflight.js';
+
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function crc32(...buffers) {
+  let crc = 0xffffffff;
+  for (const buffer of buffers) {
+    for (const byte of buffer) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      }
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data = Buffer.alloc(0), { corruptCrc = false } = {}) {
+  const typeBytes = Buffer.from(type, 'ascii');
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBytes.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE((crc32(typeBytes, data) + (corruptCrc ? 1 : 0)) >>> 0, 8 + data.length);
+  return chunk;
+}
+
+function pngFixture(width, height, {
+  bitDepth = 8,
+  colorType = 6,
+  interlace = 0,
+  ihdrLength = 13,
+  ancillaryBeforeIhdr = false,
+  duplicateIhdr = false,
+  includeIdat = true,
+  includeIend = true,
+  corruptIdatCrc = false,
+  compressedData = null,
+  rowFilter = 0,
+  trailing = null,
+} = {}) {
+  const ihdrData = Buffer.alloc(ihdrLength);
+  if (ihdrLength >= 8) {
+    ihdrData.writeUInt32BE(width, 0);
+    ihdrData.writeUInt32BE(height, 4);
+  }
+  if (ihdrLength >= 13) {
+    ihdrData[8] = bitDepth;
+    ihdrData[9] = colorType;
+    ihdrData[10] = 0;
+    ihdrData[11] = 0;
+    ihdrData[12] = interlace;
+  }
+  const ihdr = pngChunk('IHDR', ihdrData);
+  const rowBytes = width * 4 + 1;
+  const raw = Buffer.alloc(rowBytes * height);
+  for (let y = 0; y < height; y += 1) raw[y * rowBytes] = rowFilter;
+  const parts = [pngSignature];
+  if (ancillaryBeforeIhdr) parts.push(pngChunk('tEXt', Buffer.from('before')));
+  parts.push(ihdr);
+  if (duplicateIhdr) parts.push(ihdr);
+  if (includeIdat) {
+    parts.push(pngChunk('IDAT', compressedData ?? deflateSync(raw), { corruptCrc: corruptIdatCrc }));
+  }
+  if (includeIend) parts.push(pngChunk('IEND'));
+  if (trailing) parts.push(trailing);
+  return Buffer.concat(parts);
+}
+
+const validResultPng = pngFixture(1536, 837);
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'targeted-preflight-'));
@@ -36,18 +106,6 @@ async function fixture() {
   return { root, jobId, jobDirectory, finalDirectory, sourcePath, cropPath, plan };
 }
 
-function pngHeader(width, height) {
-  const bytes = Buffer.alloc(33);
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes, 0);
-  bytes.writeUInt32BE(13, 8);
-  bytes.write('IHDR', 12, 'ascii');
-  bytes.writeUInt32BE(width, 16);
-  bytes.writeUInt32BE(height, 20);
-  bytes[24] = 8;
-  bytes[25] = 6;
-  return bytes;
-}
-
 function closedPath(width = 1536, height = 837) {
   return {
     id: 'path-1',
@@ -73,7 +131,7 @@ function closedPath(width = 1536, height = 837) {
 
 async function resultRefinementContext({ requirement = '增强按钮高光', paths = [] } = {}) {
   const context = await fixture();
-  await writeFile(context.sourcePath, pngHeader(1536, 837));
+  await writeFile(context.sourcePath, validResultPng);
   context.plan.task = 'refine_split_result';
   context.plan.source.canvas = { width: 1536, height: 837 };
   context.plan.layers[0] = {
@@ -272,7 +330,7 @@ test('preflight requires the refinement task, readable PNG, exact dimensions, an
     await writeFile(context.sourcePath, 'not a png');
     await assert.rejects(buildTargetedExecutionSpec(context), /PNG/);
 
-    await writeFile(context.sourcePath, pngHeader(1536, 837));
+    await writeFile(context.sourcePath, validResultPng);
     context.plan.source.canvas.width = 1535;
     await assert.rejects(buildTargetedExecutionSpec(context), /PNG.*尺寸|尺寸.*PNG/);
 
@@ -290,6 +348,60 @@ test('preflight requires the refinement task, readable PNG, exact dimensions, an
   } finally {
     await rm(context.root, { recursive: true, force: true });
   }
+});
+
+test('preflight derives and locks every fixed result refinement route field', async () => {
+  const context = await resultRefinementContext();
+  try {
+    delete context.plan.layers[0].transparency_strategy;
+    delete context.plan.layers[0].rmbg_required;
+    delete context.plan.layers[0].output_resolution_policy;
+    const inferred = await buildTargetedExecutionSpec(context);
+    assert.equal(inferred.layers[0].transparency_strategy, 'preserve_existing_alpha');
+    assert.equal(inferred.layers[0].rmbg_required, false);
+    assert.equal(inferred.layers[0].output_resolution_policy, 'existing_result_pixels');
+
+    for (const maliciousRmbg of ['false', 0, 1, null]) {
+      context.plan.layers[0].rmbg_required = maliciousRmbg;
+      await assert.rejects(buildTargetedExecutionSpec(context), /RMBG/);
+    }
+
+    delete context.plan.layers[0].rmbg_required;
+    context.plan.layers[0].output_resolution_policy = 'logical_crop';
+    await assert.rejects(buildTargetedExecutionSpec(context), /existing_result_pixels/);
+
+    delete context.plan.layers[0].output_resolution_policy;
+    context.plan.layers[0].transparency_strategy = '';
+    await assert.rejects(buildTargetedExecutionSpec(context), /preserve_existing_alpha/);
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects structurally invalid or unreadable result PNG sources', async () => {
+  const malformedPngs = [
+    ['truncated chunk', validResultPng.subarray(0, validResultPng.length - 2)],
+    ['CRC mismatch', pngFixture(1536, 837, { corruptIdatCrc: true })],
+    ['invalid zlib stream', pngFixture(1536, 837, { compressedData: Buffer.from('not-zlib') })],
+    ['missing IDAT', pngFixture(1536, 837, { includeIdat: false })],
+    ['missing IEND', pngFixture(1536, 837, { includeIend: false })],
+    ['trailing data', pngFixture(1536, 837, { trailing: Buffer.from([0]) })],
+    ['IHDR is not first', pngFixture(1536, 837, { ancillaryBeforeIhdr: true })],
+    ['invalid IHDR length', pngFixture(1536, 837, { ihdrLength: 12 })],
+    ['duplicate IHDR', pngFixture(1536, 837, { duplicateIhdr: true })],
+    ['unsupported pixel format', pngFixture(1536, 837, { colorType: 2 })],
+    ['invalid scanline filter', pngFixture(1536, 837, { rowFilter: 5 })],
+  ];
+
+  await Promise.all(malformedPngs.map(async ([label, png]) => {
+    const context = await resultRefinementContext();
+    try {
+      await writeFile(context.sourcePath, png);
+      await assert.rejects(buildTargetedExecutionSpec(context), /PNG/, label);
+    } finally {
+      await rm(context.root, { recursive: true, force: true });
+    }
+  }));
 });
 
 test('preflight requires result refinement text or a valid closed Bezier path', async () => {
