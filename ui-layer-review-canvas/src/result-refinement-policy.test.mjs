@@ -139,6 +139,22 @@ test('repair coverage above 40% warns and above 70% blocks local mode', () => {
   });
 });
 
+test('fully overlapping repair paths use their polygon union for coverage', () => {
+  const overlapping = [
+    { x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 60 }, { x: 0, y: 60 },
+  ];
+  const paths = [boundary('overlap-a', overlapping), boundary('overlap-b', overlapping)];
+  const policy = deriveRefinementPolicy({
+    prompt: '修复重叠区域', annotations: paths, operation: pathScoped, canvas,
+  });
+
+  assert.equal(policy.repair_coverage_ratio, 0.36);
+  assert.deepEqual(policy.warnings, []);
+  assert.deepEqual(refinementSubmissionState({
+    prompt: '修复重叠区域', paths, draft: null, operation: pathScoped, canvas,
+  }), { ok: true, reason: null, warnings: [] });
+});
+
 test('explicit full-canvas mode allows text-only edits and derives native tile calls', () => {
   const operation = {
     mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [],

@@ -75,6 +75,17 @@ test('text alone cannot implicitly submit a path-scoped PNG refinement', () => {
   );
 });
 
+test('legacy callers cannot grant text-only full-canvas authority', () => {
+  assert.deepEqual(
+    canSubmitResultRefinement({ prompt: '增强按钮高光', paths: [], draft: null }),
+    { ok: false, reason: '局部二次编辑必须添加至少一条有效闭合路径', warnings: [] },
+  );
+  assert.throws(
+    () => buildFixturePlan({ prompt: '增强按钮高光', paths: [] }),
+    /局部二次编辑必须添加至少一条有效闭合路径/,
+  );
+});
+
 test('a boundary path alone cannot submit without a modification target', () => {
   assert.deepEqual(
     canSubmitResultRefinement({
@@ -98,8 +109,11 @@ test('an open pen draft blocks submission even when text is present', () => {
 
 test('empty text without a valid closed path cannot submit', () => {
   const result = canSubmitResultRefinement({ prompt: '  ', paths: [], draft: null });
-  assert.equal(result.ok, false);
-  assert.match(result.reason, /要求.*闭合路径/);
+  assert.deepEqual(result, {
+    ok: false,
+    reason: '局部二次编辑必须添加至少一条有效闭合路径',
+    warnings: [],
+  });
 });
 
 test('PNG pixel decoding closes its ImageBitmap after reading dimensions', async () => {

@@ -117,15 +117,112 @@ export function polygonAreaRatio(points, canvas) {
   return Math.abs(twiceArea) / 2 / (canvas.width * canvas.height);
 }
 
+function segmentIntersectionY(first, second) {
+  const firstX = first.end.x - first.start.x;
+  const firstY = first.end.y - first.start.y;
+  const secondX = second.end.x - second.start.x;
+  const secondY = second.end.y - second.start.y;
+  const denominator = firstX * secondY - firstY * secondX;
+  if (Math.abs(denominator) < Number.EPSILON) return null;
+  const offsetX = second.start.x - first.start.x;
+  const offsetY = second.start.y - first.start.y;
+  const firstRatio = (offsetX * secondY - offsetY * secondX) / denominator;
+  const secondRatio = (offsetX * firstY - offsetY * firstX) / denominator;
+  if (firstRatio < 0 || firstRatio > 1 || secondRatio < 0 || secondRatio > 1) return null;
+  return first.start.y + firstRatio * firstY;
+}
+
+function polygonIntervalsAtY(points, y, canvasWidth) {
+  const intersections = [];
+  points.forEach((point, index) => {
+    const next = points[(index + 1) % points.length];
+    if ((point.y > y) === (next.y > y)) return;
+    intersections.push(point.x + ((y - point.y) / (next.y - point.y)) * (next.x - point.x));
+  });
+  intersections.sort((left, right) => left - right);
+  const intervals = [];
+  for (let index = 0; index + 1 < intersections.length; index += 2) {
+    const left = Math.max(0, intersections[index]);
+    const right = Math.min(canvasWidth, intersections[index + 1]);
+    if (right > left) intervals.push([left, right]);
+  }
+  return intervals;
+}
+
+function unionIntervalWidth(intervals) {
+  if (intervals.length === 0) return 0;
+  const ordered = [...intervals].sort((left, right) => left[0] - right[0]);
+  let [currentLeft, currentRight] = ordered[0];
+  let width = 0;
+  ordered.slice(1).forEach(([left, right]) => {
+    if (left <= currentRight) {
+      currentRight = Math.max(currentRight, right);
+      return;
+    }
+    width += currentRight - currentLeft;
+    currentLeft = left;
+    currentRight = right;
+  });
+  return width + currentRight - currentLeft;
+}
+
+function polygonUnionAreaRatio(polygons, canvas) {
+  const validPolygons = polygons.filter((points) => Array.isArray(points) && points.length >= 3);
+  if (validPolygons.length === 0) return 0;
+  const edges = validPolygons.flatMap((points, polygonIndex) => points.map((start, index) => ({
+    start,
+    end: points[(index + 1) % points.length],
+    polygonIndex,
+  })));
+  const criticalYs = [0, canvas.height];
+  validPolygons.forEach((points) => points.forEach((point) => {
+    if (point.y > 0 && point.y < canvas.height) criticalYs.push(point.y);
+  }));
+  edges.forEach((edge) => {
+    const deltaX = edge.end.x - edge.start.x;
+    if (deltaX === 0) return;
+    [0, canvas.width].forEach((boundaryX) => {
+      const ratio = (boundaryX - edge.start.x) / deltaX;
+      if (ratio <= 0 || ratio >= 1) return;
+      const y = edge.start.y + ratio * (edge.end.y - edge.start.y);
+      if (y > 0 && y < canvas.height) criticalYs.push(y);
+    });
+  });
+  edges.forEach((first, firstIndex) => {
+    for (let secondIndex = firstIndex + 1; secondIndex < edges.length; secondIndex += 1) {
+      const second = edges[secondIndex];
+      if (first.polygonIndex === second.polygonIndex) continue;
+      const y = segmentIntersectionY(first, second);
+      if (y != null && y > 0 && y < canvas.height) criticalYs.push(y);
+    }
+  });
+
+  const orderedYs = criticalYs
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right)
+    .filter((value, index, values) => index === 0 || Math.abs(value - values[index - 1]) > 1e-9);
+  const unionArea = orderedYs.slice(0, -1).reduce((area, top, index) => {
+    const bottom = orderedYs[index + 1];
+    if (bottom <= top) return area;
+    const middle = (top + bottom) / 2;
+    const intervals = validPolygons.flatMap(
+      (points) => polygonIntervalsAtY(points, middle, canvas.width),
+    );
+    return area + unionIntervalWidth(intervals) * (bottom - top);
+  }, 0);
+  return Math.min(1, unionArea / (canvas.width * canvas.height));
+}
+
 export function deriveRefinementPolicy({ prompt, annotations, operation, canvas }) {
   const normalized = String(prompt || '').trim().replace(/\s+/g, ' ');
   const subjectIds = new Set(operation.subject_path_ids || []);
   const repair = annotations.filter((item) => item.kind === 'boundary' && !subjectIds.has(item.id));
   const erase = annotations.filter((item) => ['background', 'exclude', 'erase'].includes(item.kind));
   const protect = annotations.filter((item) => ['foreground', 'keep'].includes(item.kind));
-  const repairCoverage = Math.min(1, repair.reduce(
-    (sum, item) => sum + polygonAreaRatio(item.source_polygon_pixels, canvas), 0,
-  ));
+  const repairCoverage = polygonUnionAreaRatio(
+    repair.map((item) => item.source_polygon_pixels),
+    canvas,
+  );
   const expectedTiles = expectedNativeTileCount(repair, canvas, RESULT_REFINEMENT_ROI_POLICY);
   const fullCanvasTiles = operation.mode === 'full_canvas_explicit'
     ? expectedFullCanvasTileCount(canvas, RESULT_REFINEMENT_ROI_POLICY)

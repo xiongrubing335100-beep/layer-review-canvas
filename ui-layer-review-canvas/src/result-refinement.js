@@ -6,6 +6,12 @@ import {
 } from './result-refinement-policy.js';
 
 const fullCanvasPercent = { x: 0, y: 0, width: 100, height: 100 };
+const normalizedFallbackCanvas = { width: 1024, height: 1024 };
+const defaultRefinementOperation = Object.freeze({
+  mode: 'path_scoped',
+  subject_path_ids: [],
+  alpha_include_path_ids: [],
+});
 const preDeliveryStatuses = new Set([
   'queued',
   'awaiting_codex_message',
@@ -41,16 +47,13 @@ export async function readPngPixelSize(blob, createBitmap = globalThis.createIma
 }
 
 export function canSubmitResultRefinement({ prompt, paths, draft, operation, canvas }) {
-  if (operation || canvas) {
-    return refinementSubmissionState({ prompt, paths, draft, operation, canvas });
-  }
-  if (draft) return { ok: false, reason: '请先闭合或取消当前钢笔路径' };
-  const hasPrompt = String(prompt || '').trim().length > 0;
-  const hasClosedPath = Array.isArray(paths) && paths.some(isClosedPath);
-  if (!hasPrompt && !hasClosedPath) {
-    return { ok: false, reason: '请填写二次编辑要求或添加至少一条有效闭合路径' };
-  }
-  return { ok: true, reason: null };
+  return refinementSubmissionState({
+    prompt,
+    paths,
+    draft,
+    operation: operation || defaultRefinementOperation,
+    canvas: canvas || normalizedFallbackCanvas,
+  });
 }
 
 function appendRevisionJob(currentJobs, revisionJob) {
@@ -102,11 +105,7 @@ export function buildResultRefinementPlan({
   placement,
   prompt,
   paths = [],
-  operation = {
-    mode: 'path_scoped',
-    subject_path_ids: [],
-    alpha_include_path_ids: [],
-  },
+  operation = defaultRefinementOperation,
   baseResult,
   layer,
   project,
@@ -115,6 +114,14 @@ export function buildResultRefinementPlan({
   const pixelRegion = { x: 0, y: 0, ...canvas };
   const requirement = String(prompt || '').trim();
   const validPaths = paths.filter(isClosedPath);
+  const submissionState = refinementSubmissionState({
+    prompt,
+    paths,
+    draft: null,
+    operation,
+    canvas,
+  });
+  if (!submissionState.ok) throw new Error(submissionState.reason);
   const baseAnnotations = validPaths
     .map((path, index) => annotationForPlan(path, fullCanvasPercent, canvas, index));
   const refinementPolicy = deriveRefinementPolicy({
@@ -135,7 +142,7 @@ export function buildResultRefinementPlan({
       ? { operation_role: roleByPathId.get(annotation.id) }
       : {}),
   }));
-  const pathScoped = operation.mode !== 'full_canvas_explicit' && validPaths.length > 0;
+  const pathScoped = operation.mode !== 'full_canvas_explicit';
   return {
     version: '0.8',
     task: 'refine_split_result',
