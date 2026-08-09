@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do not add Fabric.js, Konva, or another canvas framework.
-- Store pen anchors and handles in normalized `0..1` coordinates.
+- Store pen anchors in normalized `0..1` coordinates. Handles use the same normalized coordinate system but may extend beyond `0..1` to preserve smooth tangents at canvas edges; final flattened pixel samples are clamped inside the source canvas.
 - Require at least three distinct anchors and a closed path before a path is submit-eligible.
 - Closed paths use a dashed outline and semantic translucent fill; drafts have no fill.
 - Preserve the existing keep, exclude, later-annotation-wins, and boundary-priority semantics.
