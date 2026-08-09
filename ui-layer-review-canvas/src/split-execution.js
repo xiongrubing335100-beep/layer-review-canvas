@@ -2,6 +2,7 @@ const repairIntent = /(?:移除|删除|去掉|去除|擦掉|抹掉).{0,8}(?:文�
 const negatedRepairIntent = /(?:不要|无需|无须|不需要|不必|别|禁止)\s*(?:再)?(?:移除|删除|去掉|去除|擦掉|抹掉).{0,8}(?:文字|文本|数字|水印|内容)|(?:do\s+not|don't|dont|never)\s+(?:remove|erase|delete)\s+(?:the\s+)?(?:text|copy|numbers?|watermarks?|content)/gi;
 const globalContextIntent = /(?:遮挡|被挡|补全.{0,12}(?:底板|背景|空洞|缺口)|修复.{0,8}(?:底板|背景|空洞|缺口)|完整背景|occlusion|reconstruct\s+(?:the\s+)?(?:background|base|hole|gap))/i;
 const codexRgbaCategories = new Set(['kvTitle', 'ordinaryText', 'logo']);
+export const RMBG_MODEL = 'bria-rmbg';
 const runningJobStatuses = new Set([
   'queued',
   'sending_to_codex',
@@ -37,7 +38,7 @@ export function combinedRequirement({
   const backgroundRemoval = strategy === 'codex_rgba'
     ? '去背景要求：直接拆出当前文字或标志主体并输出真实透明 RGBA PNG；保留完整字形、描边、渐变、材质和附着光效；禁止将全不透明底图作为拆分结果；此类图层不得使用 RMBG。'
     : strategy === 'rembg'
-      ? '去背景要求：最终仅保留当前图层主体并输出真实透明 RGBA PNG；完成 Codex 最终拆分结果后，必须使用 RMBG（isnet-general-use）去除背景。'
+      ? `去背景要求：最终仅保留当前图层主体并输出真实透明 RGBA PNG；完成 Codex 最终拆分结果后，必须使用 RMBG 2.0（${RMBG_MODEL}）去除背景。`
       : '';
   return [
     base,
@@ -94,6 +95,9 @@ export function buildRouteMetadata({
     structure_validation_required: transparency === 'codex_rgba',
     imagegen_input_kind: codexAlphaMatte ? 'codex_alpha_matte' : null,
     imagegen_canvas_policy: codexAlphaMatte ? 'prepared_source_locked_canvas' : null,
+    ...(isRepair && transparency === 'rembg'
+      ? { output_resolution_policy: 'native_imagegen_content' }
+      : {}),
     expected_output: {
       width: Number.isFinite(sourceRegionPixels.width) ? sourceRegionPixels.width : null,
       height: Number.isFinite(sourceRegionPixels.height) ? sourceRegionPixels.height : null,
@@ -112,8 +116,8 @@ export function classifyExecutionRoute({
 }) {
   const intent = combinedRequirement({ category, categoryDefault, requirement, refinementPrompt })
     .replace(negatedRepairIntent, '');
-  if (repairIntent.test(intent)) return 'targeted_repair';
   const transparency = transparencyStrategy({ category, removeBackground });
   if (transparency === 'codex_rgba') return 'codex_rgba';
+  if (repairIntent.test(intent)) return 'targeted_repair';
   return transparency === 'rembg' ? 'alpha_extract' : 'direct_crop';
 }

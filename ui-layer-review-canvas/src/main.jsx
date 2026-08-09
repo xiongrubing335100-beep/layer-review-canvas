@@ -70,9 +70,11 @@ import {
   isNodeRunning,
   nextPaint,
   transparencyStrategy,
+  RMBG_MODEL,
 } from './split-execution.js';
 import { createInitialWorkbenchState } from './workbench-state.js';
 import { ModeSwitch } from './mode-switch.js';
+import { resultPreviewMaxWidth } from './result-preview-sizing.js';
 import { alignCanvasItems } from './canvas-alignment.js';
 import { arrangeImageDocuments } from './canvas-layout.js';
 import { canvasDeletionPlan, shouldHandleCanvasDelete } from './canvas-deletion.js';
@@ -127,7 +129,7 @@ const quickRequirements = [
   '普通文字单独成层',
   '去字后补全底板',
   '补全被遮挡区域',
-  '按框选尺寸输出透明 PNG',
+  '保留框选逻辑尺寸和位置',
 ];
 
 function pngDownloadName(value, fallback) {
@@ -493,6 +495,7 @@ function ResultPreview({
   const compactWidth = aspect >= 38 / 42 ? 38 : Math.max(8, 42 * aspect);
   const compactHeight = aspect >= 38 / 42 ? Math.max(8, 38 / aspect) : 42;
   const maxPreviewHeight = className.includes('guided-result') ? 300 : className.includes('node') ? 118 : null;
+  const maxPreviewWidth = compact ? null : resultPreviewMaxWidth(region, maxPreviewHeight);
   const imageStyle = isFullCanvas
     ? cropImageStyle(bounds)
     : { inset: 0, width: '100%', height: '100%', objectFit: 'contain' };
@@ -505,7 +508,7 @@ function ResultPreview({
         width: compact ? `${compactWidth}px` : undefined,
         height: compact ? `${compactHeight}px` : undefined,
         aspectRatio: aspect,
-        maxWidth: compact || !maxPreviewHeight ? undefined : `min(100%, ${Math.max(96, Math.round(aspect * maxPreviewHeight))}px)`,
+        maxWidth: compact ? undefined : `min(100%, ${maxPreviewWidth}px)`,
       }}
       role={interactive ? 'application' : 'img'}
       aria-label={interactive ? '拆分结果编辑画布' : '拆分结果预览'}
@@ -2276,7 +2279,7 @@ function App() {
             output: 'source_rgb_with_model_authored_alpha',
           } : transparency === 'rembg' ? {
             engine: 'rembg',
-            model: 'isnet-general-use',
+            model: RMBG_MODEL,
             stage: 'after_codex_final_split_before_delivery',
             input: 'codex_final_split_result',
           } : null,

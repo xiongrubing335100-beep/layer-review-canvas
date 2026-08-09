@@ -89,3 +89,28 @@ test('the native MCP Apps bridge calls server tools and sends follow-up messages
     delete globalThis.window;
   }
 });
+
+test('empty conversation follow-up messages are rejected before reaching the host', async () => {
+  let sends = 0;
+  globalThis.window = {
+    parent: {},
+    __IMVIA_MCP_APP__: {
+      sendMessage: async () => {
+        sends += 1;
+        return { content: [] };
+      },
+    },
+    __IMVIA_MCP_APP_READY__: Promise.resolve(),
+  };
+
+  try {
+    const client = await import(`./mcp-app-client.js?empty-message-test=${Date.now()}`);
+    await assert.rejects(
+      client.sendMcpAppFollowUpMessage('   '),
+      /不能发送空的拆分消息/,
+    );
+    assert.equal(sends, 0);
+  } finally {
+    delete globalThis.window;
+  }
+});

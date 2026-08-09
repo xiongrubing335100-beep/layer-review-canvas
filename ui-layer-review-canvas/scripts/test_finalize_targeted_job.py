@@ -31,7 +31,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             "layers": [{
                 "id": "layer-one",
                 "name": "组件",
-                "execution_route_hint": "targeted_repair",
+                "execution_route_hint": "direct_crop",
                 "expected_output": {"width": 2, "height": 2, "original_source_x": 1, "original_source_y": 1},
                 "remove_background": False,
             }],
@@ -139,6 +139,179 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         }), encoding="utf-8")
 
         with self.assertRaisesRegex(ValueError, "preserve the prepared 6x4 canvas"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+            )
+
+    def test_targeted_repair_accepts_fixed_imagegen_canvas_mapping(self):
+        self.plan["layers"][0]["execution_route_hint"] = "targeted_repair"
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        canvas = Image.new("RGBA", (1024, 1024), (210, 40, 20, 255))
+        canvas.save(self.generated)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 2, "height": 2},
+        }), encoding="utf-8")
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["transparency"]["generated_input_kind"], "targeted_repair_canvas")
+        with Image.open(self.job / "final" / "layer-one.png") as image:
+            rgba = image.convert("RGBA")
+            self.assertEqual(rgba.size, (2, 2))
+            self.assertEqual(rgba.getpixel((0, 0)), (210, 40, 20, 255))
+            self.assertEqual(rgba.getpixel((1, 1)), (210, 40, 20, 255))
+
+    def test_targeted_repair_rmbg_preserves_native_content_resolution(self):
+        self.plan["layers"][0].update({
+            "execution_route_hint": "targeted_repair",
+            "remove_background": True,
+            "transparency_strategy": "rembg",
+            "rmbg_required": True,
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        canvas = Image.new("RGBA", (1024, 1024), (210, 40, 20, 255))
+        canvas.save(self.generated)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 2, "height": 2},
+        }), encoding="utf-8")
+        received = []
+
+        def fake_rmbg(input_path, output_path, width, height, _script):
+            with Image.open(input_path) as image:
+                received.append((image.size, width, height))
+                result = image.convert("RGBA")
+            result.putpixel((0, 0), (210, 40, 20, 0))
+            result.save(output_path)
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            rmbg_runner=fake_rmbg,
+        )
+
+        self.assertEqual(received, [((1024, 1024), 1024, 1024)])
+        self.assertEqual(report["output_resolution_policy"], "native_imagegen_content")
+        self.assertEqual(report["asset_dimensions"], {"width": 1024, "height": 1024})
+        self.assertEqual(report["logical_placement"], {
+            "x": 1,
+            "y": 1,
+            "width": 2,
+            "height": 2,
+        })
+        with Image.open(self.job / "final" / "layer-one.png") as image:
+            self.assertEqual(image.size, (1024, 1024))
+
+    def test_native_targeted_repair_scales_declared_source_lock_regions(self):
+        self.plan["layers"][0].update({
+            "execution_route_hint": "targeted_repair",
+            "remove_background": True,
+            "transparency_strategy": "rembg",
+            "rmbg_required": True,
+            "repair_regions": [{"x": 0, "y": 0, "width": 1, "height": 1}],
+            "repair_region_source": "codex_declared",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        Image.new("RGBA", (1024, 1024), (210, 40, 20, 255)).save(self.generated)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 2, "height": 2},
+        }), encoding="utf-8")
+        received_pixels = []
+
+        def fake_rmbg(input_path, output_path, _width, _height, _script):
+            with Image.open(input_path) as image:
+                result = image.convert("RGBA")
+            received_pixels.extend([
+                result.getpixel((100, 100)),
+                result.getpixel((900, 900)),
+            ])
+            result.putpixel((0, 0), (*result.getpixel((0, 0))[:3], 0))
+            result.save(output_path)
+
+        MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            rmbg_runner=fake_rmbg,
+        )
+
+        self.assertEqual(received_pixels, [
+            (210, 40, 20, 255),
+            (10, 20, 30, 255),
+        ])
+
+    def test_targeted_repair_rejects_missing_imagegen_mapping(self):
+        self.plan["layers"][0]["execution_route_hint"] = "targeted_repair"
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "requires --imagegen-mapping"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+            )
+
+    def test_targeted_repair_mapping_rejects_changed_native_canvas(self):
+        self.plan["layers"][0]["execution_route_hint"] = "targeted_repair"
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 6, "height": 4},
+            "content_region": {"x": 1, "y": 1, "width": 4, "height": 2},
+            "expected_output": {"width": 2, "height": 2},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "canonical canvas geometry"):
             MODULE.finalize_job(
                 self.job_id,
                 "layer-one",

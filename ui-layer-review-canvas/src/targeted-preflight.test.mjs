@@ -61,6 +61,21 @@ test('buildTargetedExecutionSpec returns a compact machine-readable spec', async
   }
 });
 
+test('preflight preserves native ImageGen content resolution policy for repaired RMBG layers', async () => {
+  const context = await fixture();
+  try {
+    context.plan.layers[0].remove_background = true;
+    context.plan.layers[0].transparency_strategy = 'rembg';
+    context.plan.layers[0].output_resolution_policy = 'native_imagegen_content';
+
+    const spec = await buildTargetedExecutionSpec(context);
+
+    assert.equal(spec.layers[0].output_resolution_policy, 'native_imagegen_content');
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
 test('preflight rejects output path escape, missing files, invalid size, and layer order', async () => {
   const context = await fixture();
   try {
@@ -133,6 +148,29 @@ test('preflight preserves the Codex RGBA contract for title layers', async () =>
     assert.equal(spec.layers[0].structure_validation_required, true);
     assert.equal(spec.layers[0].imagegen_input_kind, 'codex_alpha_matte');
     assert.equal(spec.layers[0].imagegen_canvas_policy, 'prepared_source_locked_canvas');
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
+test('preflight rejects the unsupported targeted repair plus Codex RGBA combination', async () => {
+  const context = await fixture();
+  try {
+    const layer = {
+      ...context.plan.layers[0],
+      category: 'kvTitle',
+      execution_route_hint: 'targeted_repair',
+      remove_background: true,
+      transparency_strategy: 'codex_rgba',
+      rmbg_required: false,
+    };
+    await assert.rejects(
+      buildTargetedExecutionSpec({
+        ...context,
+        plan: { ...context.plan, layers: [layer] },
+      }),
+      /targeted_repair.*codex_rgba/,
+    );
   } finally {
     await rm(context.root, { recursive: true, force: true });
   }

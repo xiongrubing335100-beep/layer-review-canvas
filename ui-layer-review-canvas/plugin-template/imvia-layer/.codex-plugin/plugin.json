@@ -19,7 +19,7 @@
       "Show the current layer review status"
     ],
     "brandColor": "#22C55E",
-    "icon": "./assets/imvia-logo.png"
+    "composerIcon": "./assets/imvia-logo.png"
   },
   "mcpServers": "./.mcp.json"
 }

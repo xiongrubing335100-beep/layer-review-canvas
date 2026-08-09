@@ -12,7 +12,7 @@
 - 快速 `targeted_repair` 从 `confirmation_accepted_at` 到 `completed_at` 的 P50 不超过 120 秒、P90 不超过 240 秒。
 - ImageGen 返回后的尺寸归一、RMBG、验收和终态写入合计不超过 30 秒。
 - 快速模式最多调用一次 ImageGen，不自动升级质量模式，不自动重复生成。
-- `remove_background: true` 必须运行现有 RMBG `isnet-general-use`，输出真实透明 RGBA PNG。
+- `remove_background: true` 必须运行 BRIA RMBG 2.0（`bria-rmbg`），输出真实透明 RGBA PNG。
 - 不使用 OpenCV 补洞、克隆、颜色阈值、轮廓、膨胀、模糊、自制 alpha 或其他本地语义修复替代 ImageGen/RMBG。
 - `layers[]` 仍是唯一输出清单；每个确认层只产生一个最终 PNG。
 - 最终 PNG 尺寸等于提交时框选尺寸，且 `execution-report.json` 与 PNG 原子一致。
@@ -263,7 +263,7 @@ node scripts/prepare-targeted-job.mjs --job-id <fixture-job-id>
 3. 验证输入可解码、位于 job 的 `generated/` 且未写入 `final/`。
 4. 尺寸归一只允许不改变比例的居中裁切或透明补边；无法安全归一时失败，禁止非等比拉伸。
 5. 默认不执行源像素保护。只有 `repair_regions` 与合法来源同时存在时，才允许把修复区域外的原始像素原样覆盖回来；本步骤不能生成新像素。
-6. `remove_background: true` 必须调用 `finalize-rmbg.py`，模型固定 `isnet-general-use`。
+6. `remove_background: true` 必须调用 `finalize-rmbg.py`，模型固定为 BRIA RMBG 2.0（`bria-rmbg`）。
 7. 验证数量、尺寸、路径、alpha、标注、明显排除、结构完整性和修复目标。
 8. 先写临时 PNG，验证通过后原子重命名到 `final/`，最后原子写 completed 报告。
 9. 任一失败时删除本次临时 final，不删除历史无关文件，原子写 failed 报告。
@@ -295,7 +295,7 @@ python -m unittest scripts/test_finalize_targeted_job.py
 
 步骤：
 
-1. 仅把参数解析、尺寸验证、session 创建、remove 调用和输出验证拆成小函数，算法参数保持 `alpha_matting=False`、模型保持 `isnet-general-use`。
+1. 仅把参数解析、尺寸验证、session 创建、remove 调用和输出验证拆成小函数，算法参数保持 `alpha_matting=False`、模型保持 `bria-rmbg`。
 2. 单元测试通过依赖注入模拟 session 和 remove，不下载模型。
 3. 集成测试继续用真实环境运行一次 RMBG，验证 alpha 和尺寸。
 4. 不实现色差、轮廓、自制 mask 或任何回退。

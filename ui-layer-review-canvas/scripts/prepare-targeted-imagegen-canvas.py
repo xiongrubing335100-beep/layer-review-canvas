@@ -34,13 +34,25 @@ def choose_canvas(width, height):
     return SQUARE_CANVAS
 
 
+def average_corner_color(image):
+    rgb = image.convert("RGB")
+    corners = (
+        rgb.getpixel((0, 0)),
+        rgb.getpixel((rgb.width - 1, 0)),
+        rgb.getpixel((0, rgb.height - 1)),
+        rgb.getpixel((rgb.width - 1, rgb.height - 1)),
+    )
+    return tuple(round(sum(pixel[channel] for pixel in corners) / len(corners)) for channel in range(3))
+
+
 def prepare_canvas(job_id, layer_id, *, jobs_root):
     job_directory = (jobs_root / job_id).resolve()
     if job_directory.name != job_id:
         raise ValueError("job directory does not match jobId")
     layer = load_layer(job_directory, layer_id)
-    if layer.get("execution_route_hint") != "codex_rgba":
-        raise ValueError("ImageGen matte canvas is only valid for codex_rgba")
+    route = layer.get("execution_route_hint")
+    if route not in ("codex_rgba", "targeted_repair"):
+        raise ValueError("ImageGen canvas is only valid for codex_rgba or targeted_repair")
 
     output = layer.get("expected_output") or {}
     width = int(output.get("width", 0))
@@ -63,7 +75,8 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     roi_x = (canvas_width - roi_width) // 2
     roi_y = (canvas_height - roi_height) // 2
 
-    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 255))
+    background = (0, 0, 0) if route == "codex_rgba" else average_corner_color(crop)
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (*background, 255))
     resized = crop.resize((roi_width, roi_height), Image.Resampling.LANCZOS)
     canvas.alpha_composite(resized, (roi_x, roi_y))
 
@@ -78,7 +91,10 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
         "version": 1,
         "job_id": job_id,
         "layer_id": layer_id,
-        "generated_input_kind": "codex_alpha_matte",
+        "generated_input_kind": (
+            "codex_alpha_matte" if route == "codex_rgba" else "targeted_repair_canvas"
+        ),
+        "execution_route": route,
         "reference_path": str(reference_path),
         "canvas": {"width": canvas_width, "height": canvas_height},
         "content_region": {
@@ -94,7 +110,7 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Prepare a source-locked ImageGen canvas for Codex RGBA matte generation.")
+    parser = argparse.ArgumentParser(description="Prepare a source-locked ImageGen canvas for targeted layer execution.")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--layer-id", required=True)
     parser.add_argument("--jobs-root", type=Path, default=Path("output") / "jobs")

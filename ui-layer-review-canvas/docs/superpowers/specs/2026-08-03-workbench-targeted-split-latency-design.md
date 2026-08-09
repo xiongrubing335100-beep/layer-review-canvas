@@ -22,7 +22,7 @@
 ## 2. 已确认产品决策
 
 1. `targeted_repair` 的缺失内容、文字挖空和遮挡补全仍由 ImageGen 生成。
-2. `remove_background: true` 仍必须在 Codex 最终拆分结果完成后运行 RMBG `isnet-general-use`。
+2. `remove_background: true` 仍必须在 Codex 最终拆分结果完成后运行 BRIA RMBG 2.0（`bria-rmbg`）。
 3. 禁止以颜色阈值、轮廓、膨胀、模糊、克隆、OpenCV 补洞或助手自制 alpha 替代 ImageGen 或 RMBG。
 4. 本地代码只允许执行无语义机械步骤：读取计划、精确裁切、尺寸归一、文件组织、保护未编辑原像素、RMBG 调用、验收、计时和报告。
 5. “保护未编辑原像素”不得产生修复内容；修复区域内的新增像素必须来自 ImageGen。缺少可靠修复区域时不得猜测，快速任务必须失败；只有用户明确重新提交质量模式后才能进入质量复核。
@@ -199,7 +199,7 @@ Codex 从预检输出构造固定提示词，字段仅包括：
 
 ## 10. RMBG 合同
 
-- 模型固定为 `isnet-general-use`。
+- 模型固定为 BRIA RMBG 2.0（`bria-rmbg`）。
 - 输入必须已经是尺寸正确的 Codex 最终拆分结果。
 - RMBG 输出必须为真实 RGBA。
 - `alpha_min` 必须为 0，`alpha_max` 必须大于 0。

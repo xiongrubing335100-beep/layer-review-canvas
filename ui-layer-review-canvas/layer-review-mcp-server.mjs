@@ -28,6 +28,7 @@ import {
   markDirectConversationMessageSent,
   markForegroundDispatchDelivered,
   releaseForegroundDispatchClaim,
+  readForegroundQueueSummary,
 } from './src/foreground-dispatch.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -308,6 +309,10 @@ function createLayerReviewBridgeServer() {
     },
     outputSchema: {
       active: z.boolean(),
+      queue: z.object({
+        count: z.number().int().nonnegative(),
+        jobIds: z.array(z.string()),
+      }),
       dispatch: z.union([
         z.object({
           jobId: z.string(),
@@ -340,11 +345,14 @@ function createLayerReviewBridgeServer() {
       ? await claimNextForegroundDispatch(jobsDirectory, {
           bridgeId,
           workbenchSessionId,
-        })
+      })
       : null;
+    const queue = active
+      ? await readForegroundQueueSummary(jobsDirectory, { bridgeId, workbenchSessionId })
+      : { count: 0, jobIds: [] };
     return {
       content: [],
-      structuredContent: { active, dispatch },
+      structuredContent: { active, dispatch, queue },
     };
   });
   registerAppTool(server, 'mark_layer_review_foreground_dispatch_delivered', {

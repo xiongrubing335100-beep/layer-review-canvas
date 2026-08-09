@@ -286,6 +286,27 @@ test('polling automatically sends a foreground job to the current conversation',
   assert.equal(pending.at(-1).jobId, 'layer-job-1');
 });
 
+test('the conversation bridge shows queued work instead of an empty ready state', async () => {
+  const statuses = [];
+  const dispatcher = bridgeWidget.createForegroundDispatcher({
+    bridgeId: 'bridge-current',
+    readDispatch: async () => ({
+      active: true,
+      dispatch: null,
+      queue: { count: 2, jobIds: ['layer-job-1', 'layer-job-2'] },
+    }),
+    setBridgeStatus: (label, detail) => statuses.push([label, detail]),
+    setPendingDispatch: () => {},
+  });
+
+  await dispatcher.poll();
+
+  assert.deepEqual(statuses.at(-1), [
+    '队列中有 2 个任务',
+    '当前任务完成后，会话会按提交顺序自动发送下一项。',
+  ]);
+});
+
 test('the listener keeps polling and sends the next queued task after the active task is terminal', async () => {
   const dispatches = [
     { jobId: 'layer-job-1', prompt: 'first', claimToken: 'claim-1' },

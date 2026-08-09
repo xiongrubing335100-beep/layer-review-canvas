@@ -89,11 +89,13 @@ export async function callMcpAppTool(name, args = {}) {
 }
 
 export async function sendMcpAppFollowUpMessage(prompt) {
+  const text = String(prompt ?? '').trim();
+  if (!text) throw new Error('不能发送空的拆分消息');
   const app = await waitForNativeMcpApp();
   if (app) {
     const result = await app.sendMessage({
       role: 'user',
-      content: [{ type: 'text', text: String(prompt || '') }],
+      content: [{ type: 'text', text }],
     });
     if (result?.isError) {
       const detail = result.content?.find((item) => item.type === 'text')?.text;
@@ -108,7 +110,7 @@ export async function sendMcpAppFollowUpMessage(prompt) {
     throw error;
   }
   const result = await sendFollowUpMessage({
-    prompt: String(prompt || ''),
+    prompt: text,
     scrollToBottom: true,
   });
   if (result?.isError) {

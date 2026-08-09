@@ -4,7 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isExecutionFeatureEnabled } from './src/execution-features.js';
-import { transparencyStrategy } from './src/split-execution.js';
+import { RMBG_MODEL, transparencyStrategy } from './src/split-execution.js';
 
 const startupTimeoutMs = 8_000;
 const requestTimeoutMs = 20_000;
@@ -315,6 +315,22 @@ export function buildWorkbenchPrompt({
     .filter((layer) => layer.remove_background && layerTransparencyStrategy(layer) === 'rembg')
     .map((layer) => layer.name || layer.id)
     .filter(Boolean);
+  const targetedRepairLayers = (plan?.layers || [])
+    .filter((layer) => (
+      layer.execution_route_hint === 'targeted_repair'
+      && layerTransparencyStrategy(layer) !== 'codex_rgba'
+    ))
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const nativeResolutionRmbgLayers = (plan?.layers || [])
+    .filter((layer) => (
+      layer.execution_route_hint === 'targeted_repair'
+      && layerTransparencyStrategy(layer) === 'rembg'
+      && (!layer.output_resolution_policy
+        || layer.output_resolution_policy === 'native_imagegen_content')
+    ))
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
   const previewLines = (plan?.layers || [])
     .map((layer) => {
       const previewPath = layer.review_snapshot?.local_crop_path;
@@ -345,8 +361,14 @@ export function buildWorkbenchPrompt({
     codexRgbaLayers.length
       ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
       : '',
+    targetedRepairLayers.length
+      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持整张标准画布不变。将原生结果保存到 generated/ 后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。返回画布尺寸变化则失败；禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
+      : '',
+    nativeResolutionRmbgLayers.length
+      ? `高分辨率透明输出层：${nativeResolutionRmbgLayers.join('、')}。最终处理器必须让原生 content_region 分辨率直接进入 BRIA RMBG，并回传同分辨率透明 PNG；框选宽高仅作为画布逻辑尺寸和定位元数据。禁止在 RMBG 前缩小到框选尺寸。`
+      : '',
     rmbgLayers.length
-      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} "${rmbgScriptPath}" --input <中间PNG> --output <final PNG> --model isnet-general-use --expected-width <宽> --expected-height <高>。`
+      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} "${rmbgScriptPath}" --input <中间PNG> --output <final PNG> --model ${RMBG_MODEL} --expected-width <宽> --expected-height <高>。`
       : '',
     rmbgLayers.length
       ? 'RMBG 成功并通过结构验收后才写入 final；禁止用色差、轮廓、膨胀、模糊或自制蒙版代替。'

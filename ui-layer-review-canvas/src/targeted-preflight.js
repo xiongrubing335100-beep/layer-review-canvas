@@ -89,6 +89,10 @@ export async function buildTargetedExecutionSpec({
       removeBackground: Boolean(layer.remove_background),
       sourceRegionPixels: output,
     });
+    const transparency = layer.transparency_strategy || inferredMetadata.transparency_strategy;
+    if (route === 'targeted_repair' && transparency === 'codex_rgba') {
+      throw fail(`${layerName} 不支持 targeted_repair 与 codex_rgba 组合；文字透明层必须使用 codex_rgba 路线`);
+    }
     const repairEngine = layer.repair_engine ?? inferredMetadata.repair_engine;
     const maximumImagegenCalls = Number(layer.maximum_imagegen_calls ?? inferredMetadata.maximum_imagegen_calls);
     if (!Number.isInteger(maximumImagegenCalls) || maximumImagegenCalls < 0) {
@@ -107,13 +111,16 @@ export async function buildTargetedExecutionSpec({
         ? inferredMetadata.requires_global_context
         : Boolean(layer.requires_global_context),
       maximum_imagegen_calls: maximumImagegenCalls,
-      transparency_strategy: layer.transparency_strategy || inferredMetadata.transparency_strategy,
+      transparency_strategy: transparency,
       rmbg_required: Boolean(layer.rmbg_required ?? inferredMetadata.rmbg_required),
       structure_validation_required: Boolean(
         layer.structure_validation_required ?? inferredMetadata.structure_validation_required
       ),
       imagegen_input_kind: layer.imagegen_input_kind ?? inferredMetadata.imagegen_input_kind,
       imagegen_canvas_policy: layer.imagegen_canvas_policy ?? inferredMetadata.imagegen_canvas_policy,
+      output_resolution_policy: layer.output_resolution_policy
+        ?? inferredMetadata.output_resolution_policy
+        ?? 'logical_crop',
       expected_output: output,
       repair_regions: repairRegionsValue,
       repair_region_source: layer.repair_region_source || null,

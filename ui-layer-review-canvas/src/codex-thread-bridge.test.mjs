@@ -53,7 +53,7 @@ test('remove-background finalization is delegated to RMBG after Codex finishes t
     },
   });
   assert.match(prompt, /finalize-rmbg\.py/);
-  assert.match(prompt, /isnet-general-use/);
+  assert.match(prompt, /bria-rmbg/);
   assert.match(prompt, /Codex 最终拆分结果/);
   assert.match(prompt, /写入 final/);
 });
@@ -85,7 +85,7 @@ test('title background removal is routed to visible Codex RGBA without RMBG', ()
   assert.match(prompt, /黑底白主体语义 matte/);
   assert.match(prompt, /--imagegen-mapping/);
   assert.match(prompt, /不得调用 RMBG/);
-  assert.doesNotMatch(prompt, /--model isnet-general-use/);
+  assert.doesNotMatch(prompt, /--model bria-rmbg/);
 });
 
 test('fast ImageGen routes accept a clean first candidate and retry only after failure', () => {
@@ -100,6 +100,47 @@ test('fast ImageGen routes accept a clean first candidate and retry only after f
   assert.match(prompt, /仅在失败时允许一次定向 ImageGen 重试/);
   assert.match(prompt, /第二次仍失败则停止/);
   assert.match(prompt, /禁止绕过尺寸校验/);
+});
+
+test('targeted repair prompts require the fixed ImageGen canvas mapping', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      layers: [{
+        id: 'component',
+        name: 'UI 组件 1',
+        execution_mode: 'fast',
+        execution_route_hint: 'targeted_repair',
+      }],
+    },
+  });
+
+  assert.match(prompt, /定向修复层：UI 组件 1/);
+  assert.match(prompt, /prepare-targeted-imagegen-canvas\.py/);
+  assert.match(prompt, /标准参考画布/);
+  assert.match(prompt, /--imagegen-mapping/);
+  assert.match(prompt, /返回画布尺寸变化则失败/);
+});
+
+test('targeted repair RMBG prompt keeps the native ImageGen content resolution', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      layers: [{
+        id: 'component',
+        name: 'UI 组件 1',
+        execution_mode: 'fast',
+        execution_route_hint: 'targeted_repair',
+        remove_background: true,
+        transparency_strategy: 'rembg',
+        output_resolution_policy: 'native_imagegen_content',
+      }],
+    },
+  });
+
+  assert.match(prompt, /原生 content_region 分辨率直接进入 BRIA RMBG/);
+  assert.match(prompt, /框选宽高仅作为画布逻辑尺寸/);
+  assert.match(prompt, /禁止在 RMBG 前缩小/);
 });
 
 test('completed finalization is the final tool call in the Codex turn', () => {

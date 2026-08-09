@@ -31,7 +31,7 @@ npm run setup
 
 初始化会完成三件事：
 
-1. 探测 Python 3.10+，安装 `rembg[cpu]` 并下载、校验 `isnet-general-use` 模型；
+1. 探测 Python 3.10+，安装 `rembg[cpu]` 并下载、校验 BRIA RMBG 2.0（`bria-rmbg`）模型；
 2. 在用户目录注册 Imvia Layer 本地插件；
 3. 写入该用户下载目录、插件启动 Node.js 命令和 Python 调用方式对应的运行配置。
 

@@ -78,7 +78,7 @@ test('checked remove-background option appends the mandatory RMBG requirement', 
   assert.match(requirement, /只要卡片底板/);
   assert.match(requirement, /真实透明 RGBA PNG/);
   assert.match(requirement, /RMBG/);
-  assert.match(requirement, /isnet-general-use/);
+  assert.match(requirement, /bria-rmbg/);
 });
 
 test('text categories require direct Codex RGBA instead of RMBG', () => {
@@ -91,7 +91,7 @@ test('text categories require direct Codex RGBA instead of RMBG', () => {
   assert.match(requirement, /直接拆出/);
   assert.match(requirement, /真实透明 RGBA PNG/);
   assert.match(requirement, /不得使用 RMBG/);
-  assert.doesNotMatch(requirement, /isnet-general-use/);
+  assert.doesNotMatch(requirement, /bria-rmbg/);
 });
 
 test('unchecked remove-background option does not append an alpha requirement', () => {
@@ -130,6 +130,14 @@ test('chooses Codex RGBA for title and ordinary text cutouts', () => {
   assert.equal(classifyExecutionRoute({
     category: 'ordinaryText',
     requirement: '保留全部文字',
+    removeBackground: true,
+  }), 'codex_rgba');
+});
+
+test('text transparency stays on Codex RGBA even when the text requirement mentions repair', () => {
+  assert.equal(classifyExecutionRoute({
+    category: 'kvTitle',
+    requirement: '补全被遮挡的标题并保留完整字形',
     removeBackground: true,
   }), 'codex_rgba');
 });
@@ -256,6 +264,25 @@ test('buildRouteMetadata uses crop-only context and one conditional retry for si
   assert.equal(metadata.repair_engine, 'imagegen');
   assert.equal(metadata.requires_global_context, false);
   assert.equal(metadata.maximum_imagegen_calls, 2);
+});
+
+test('targeted repair with RMBG declares native ImageGen content resolution output', () => {
+  const metadata = buildRouteMetadata({
+    category: 'uiComponent',
+    requirement: '移除普通文字并保持底板结构',
+    executionMode: 'fast',
+    executionRoute: 'targeted_repair',
+    removeBackground: true,
+    sourceRegionPixels: { x: 422, y: 1174, width: 156, height: 85 },
+  });
+
+  assert.equal(metadata.output_resolution_policy, 'native_imagegen_content');
+  assert.deepEqual(metadata.expected_output, {
+    width: 156,
+    height: 85,
+    original_source_x: 422,
+    original_source_y: 1174,
+  });
 });
 
 test('buildRouteMetadata requires global context for occlusion, backgrounds, and quality mode', () => {

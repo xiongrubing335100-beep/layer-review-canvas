@@ -54,13 +54,42 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         with Image.open(mapping["reference_path"]) as image:
             self.assertEqual(image.size, (1536, 1024))
 
+    def test_prepares_fixed_targeted_repair_canvas_with_explicit_content_mapping(self):
+        preflight_path = self.job / "preflight.json"
+        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+        preflight["layers"][0].update({
+            "execution_route_hint": "targeted_repair",
+            "expected_output": {"width": 177, "height": 87},
+        })
+        Image.new("RGBA", (177, 87), (245, 80, 60, 255)).save(self.crop)
+        preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+        mapping_path, mapping = MODULE.prepare_canvas(
+            self.job_id,
+            "title-one",
+            jobs_root=self.root,
+        )
+
+        self.assertTrue(mapping_path.is_file())
+        self.assertEqual(mapping["generated_input_kind"], "targeted_repair_canvas")
+        self.assertEqual(mapping["canvas"], {"width": 1536, "height": 1024})
+        self.assertEqual(mapping["content_region"], {
+            "x": 0,
+            "y": 134,
+            "width": 1536,
+            "height": 755,
+        })
+        self.assertEqual(mapping["expected_output"], {"width": 177, "height": 87})
+        with Image.open(mapping["reference_path"]) as image:
+            self.assertEqual(image.size, (1536, 1024))
+
     def test_rejects_non_codex_rgba_route(self):
         preflight_path = self.job / "preflight.json"
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
         preflight["layers"][0]["execution_route_hint"] = "alpha_extract"
         preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
 
-        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba"):
+        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba or targeted_repair"):
             MODULE.prepare_canvas(self.job_id, "title-one", jobs_root=self.root)
 
 

@@ -9,6 +9,7 @@ import {
   claimNextForegroundDispatch,
   enqueueForegroundDispatch,
   markForegroundDispatchDelivered,
+  readForegroundQueueSummary,
   readNextForegroundDispatch,
   releaseForegroundDispatchClaim,
 } from './foreground-dispatch.js';
@@ -36,6 +37,39 @@ test('the oldest pending split is exposed first for a foreground conversation me
     jobId: 'job-1',
     prompt: 'first prompt',
     submittedAt: '2026-07-28T10:00:00.000Z',
+  });
+});
+
+test('the conversation bridge reports pending queue items even while another task is active', async (context) => {
+  const jobsDirectory = await mkdtemp(path.join(os.tmpdir(), 'layer-review-dispatch-'));
+  context.after(() => rm(jobsDirectory, { recursive: true, force: true }));
+  for (const [jobId, submittedAt] of [
+    ['job-active', '2026-07-28T10:00:00.000Z'],
+    ['job-queued', '2026-07-28T10:00:01.000Z'],
+  ]) {
+    const jobDirectory = path.join(jobsDirectory, jobId);
+    await mkdir(jobDirectory);
+    await writeFile(path.join(jobDirectory, 'layer-review-plan.json'), JSON.stringify({
+      job_id: jobId,
+      status: jobId === 'job-active' ? 'sent_to_codex' : 'queued',
+    }));
+    await enqueueForegroundDispatch(jobDirectory, {
+      jobId,
+      prompt: `${jobId} prompt`,
+      submittedAt,
+      targetBridgeId: 'bridge-current',
+      workbenchSessionId: 'workbench-current',
+    });
+  }
+
+  const summary = await readForegroundQueueSummary(jobsDirectory, {
+    bridgeId: 'bridge-current',
+    workbenchSessionId: 'workbench-current',
+  });
+
+  assert.deepEqual(summary, {
+    count: 2,
+    jobIds: ['job-active', 'job-queued'],
   });
 });
 

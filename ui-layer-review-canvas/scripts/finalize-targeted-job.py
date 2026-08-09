@@ -21,6 +21,10 @@ VALIDATION_KEYS = (
 )
 
 CODEX_RGBA_CATEGORIES = {"kvTitle", "ordinaryText", "logo"}
+RMBG_MODEL = "bria-rmbg"
+LANDSCAPE_CANVAS = (1536, 1024)
+PORTRAIT_CANVAS = (1024, 1536)
+SQUARE_CANVAS = (1024, 1024)
 
 
 def now_iso():
@@ -83,14 +87,23 @@ def apply_source_pixel_lock(candidate, source, width, height, source_x, source_y
     if not regions:
         return candidate
     source_crop = source.crop((source_x, source_y, source_x + width, source_y + height)).convert("RGBA")
+    target_width, target_height = candidate.size
+    if source_crop.size != candidate.size:
+        source_crop = source_crop.resize(candidate.size, Image.Resampling.LANCZOS)
     locked = candidate.copy()
-    repair_mask = Image.new("1", (width, height), 0)
+    repair_mask = Image.new("1", candidate.size, 0)
+    scale_x = target_width / width
+    scale_y = target_height / height
     for region in regions:
+        left = round(int(region["x"]) * scale_x)
+        top = round(int(region["y"]) * scale_y)
+        right = round((int(region["x"]) + int(region["width"])) * scale_x)
+        bottom = round((int(region["y"]) + int(region["height"])) * scale_y)
         repair_mask.paste(1, (
-            int(region["x"]),
-            int(region["y"]),
-            int(region["x"]) + int(region["width"]),
-            int(region["y"]) + int(region["height"]),
+            left,
+            top,
+            right,
+            bottom,
         ))
     locked.paste(source_crop, mask=Image.eval(repair_mask, lambda value: 1 - value))
     return locked
@@ -102,7 +115,7 @@ def run_rmbg(input_path, output_path, width, height, rmbg_script):
         str(rmbg_script),
         "--input", str(input_path),
         "--output", str(output_path),
-        "--model", "isnet-general-use",
+        "--model", RMBG_MODEL,
         "--expected-width", str(width),
         "--expected-height", str(height),
     ], check=True, capture_output=True, text=True)
@@ -148,6 +161,28 @@ def validate_source_rgb_fidelity(candidate, source_crop):
         raise ValueError("Codex RGBA changed reliable source glyph colors or material")
 
 
+def canonical_imagegen_geometry(width, height):
+    ratio = width / height
+    if ratio > 1.2:
+        canvas_width, canvas_height = LANDSCAPE_CANVAS
+    elif ratio < 1 / 1.2:
+        canvas_width, canvas_height = PORTRAIT_CANVAS
+    else:
+        canvas_width, canvas_height = SQUARE_CANVAS
+    scale = min(canvas_width / width, canvas_height / height)
+    region_width = max(1, round(width * scale))
+    region_height = max(1, round(height * scale))
+    return {
+        "canvas": {"width": canvas_width, "height": canvas_height},
+        "content_region": {
+            "x": (canvas_width - region_width) // 2,
+            "y": (canvas_height - region_height) // 2,
+            "width": region_width,
+            "height": region_height,
+        },
+    }
+
+
 def load_imagegen_mapping(mapping_path, generated_root, job_id, layer_id, width, height):
     resolved = Path(mapping_path).resolve()
     if not contained(resolved, generated_root):
@@ -157,19 +192,34 @@ def load_imagegen_mapping(mapping_path, generated_root, job_id, layer_id, width,
     mapping = json.loads(resolved.read_text(encoding="utf-8"))
     if mapping.get("job_id") != job_id or str(mapping.get("layer_id")) != str(layer_id):
         raise ValueError("ImageGen mapping does not match the current job and layer")
-    if mapping.get("generated_input_kind") != "codex_alpha_matte":
+    if mapping.get("generated_input_kind") not in ("codex_alpha_matte", "targeted_repair_canvas"):
         raise ValueError("unsupported ImageGen mapping kind")
     expected = mapping.get("expected_output") or {}
     if (int(expected.get("width", 0)), int(expected.get("height", 0))) != (width, height):
         raise ValueError("ImageGen mapping expected output does not match the plan")
+    if mapping.get("generated_input_kind") == "targeted_repair_canvas":
+        if mapping.get("execution_route") != "targeted_repair":
+            raise ValueError("targeted repair mapping execution route does not match the plan")
+        canonical = canonical_imagegen_geometry(width, height)
+        if mapping.get("canvas") != canonical["canvas"] or mapping.get("content_region") != canonical["content_region"]:
+            raise ValueError("targeted repair mapping does not match canonical canvas geometry")
     return mapping
 
 
-def compose_source_locked_matte(candidate, source_crop, mapping, width, height):
+def crop_mapped_imagegen_canvas(
+    candidate,
+    mapping,
+    width,
+    height,
+    label,
+    preserve_content_resolution=False,
+):
     canvas = mapping.get("canvas") or {}
     canvas_size = (int(canvas.get("width", 0)), int(canvas.get("height", 0)))
     if candidate.size != canvas_size:
-        raise ValueError(f"ImageGen matte must preserve the prepared {canvas_size[0]}x{canvas_size[1]} canvas")
+        raise ValueError(
+            f"{label} must preserve the prepared {canvas_size[0]}x{canvas_size[1]} canvas"
+        )
 
     region = mapping.get("content_region") or {}
     x = int(region.get("x", -1))
@@ -181,14 +231,26 @@ def compose_source_locked_matte(candidate, source_crop, mapping, width, height):
         or x + region_width > canvas_size[0]
         or y + region_height > canvas_size[1]
     ):
-        raise ValueError("ImageGen matte content region is invalid")
+        raise ValueError("ImageGen content region is invalid")
 
-    alpha = candidate.convert("L").crop((x, y, x + region_width, y + region_height))
+    content = candidate.crop((x, y, x + region_width, y + region_height))
+    if not preserve_content_resolution and content.size != (width, height):
+        content = content.resize((width, height), Image.Resampling.LANCZOS)
+    return content
+
+
+def compose_source_locked_matte(candidate, source_crop, mapping, width, height):
+    content = crop_mapped_imagegen_canvas(
+        candidate,
+        mapping,
+        width,
+        height,
+        "ImageGen matte",
+    )
+    alpha = content.convert("L")
     alpha_min, alpha_max = alpha.getextrema()
     if alpha_min > 16 or alpha_max < 239:
         raise ValueError("ImageGen matte must contain a black background and white subject")
-    if alpha.size != (width, height):
-        alpha = alpha.resize((width, height), Image.Resampling.LANCZOS)
 
     source_locked = source_crop.copy()
     source_locked.putalpha(alpha)
@@ -246,10 +308,16 @@ def finalize_job(
         with Image.open(generated_path) as image:
             candidate = image.convert("RGBA")
         transparency = resolve_transparency_strategy(layer)
+        route = layer.get("execution_route_hint")
+        output_resolution_policy = layer.get("output_resolution_policy") or (
+            "native_imagegen_content"
+            if route == "targeted_repair" and transparency == "rembg"
+            else "logical_crop"
+        )
+        if route == "targeted_repair" and imagegen_mapping is None:
+            raise ValueError("targeted_repair requires --imagegen-mapping")
         mapping = None
         if imagegen_mapping is not None:
-            if transparency != "codex_rgba":
-                raise ValueError("ImageGen mapping is only valid for codex_rgba")
             mapping = load_imagegen_mapping(
                 imagegen_mapping,
                 generated_root,
@@ -258,6 +326,24 @@ def finalize_job(
                 width,
                 height,
             )
+            mapping_kind = mapping.get("generated_input_kind")
+            if transparency == "codex_rgba":
+                if mapping_kind != "codex_alpha_matte":
+                    raise ValueError("Codex RGBA requires a codex_alpha_matte mapping")
+            elif route == "targeted_repair":
+                if mapping_kind != "targeted_repair_canvas":
+                    raise ValueError("targeted_repair requires a targeted_repair_canvas mapping")
+                preserve_native_rmbg = output_resolution_policy == "native_imagegen_content"
+                candidate = crop_mapped_imagegen_canvas(
+                    candidate,
+                    mapping,
+                    width,
+                    height,
+                    "ImageGen targeted repair",
+                    preserve_content_resolution=preserve_native_rmbg,
+                )
+            else:
+                raise ValueError("ImageGen mapping is only valid for codex_rgba or targeted_repair")
         elif candidate.size != (width, height):
             raise ValueError(f"ImageGen input must already be {width}x{height}")
         regions = validate_repair_regions(layer, width, height)
@@ -289,19 +375,31 @@ def finalize_job(
             validate_transparent_structure(candidate, "Codex RGBA output")
             validate_source_rgb_fidelity(candidate, source_crop)
         candidate.save(temporary_candidate, format="PNG")
+        asset_width, asset_height = candidate.size
 
         rmbg_required = transparency == "rembg"
         rmbg_started = None
         rmbg_completed = None
         if rmbg_required:
             rmbg_started = clock()
-            rmbg_runner(temporary_candidate, temporary_output, width, height, rmbg_script)
+            rmbg_runner(
+                temporary_candidate,
+                temporary_output,
+                asset_width,
+                asset_height,
+                rmbg_script,
+            )
             rmbg_completed = clock()
             validation_started = clock()
-            final_image = validate_png(temporary_output, width, height, True)
+            final_image = validate_png(temporary_output, asset_width, asset_height, True)
         else:
             validation_started = clock()
-            final_image = validate_png(temporary_candidate, width, height, remove_background)
+            final_image = validate_png(
+                temporary_candidate,
+                asset_width,
+                asset_height,
+                remove_background,
+            )
         if remove_background:
             validate_transparent_structure(final_image, "final PNG")
         final_image.save(temporary_output, format="PNG")
@@ -312,6 +410,14 @@ def finalize_job(
             "execution_route": layer.get("execution_route_hint"),
             "layer_id": layer.get("id") or layer_id,
             "output": str(final_path),
+            "output_resolution_policy": output_resolution_policy,
+            "asset_dimensions": {"width": asset_width, "height": asset_height},
+            "logical_placement": {
+                "x": source_x,
+                "y": source_y,
+                "width": width,
+                "height": height,
+            },
             "timing": {
                 **(plan.get("execution_timing") or {}),
                 "postprocess_started_at": started,
@@ -323,7 +429,7 @@ def finalize_job(
             "validation_results": {key: True for key in VALIDATION_KEYS},
             "rmbg": {
                 "required": rmbg_required,
-                "model": "isnet-general-use" if rmbg_required else None,
+                "model": RMBG_MODEL if rmbg_required else None,
             },
             "transparency": {
                 "strategy": transparency,

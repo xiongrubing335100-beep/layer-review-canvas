@@ -1,5 +1,9 @@
+import os
+
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+
 from rembg import new_session
 
 
-new_session("isnet-general-use")
-print("RMBG isnet-general-use 模型已就绪")
+new_session("bria-rmbg")
+print("BRIA RMBG 2.0（bria-rmbg）模型已就绪")

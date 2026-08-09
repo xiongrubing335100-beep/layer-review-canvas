@@ -6,9 +6,15 @@ function normalizeDispatch(value) {
     : (value || { prompt: '' });
 }
 
+function requireDispatchPrompt(dispatch) {
+  const prompt = String(dispatch?.prompt ?? '').trim();
+  if (!prompt) throw new Error('不能发送空的拆分消息');
+  return prompt;
+}
+
 export function buildUiMessageRequest(value, id = requestId++) {
   const dispatch = normalizeDispatch(value);
-  const content = [{ type: 'text', text: dispatch.prompt }];
+  const content = [{ type: 'text', text: requireDispatchPrompt(dispatch) }];
   const preview = dispatch.presentation?.preview;
   if (preview?.data && preview?.mimeType) {
     content.push({
@@ -105,7 +111,11 @@ export async function sendForegroundMessage(
     error.retryable = false;
     throw error;
   }
-  const result = await connection.sendMessage(dispatch);
+  const normalized = typeof dispatch === 'string' ? { prompt: dispatch } : (dispatch || {});
+  const result = await connection.sendMessage({
+    ...normalized,
+    prompt: requireDispatchPrompt(normalized),
+  });
   if (result?.isError) {
     throw new Error('当前 Codex 任务拒绝接收拆分消息');
   }
@@ -234,6 +244,7 @@ export function createForegroundDispatcher({
   function parseDispatchResult(result) {
     return {
       active: result?.active ?? true,
+      queue: result?.queue || { count: 0, jobIds: [] },
       dispatch: Object.prototype.hasOwnProperty.call(result || {}, 'dispatch')
         ? result.dispatch
         : result,
@@ -354,7 +365,7 @@ export function createForegroundDispatcher({
       if (polling) return;
       polling = true;
       try {
-        const { active, dispatch } = parseDispatchResult(await readDispatch(bridgeId));
+        const { active, dispatch, queue } = parseDispatchResult(await readDispatch(bridgeId));
         if (!active) {
           setBridgeStatus(
             '当前监听已被替代',
@@ -381,7 +392,15 @@ export function createForegroundDispatcher({
             pendingDispatch = null;
             setPendingDispatch(null);
           }
-          setBridgeStatus('会话桥接已就绪', '在工作台点击“拆分”，消息会自动发送到最近的当前对话。');
+          if (queue.count > 0) {
+            setBridgeStatus(
+              `队列中有 ${queue.count} 个任务`,
+              '当前任务完成后，会话会按提交顺序自动发送下一项。',
+              'sending',
+            );
+          } else {
+            setBridgeStatus('会话桥接已就绪', '在工作台点击“拆分”，消息会自动发送到最近的当前对话。');
+          }
           return;
         }
         if (sameDispatch(pendingDispatch, dispatch)) return;

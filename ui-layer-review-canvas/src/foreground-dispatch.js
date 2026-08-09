@@ -150,6 +150,20 @@ export async function readNextForegroundDispatch(jobsDirectory) {
   } : null;
 }
 
+export async function readForegroundQueueSummary(
+  jobsDirectory,
+  { bridgeId = null, workbenchSessionId = null } = {},
+) {
+  const records = await readPendingDispatches(jobsDirectory);
+  const visible = records.filter(({ dispatch }) => (
+    isDispatchForListener(dispatch, bridgeId, workbenchSessionId)
+  ));
+  return {
+    count: visible.length,
+    jobIds: visible.map(({ dispatch }) => dispatch.jobId),
+  };
+}
+
 export async function claimNextForegroundDispatch(jobsDirectory, {
   bridgeId,
   workbenchSessionId = null,

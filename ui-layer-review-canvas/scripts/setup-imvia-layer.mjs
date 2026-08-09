@@ -61,7 +61,7 @@ try {
   process.stdout.write(`使用 Python ${python.version}：${[python.command, ...python.args].join(' ')}\n`);
   process.stdout.write('1/3 安装 RMBG 依赖…\n');
   await run(python.command, [...python.args, '-m', 'pip', 'install', '-r', 'requirements-rmbg.txt']);
-  process.stdout.write('2/3 下载并校验 isnet-general-use 模型…\n');
+  process.stdout.write('2/3 下载并校验 BRIA RMBG 2.0（bria-rmbg）模型…\n');
   await run(python.command, [...python.args, 'scripts/warm-rmbg.py']);
   process.stdout.write('3/3 注册 Imvia Layer 插件…\n');
   await run(process.execPath, ['scripts/install-codex-plugin.mjs'], {

@@ -3798,9 +3798,10 @@ body,
 /* Empty-entry experience and monochrome workbench chrome. */
 .brand-mark {
   color: #181818;
-  background: #ededed;
-  box-shadow: 0 7px 18px rgba(0, 0, 0, .24);
-  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  overflow: visible;
 }
 .brand-mark img {
   width: 100%;
@@ -4033,6 +4034,12 @@ body,
   align-items: center;
   gap: 0;
 }
+
+/* In canvas mode the side rails are intentionally closed. Keep their grid
+   tracks closed too; otherwise their empty background appears as black
+   blocks on both sides of the infinite canvas at medium widths. */
+.workspace.workspace--left-collapsed { --left-width: 0px; }
+.workspace.workspace--right-collapsed { --right-width: 0px; }
 
 .product-identity .brand-lockup {
   width: 178px;
