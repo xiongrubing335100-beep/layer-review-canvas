@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPenEditorState, focusPenOverlayOwner, reducePenEditor } from './pen-editor-state.js';
+import {
+  createPenEditorState,
+  focusPenOverlayOwner,
+  reducePenEditor,
+  syncPenEditorStateFromProps,
+} from './pen-editor-state.js';
 
 function svgPoint(point) {
   return { x: point.x * 100, y: point.y * 100 };
@@ -120,21 +125,23 @@ export function PenPathOverlay({
   const initialState = () => ({ ...createPenEditorState(paths), draft, selection });
   const [editorState, setEditorState] = useState(initialState);
   const stateRef = useRef(editorState);
-  const emittedRef = useRef(null);
+  const emittedRef = useRef([]);
   const svgRef = useRef(null);
   const dragRef = useRef(null);
   const [previewPoint, setPreviewPoint] = useState(null);
 
   useEffect(() => {
-    const emitted = emittedRef.current;
-    const alreadyEmitted = emitted
-      && paths === emitted.paths
-      && draft === emitted.draft
-      && selection === emitted.selection;
-    if (alreadyEmitted) return;
-    const next = { ...createPenEditorState(paths), draft, selection };
-    stateRef.current = next;
-    setEditorState(next);
+    const synced = syncPenEditorStateFromProps({
+      current: stateRef.current,
+      pendingEmissions: emittedRef.current,
+      paths,
+      draft,
+      selection,
+    });
+    emittedRef.current = synced.pendingEmissions;
+    if (synced.state === stateRef.current) return;
+    stateRef.current = synced.state;
+    setEditorState(synced.state);
   }, [paths, draft, selection]);
 
   const apply = (action) => {
@@ -148,7 +155,7 @@ export function PenPathOverlay({
       selection: next.selection,
       history: next.history,
     };
-    emittedRef.current = output;
+    emittedRef.current = [...emittedRef.current, output];
     onChange?.(output);
     return next;
   };

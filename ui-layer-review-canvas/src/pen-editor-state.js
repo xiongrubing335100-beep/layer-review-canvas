@@ -76,6 +76,30 @@ export function createPenEditorState(paths = []) {
   };
 }
 
+export function syncPenEditorStateFromProps({
+  current,
+  pendingEmissions = [],
+  paths = [],
+  draft = null,
+  selection = null,
+}) {
+  const emissionIndex = pendingEmissions.findIndex((emission) => (
+    paths === emission.paths
+    && draft === emission.draft
+    && selection === emission.selection
+  ));
+  if (emissionIndex >= 0) {
+    return {
+      state: current,
+      pendingEmissions: pendingEmissions.slice(emissionIndex + 1),
+    };
+  }
+  return {
+    state: { ...createPenEditorState(paths), draft, selection },
+    pendingEmissions: [],
+  };
+}
+
 export function reducePenEditor(state, action = {}) {
   const current = state ?? createPenEditorState();
 

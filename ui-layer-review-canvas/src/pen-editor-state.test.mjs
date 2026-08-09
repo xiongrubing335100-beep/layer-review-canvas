@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appendAnchor, closePenPath, createPenPath } from './pen-path.js';
-import { createPenEditorState, focusPenOverlayOwner, reducePenEditor } from './pen-editor-state.js';
+import * as penEditorState from './pen-editor-state.js';
+
+const { createPenEditorState, focusPenOverlayOwner, reducePenEditor } = penEditorState;
 
 function addClick(state, x, y, kind = 'foreground') {
   const down = reducePenEditor(state, { type: 'pointer-down', point: { x, y }, kind });
@@ -13,6 +15,23 @@ function closedFixture() {
   path = appendAnchor(path, { x: .9, y: .1 });
   path = appendAnchor(path, { x: .9, y: .9 });
   return closePenPath(path);
+}
+
+function fourAnchorFixture() {
+  let path = createPenPath({ id: 'four', kind: 'boundary', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  path = appendAnchor(path, { x: .9, y: .9 });
+  path = appendAnchor(path, { x: .1, y: .9 });
+  return closePenPath(path);
+}
+
+function emittedOutput(state) {
+  return {
+    paths: state.paths,
+    draft: state.draft,
+    selection: state.selection,
+    history: state.history,
+  };
 }
 
 test('clicks append anchors and clicking the first anchor closes the draft', () => {
@@ -93,4 +112,39 @@ test('focuses the owning SVG before a child path control interaction', () => {
 
   assert.equal(focusPenOverlayOwner(anchor), overlay);
   assert.equal(focusCalls, 1);
+});
+
+test('stale self-emitted props during a drag do not reset undo history', () => {
+  assert.equal(typeof penEditorState.syncPenEditorStateFromProps, 'function');
+  const original = fourAnchorFixture();
+  const initial = reducePenEditor(createPenEditorState([original]), {
+    type: 'select-anchor', pathId: original.id, anchorIndex: 0,
+  });
+  const firstMove = reducePenEditor(initial, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .2, y: .2 },
+  });
+  const latestMove = reducePenEditor(firstMove, {
+    type: 'move-anchor', pathId: original.id, anchorIndex: 0, point: { x: .3, y: .3 }, transient: true,
+  });
+  const firstOutput = emittedOutput(firstMove);
+  const latestOutput = emittedOutput(latestMove);
+
+  const staleSync = penEditorState.syncPenEditorStateFromProps({
+    current: latestMove,
+    pendingEmissions: [firstOutput, latestOutput],
+    ...firstOutput,
+  });
+  assert.equal(staleSync.state, latestMove);
+  assert.deepEqual(staleSync.pendingEmissions, [latestOutput]);
+
+  const latestSync = penEditorState.syncPenEditorStateFromProps({
+    current: staleSync.state,
+    pendingEmissions: staleSync.pendingEmissions,
+    ...latestOutput,
+  });
+  const undone = reducePenEditor(latestSync.state, { type: 'undo' });
+
+  assert.equal(latestSync.state, latestMove);
+  assert.deepEqual(latestSync.pendingEmissions, []);
+  assert.deepEqual(undone.paths[0].anchors[0], original.anchors[0]);
 });
