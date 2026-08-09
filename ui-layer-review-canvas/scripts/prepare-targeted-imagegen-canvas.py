@@ -7,8 +7,10 @@ from PIL import Image
 
 try:
     from scripts.safe_layer_path import contained_child, safe_layer_id
+    from scripts.result_refinement_roi import build_result_refinement_manifest
 except ModuleNotFoundError:
     from safe_layer_path import contained_child, safe_layer_id
+    from result_refinement_roi import build_result_refinement_manifest
 
 
 LANDSCAPE_CANVAS = (1536, 1024)
@@ -78,6 +80,16 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     if crop.size != (width, height):
         raise ValueError(f"targeted crop must already be {width}x{height}")
 
+    if route == "result_refinement":
+        generated_directory = contained_child(job_directory, "generated")
+        return build_result_refinement_manifest(
+            job_id,
+            layer_id,
+            layer,
+            crop,
+            generated_directory,
+        )
+
     canvas_width, canvas_height = choose_canvas(width, height)
     scale = min(canvas_width / width, canvas_height / height)
     roi_width = max(1, round(width * scale))
@@ -85,11 +97,8 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     roi_x = (canvas_width - roi_width) // 2
     roi_y = (canvas_height - roi_height) // 2
 
-    if route == "result_refinement":
-        canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
-    else:
-        background = (0, 0, 0) if route == "codex_rgba" else average_corner_color(crop)
-        canvas = Image.new("RGBA", (canvas_width, canvas_height), (*background, 255))
+    background = (0, 0, 0) if route == "codex_rgba" else average_corner_color(crop)
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (*background, 255))
     resized = crop.resize((roi_width, roi_height), Image.Resampling.LANCZOS)
     canvas.alpha_composite(resized, (roi_x, roi_y))
 
@@ -97,8 +106,7 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     generated_directory.mkdir(parents=True, exist_ok=True)
     reference_path = contained_child(generated_directory, f"{layer_id}-imagegen-reference.png")
     mapping_path = contained_child(generated_directory, f"{layer_id}-imagegen-mapping.json")
-    reference = canvas if route == "result_refinement" else canvas.convert("RGB")
-    reference.save(reference_path, format="PNG")
+    canvas.convert("RGB").save(reference_path, format="PNG")
 
     mapping = {
         "version": 1,
@@ -107,7 +115,6 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
         "generated_input_kind": {
             "codex_rgba": "codex_alpha_matte",
             "targeted_repair": "targeted_repair_canvas",
-            "result_refinement": "result_refinement_canvas",
         }[route],
         "execution_route": route,
         "reference_path": str(reference_path),
@@ -119,10 +126,6 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
             "height": roi_height,
         },
         "expected_output": {"width": width, "height": height},
-        **({
-            "base_png_dimensions": {"width": crop.width, "height": crop.height},
-            "preserve_existing_alpha": True,
-        } if route == "result_refinement" else {}),
     }
     atomic_json(mapping_path, mapping)
     return mapping_path, mapping

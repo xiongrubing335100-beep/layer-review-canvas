@@ -13,6 +13,18 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+ROI_POLICY = {
+    "strategy": "per_repair_path_native_tiles",
+    "scale_mode": "native_1_to_1",
+    "context_padding_ratio": 0.08,
+    "minimum_padding_ratio": 0.03,
+    "maximum_padding_ratio": 0.15,
+    "warn_coverage_ratio": 0.4,
+    "block_coverage_ratio": 0.7,
+    "tile_overlap_pixels": 32,
+}
+
+
 class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="prepare-imagegen-canvas-test-"))
@@ -90,6 +102,14 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
             "execution_route_hint": "result_refinement",
             "transparency_strategy": "preserve_existing_alpha",
             "expected_output": {"width": 4, "height": 2},
+            "refinement_operation": {
+                "mode": "full_canvas_explicit",
+                "subject_path_ids": [],
+                "alpha_include_path_ids": [],
+            },
+            "roi_policy": dict(ROI_POLICY),
+            "repair_path_ids": [],
+            "expected_roi_tile_count": 1,
             "mask_annotations": [],
         })
         base = Image.new("RGBA", (4, 2), (25, 50, 75, 255))
@@ -104,21 +124,30 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         )
 
         self.assertTrue(mapping_path.is_file())
-        self.assertEqual(mapping["generated_input_kind"], "result_refinement_canvas")
+        self.assertEqual(mapping["version"], 2)
+        self.assertEqual(mapping["generated_input_kind"], "result_refinement_roi_manifest")
         self.assertEqual(mapping["execution_route"], "result_refinement")
         self.assertEqual(mapping["base_png_dimensions"], {"width": 4, "height": 2})
-        self.assertEqual(mapping["content_region"], {
+        self.assertEqual(len(mapping["roi_jobs"]), 1)
+        roi_job = mapping["roi_jobs"][0]
+        self.assertEqual(roi_job["base_region"], {
             "x": 0,
-            "y": 128,
-            "width": 1536,
-            "height": 768,
+            "y": 0,
+            "width": 4,
+            "height": 2,
         })
-        with Image.open(mapping["reference_path"]) as reference:
+        self.assertEqual(roi_job["content_region"], {
+            "x": 766,
+            "y": 511,
+            "width": 4,
+            "height": 2,
+        })
+        with Image.open(roi_job["reference_path"]) as reference:
             self.assertEqual(reference.format, "PNG")
             self.assertEqual(reference.mode, "RGBA")
             self.assertEqual(reference.size, (1536, 1024))
             self.assertEqual(reference.getpixel((0, 0)), (0, 0, 0, 0))
-            self.assertLess(reference.getpixel((64, 192))[3], 255)
+            self.assertEqual(reference.getpixel((766, 511)), (1, 2, 3, 0))
 
     def test_rejects_non_codex_rgba_route(self):
         preflight_path = self.job / "preflight.json"
