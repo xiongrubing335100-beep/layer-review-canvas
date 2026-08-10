@@ -460,6 +460,7 @@ function ResultPreview({
   sourceSize,
   canvasSize = null,
   authoritativeCanvas = false,
+  expanded = false,
   compact = false,
   className = '',
   previewRef,
@@ -475,7 +476,14 @@ function ResultPreview({
   const aspect = Math.max(0.12, previewPixels.width / Math.max(1, previewPixels.height));
   const compactWidth = aspect >= 38 / 42 ? 38 : Math.max(8, 42 * aspect);
   const compactHeight = aspect >= 38 / 42 ? Math.max(8, 38 / aspect) : 42;
-  const maxPreviewHeight = className.includes('guided-result') ? 300 : className.includes('node') ? 118 : null;
+  const expandedHeight = typeof window === 'undefined'
+    ? 720
+    : Math.max(420, window.innerHeight - 220);
+  const maxPreviewHeight = expanded
+    ? expandedHeight
+    : className.includes('guided-result')
+      ? 300
+      : className.includes('node') ? 118 : null;
   const maxPreviewWidth = compact ? null : resultPreviewMaxWidth(previewPixels, maxPreviewHeight);
   const imageStyle = authoritativeCanvas || !isFullCanvas
     ? { inset: 0, width: '100%', height: '100%', objectFit: 'contain' }
@@ -581,6 +589,7 @@ function App() {
   const [clockNow, setClockNow] = useState(Date.now());
   const [candidateContext, setCandidateContext] = useState(null);
   const [candidatePreviewExpanded, setCandidatePreviewExpanded] = useState(false);
+  const [resultPreviewExpanded, setResultPreviewExpanded] = useState(false);
   const [resultViewer, setResultViewer] = useState(null);
   const [resultEditing, setResultEditing] = useState(false);
   const [resultEditState, dispatchResultEdit] = useReducer(
@@ -1143,6 +1152,15 @@ function App() {
   }, [candidatePreviewExpanded]);
 
   useEffect(() => {
+    if (!resultPreviewExpanded) return undefined;
+    const collapseResultPreviewOnEscape = (event) => {
+      if (event.key === 'Escape') setResultPreviewExpanded(false);
+    };
+    window.addEventListener('keydown', collapseResultPreviewOnEscape);
+    return () => window.removeEventListener('keydown', collapseResultPreviewOnEscape);
+  }, [resultPreviewExpanded]);
+
+  useEffect(() => {
     if (!topbarMenuOpen) return undefined;
     const closeMenu = (event) => {
       if (event.type === 'keydown' && event.key !== 'Escape') return;
@@ -1398,6 +1416,7 @@ function App() {
 
   useEffect(() => {
     setResultEditing(false);
+    setResultPreviewExpanded(false);
     dispatchResultEdit({ type: 'reset' });
     setResultEditBasePng(null);
     setResultEditBaseError('');
@@ -2719,6 +2738,7 @@ function App() {
     if (resultEditing) {
       resultPenOverlayRef.current?.cancelDraft();
       dispatchResultEdit({ type: 'cancel-draft' });
+      setResultPreviewExpanded(false);
       setResultEditing(false);
       return;
     }
@@ -2734,6 +2754,7 @@ function App() {
     setSelectedId(nodeId);
     setCanvasSelectedKeys([splitNodeKey(nodeId)]);
     setReviewMode('guided');
+    setResultPreviewExpanded(false);
     setResultEditing(false);
     if (editResult) {
       window.setTimeout(() => {
@@ -3908,7 +3929,7 @@ function App() {
               </div>
             </div>
 
-            <section className={`guided-result-panel ${activeSelectedJob ? `guided-result-panel--${jobStatus(activeSelectedJob.status).tone}` : ''}`}>
+            <section className={`guided-result-panel ${resultPreviewExpanded ? 'guided-result-panel--expanded-editor' : ''} ${activeSelectedJob ? `guided-result-panel--${jobStatus(activeSelectedJob.status).tone}` : ''}`}>
               <header className="guided-result-panel__header">
                 <div>
                   <span>Codex 拆分结果</span>
@@ -3964,9 +3985,9 @@ function App() {
                 </div>
               </header>
 
-              <div className={`guided-result-panel__body ${resultEditing ? 'guided-result-panel__body--editing' : ''} ${!resultEditing && selectedResultHistory.length > 1 ? 'guided-result-panel__body--versions' : ''}`}>
+              <div className={`guided-result-panel__body ${resultPreviewExpanded ? 'guided-result-panel__body--expanded-editor' : ''} ${resultEditing ? 'guided-result-panel__body--editing' : ''} ${!resultEditing && selectedResultHistory.length > 1 ? 'guided-result-panel__body--versions' : ''}`}>
                 {latestSelectedResult?.image ? (
-                  <div className={`guided-result-panel__canvas ${resultEditing ? 'guided-result-panel__canvas--editing' : ''}`}>
+                  <div className={`guided-result-panel__canvas ${resultEditing ? 'guided-result-panel__canvas--editing' : ''} ${resultPreviewExpanded ? 'guided-result-panel__canvas--expanded-editor' : ''}`}>
                     {resultEditing ? (
                       <div className="result-editor__toolbar" role="toolbar" aria-label="结果精修工具">
                         <button
@@ -4068,8 +4089,9 @@ function App() {
                         bounds={latestSelectedResult.bounds}
                         canvasSize={resultEditGeometry?.canvas}
                         authoritativeCanvas={resultEditing}
+                        expanded={resultEditing && resultPreviewExpanded}
                         previewRef={resultEditPreviewRef}
-                        className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''}`}
+                        className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''} ${resultPreviewExpanded ? 'result-preview--result-editor-expanded' : ''}`}
                         aria-busy={resultEditing && !resultEditBaseReady}
                       >
                         {resultEditing ? (
@@ -4087,6 +4109,21 @@ function App() {
                         ) : null}
                       </ResultPreview>
                     )}
+                    {resultEditing ? (
+                      <div className="result-editor__preview-toolbar">
+                        <span>{resultPreviewExpanded ? '大图编辑模式' : '需要更大画面时可放大编辑'}</span>
+                        <button
+                          type="button"
+                          className="result-editor__preview-toggle"
+                          aria-label={resultPreviewExpanded ? '还原 PNG 编辑预览' : '放大 PNG 编辑预览'}
+                          aria-pressed={resultPreviewExpanded}
+                          title={resultPreviewExpanded ? '还原预览' : '放大预览'}
+                          onClick={() => setResultPreviewExpanded((current) => !current)}
+                        >
+                          {resultPreviewExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+                        </button>
+                      </div>
+                    ) : null}
                     {resultEditing ? (
                       <div className="result-editor__request">
                         <label className="result-editor__prompt">

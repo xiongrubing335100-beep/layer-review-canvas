@@ -930,6 +930,10 @@ button:disabled { cursor: default; opacity: .48; }
   box-shadow: 0 18px 40px rgba(0, 0, 0, .16);
 }
 
+.guided-result-panel--expanded-editor {
+  max-width: none;
+}
+
 .guided-result-panel--pending { border-color: #3e5f4b; }
 .guided-result-panel--completed { border-color: #4e8566; }
 .guided-result-panel--failed { border-color: #6c433d; }
@@ -2518,6 +2522,13 @@ rect.annotation-mark--selected { stroke: #fff; }
   align-items: start;
 }
 
+.guided-result-panel__body--expanded-editor {
+  min-height: calc(100vh - 170px);
+  max-height: none;
+  align-items: start;
+  overflow: auto;
+}
+
 .guided-result-panel__body--versions {
   min-height: 420px;
   max-height: none;
@@ -2599,6 +2610,11 @@ rect.annotation-mark--selected { stroke: #fff; }
 .guided-result-panel__canvas--editing {
   width: min(100%, 860px);
   gap: 14px;
+}
+
+.guided-result-panel__canvas--expanded-editor {
+  width: 100%;
+  max-width: none;
 }
 
 .result-editor__toolbar {
@@ -2709,6 +2725,57 @@ rect.annotation-mark--selected { stroke: #fff; }
   touch-action: none;
   outline: 1px solid rgba(103, 220, 162, .24);
   outline-offset: 4px;
+}
+
+.result-preview--result-editor-expanded {
+  max-height: calc(100vh - 220px);
+}
+
+.result-preview--result-editor-expanded img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.result-editor__preview-toolbar {
+  position: static;
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.result-editor__preview-toolbar > span {
+  color: #8d9b90;
+  font-size: 9px;
+}
+
+.result-editor__preview-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 7px;
+  color: #ecefec;
+  background: #191d1a;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.result-editor__preview-toggle:hover {
+  border-color: rgba(103, 220, 162, .72);
+  background: #252c27;
+  transform: translateY(-1px);
+}
+
+.result-editor__preview-toggle:focus-visible {
+  border-color: #67dca2;
+  outline: 2px solid rgba(103, 220, 162, .34);
+  outline-offset: 2px;
 }
 
 .result-preview--result-editor:focus-visible {

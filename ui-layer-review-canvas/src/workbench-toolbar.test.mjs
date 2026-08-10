@@ -189,6 +189,43 @@ test('crop preview keeps pen guidance and expand controls below the image surfac
   assert.doesNotMatch(candidatePanel, /className="candidate-summary"|<p>\{selected\.requirement\}<\/p>/);
 });
 
+test('PNG refinement exposes an external expanded-preview control without duplicating the pen editor', () => {
+  const resultPanel = source.slice(
+    source.indexOf('<section className={`guided-result-panel'),
+    source.indexOf('</section>', source.indexOf('<section className={`guided-result-panel')),
+  );
+  const previewEnd = resultPanel.indexOf('</ResultPreview>');
+  const toolbarStart = resultPanel.indexOf('className="result-editor__preview-toolbar"');
+
+  assert.match(resultPanel, /expanded=\{resultEditing && resultPreviewExpanded\}/);
+  assert.ok(previewEnd >= 0);
+  assert.ok(toolbarStart > previewEnd, 'expand control must render below, not over, the PNG');
+  assert.match(resultPanel.slice(toolbarStart), /放大 PNG 编辑预览/);
+  assert.match(resultPanel.slice(toolbarStart), /还原 PNG 编辑预览/);
+  assert.match(resultPanel, /aria-pressed=\{resultPreviewExpanded\}/);
+  assert.equal((resultPanel.match(/<PenPathOverlay/g) || []).length, 1);
+});
+
+test('expanded PNG preview is presentation-only and resets with its edit session', () => {
+  assert.match(source, /const \[resultPreviewExpanded, setResultPreviewExpanded\] = useState\(false\);/);
+  assert.match(source, /if \(!resultPreviewExpanded\) return undefined;[\s\S]*?event\.key === 'Escape'[\s\S]*?setResultPreviewExpanded\(false\)/);
+  assert.match(source, /setResultPreviewExpanded\(false\);[\s\S]*?\}, \[activeImageId, resultEditBaseKey, selectedId\]\);/);
+  assert.doesNotMatch(source, /dispatchResultEdit\([^)]*expand/i);
+});
+
+test('expanded PNG editor grows inside the page and preserves image proportions', () => {
+  assert.match(styles, /\.guided-result-panel--expanded-editor\s*\{[\s\S]*?max-width:\s*none;/);
+  assert.match(styles, /\.guided-result-panel__canvas--expanded-editor\s*\{[\s\S]*?width:\s*100%;/);
+  assert.match(styles, /\.result-preview--result-editor-expanded\s*\{[\s\S]*?max-height:\s*calc\(100vh - 220px\);/);
+  assert.match(styles, /\.result-preview--result-editor-expanded\s+img\s*\{[\s\S]*?object-fit:\s*contain;/);
+  assert.match(styles, /\.result-editor__preview-toolbar\s*\{[\s\S]*?position:\s*static;/);
+  const expandedRule = styles.slice(
+    styles.indexOf('.result-preview--result-editor-expanded'),
+    styles.indexOf('.result-editor__preview-toolbar'),
+  );
+  assert.doesNotMatch(expandedRule, /object-fit:\s*cover|aspect-ratio:\s*auto/);
+});
+
 test('guided sidebar omits the repeated source filename and places KV background below UI components', () => {
   const sidebar = source.slice(
     source.indexOf('<aside className={`sidebar sidebar--left'),
