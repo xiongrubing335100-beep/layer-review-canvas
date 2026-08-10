@@ -218,6 +218,7 @@ split-ui-design-layers-workbench-targeted
 - 两个独立 ROI、错尺寸、棋盘格、路径外删除/保护与整图二次确认仍有 Node/Python 自动化合同覆盖。Task 8 的浏览器中，第二条 SVG 路径未稳定闭合，页面正确显示 open-draft 阻断；未提交该计划、未调用或伪造 ImageGen。详见 Task 8 报告。
 - personal 插件安装源版本：`0.1.0+local.20260810054541`。模板与 `~/plugins/imvia-layer` 的两个 SKILL、logo、`start-mcp.mjs` SHA-256 一致；runtime 指向当前工作台及 bundled Python。当前 Codex 会话未自动物化新的 personal cache 目录，仍需新任务或重启后核验 cache 版本。
 - Task 8 Fix Round 1 恢复时，Browser 技能请求显式 `iab` 后端返回 unavailable，一次性发现结果仅有 Chrome 扩展；依照验收约束未切换浏览器。因此两 ROI 提交、outside-delete/protect/full-canvas second confirm、错尺寸/棋盘格失败保留仍需控制器或用户先恢复 Codex in-app Browser 后继续。同期确认 personal source 保持新版本，但 cache 仍仅有旧版本；当前任务没有受支持的插件 reload 动作，未手改 cache。
+- 控制器随后恢复 IAB 并上传 1024×1243 RGBA fixture（识别 5 项），但该绑定不与 Task 8 子代理共享，子代理重试仍返回 `iab` unavailable。子代理补做 production finalizer 本地候选证据（明确非 ImageGen）：1535×1024 错尺寸与 8px、RGB 16/240 棋盘格均写 failed report、无新 PNG、v001 SHA-256 不变；合法 1536×1024 后续候选生成 v002 且不覆盖 v001。UI 可见保留与其余交互仍需控制器在根 IAB 完成。
 
 最近验证结果：
 
