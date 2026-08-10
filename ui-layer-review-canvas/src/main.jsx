@@ -108,6 +108,7 @@ import {
   resultRefinementGeometry,
 } from './result-refinement-ui.js';
 import { resolveNodeResultState } from './result-version-state.js';
+import { ResultVersionGallery } from './result-version-gallery.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -793,6 +794,7 @@ function App() {
   ), [nodeResultStates]);
   const latestSelectedResult = nodeResults.get(selected.id);
   const selectedResultState = nodeResultStates.get(selected.id);
+  const selectedResultHistory = selectedResultState?.history || [];
   const selectedPendingRevision = selectedResultState?.pendingRevision?.job;
   const selectedFailedRevision = selectedResultState?.failedRevision?.job;
   const latestSelectedJob = latestSelectedResult?.job;
@@ -3962,7 +3964,7 @@ function App() {
                 </div>
               </header>
 
-              <div className={`guided-result-panel__body ${resultEditing ? 'guided-result-panel__body--editing' : ''}`}>
+              <div className={`guided-result-panel__body ${resultEditing ? 'guided-result-panel__body--editing' : ''} ${!resultEditing && selectedResultHistory.length > 1 ? 'guided-result-panel__body--versions' : ''}`}>
                 {latestSelectedResult?.image ? (
                   <div className={`guided-result-panel__canvas ${resultEditing ? 'guided-result-panel__canvas--editing' : ''}`}>
                     {resultEditing ? (
@@ -4054,30 +4056,37 @@ function App() {
                         </div>
                       </div>
                     ) : null}
-                    <ResultPreview
-                      image={latestSelectedResult.image}
-                      sourceSize={latestSelectedResult.sourceSize}
-                      bounds={latestSelectedResult.bounds}
-                      canvasSize={resultEditGeometry?.canvas}
-                      authoritativeCanvas={resultEditing}
-                      previewRef={resultEditPreviewRef}
-                      className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''}`}
-                      aria-busy={resultEditing && !resultEditBaseReady}
-                    >
-                      {resultEditing ? (
-                        <PenPathOverlay
-                          ref={resultPenOverlayRef}
-                          paths={resultEditPaths}
-                          draft={resultEditDraft}
-                          selection={resultEditSelection}
-                          feedbackToken={resultEditFeedbackToken}
-                          activeKind={resultEditTool}
-                          disabled={Boolean(selectedPendingRevision) || !resultEditBaseReady}
-                          onChange={updateResultPenEditor}
-                          ariaLabel="拆分结果精修钢笔标注"
-                        />
-                      ) : null}
-                    </ResultPreview>
+                    {!resultEditing && selectedResultHistory.length > 1 ? (
+                      <ResultVersionGallery
+                        history={selectedResultHistory}
+                        nodeName={selected.name}
+                      />
+                    ) : (
+                      <ResultPreview
+                        image={latestSelectedResult.image}
+                        sourceSize={latestSelectedResult.sourceSize}
+                        bounds={latestSelectedResult.bounds}
+                        canvasSize={resultEditGeometry?.canvas}
+                        authoritativeCanvas={resultEditing}
+                        previewRef={resultEditPreviewRef}
+                        className={`result-preview--guided-result ${resultEditing ? `result-preview--result-editor result-preview--tool-${resultEditTool}` : ''}`}
+                        aria-busy={resultEditing && !resultEditBaseReady}
+                      >
+                        {resultEditing ? (
+                          <PenPathOverlay
+                            ref={resultPenOverlayRef}
+                            paths={resultEditPaths}
+                            draft={resultEditDraft}
+                            selection={resultEditSelection}
+                            feedbackToken={resultEditFeedbackToken}
+                            activeKind={resultEditTool}
+                            disabled={Boolean(selectedPendingRevision) || !resultEditBaseReady}
+                            onChange={updateResultPenEditor}
+                            ariaLabel="拆分结果精修钢笔标注"
+                          />
+                        ) : null}
+                      </ResultPreview>
+                    )}
                     {resultEditing ? (
                       <div className="result-editor__request">
                         <label className="result-editor__prompt">

@@ -2518,6 +2518,84 @@ rect.annotation-mark--selected { stroke: #fff; }
   align-items: start;
 }
 
+.guided-result-panel__body--versions {
+  min-height: 420px;
+  max-height: none;
+  align-items: start;
+}
+
+.result-version-gallery {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.result-version-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr) auto;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #344039;
+  border-radius: 8px;
+  background: #151a17;
+}
+
+.result-version-card--current {
+  border-color: #58d79d;
+  box-shadow: 0 0 0 1px rgba(88, 215, 157, .1);
+}
+
+.result-version-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.result-version-card > header strong {
+  color: #dce7df;
+  font-size: 10px;
+}
+
+.result-version-card > header span {
+  color: #78e0a9;
+  font-size: 9px;
+  font-weight: 740;
+}
+
+.result-version-card__preview {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #2d3731;
+  border-radius: 6px;
+  background-color: #19201b;
+  background-image: linear-gradient(45deg, #222b25 25%, transparent 25%), linear-gradient(-45deg, #222b25 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #222b25 75%), linear-gradient(-45deg, transparent 75%, #222b25 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.result-version-card__preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 460px;
+  object-fit: contain;
+}
+
+.result-version-card__download {
+  justify-self: end;
+  color: #94dcb3;
+  font-size: 9px;
+  font-weight: 720;
+  text-decoration: none;
+}
+
+.result-version-card__download:hover { color: #c7f5d8; }
+
 .guided-result-panel__canvas--editing {
   width: min(100%, 860px);
   gap: 14px;

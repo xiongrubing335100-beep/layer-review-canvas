@@ -215,6 +215,36 @@ test('a completed executor report requires results and mandatory validation', ()
   }, { expectedCount: 1, resultReady: true }), null);
 });
 
+test('a completed result refinement report finishes with its route-specific validation', () => {
+  const report = {
+    status: 'completed',
+    execution_route: 'result_refinement',
+    validation_results: {
+      dimensions: true,
+      alpha: true,
+      annotation_conformance: true,
+      outside_pixel_lock: true,
+      no_baked_checkerboard: true,
+      structure_integrity: true,
+    },
+  };
+
+  assert.equal(resolveExecutionReportStatus(report, {
+    expectedCount: 1,
+    resultReady: true,
+  }), 'completed');
+  assert.equal(resolveExecutionReportStatus({
+    ...report,
+    validation_results: {
+      ...report.validation_results,
+      outside_pixel_lock: false,
+    },
+  }, {
+    expectedCount: 1,
+    resultReady: true,
+  }), null);
+});
+
 test('a confirmation request is not shown as processing', () => {
   assert.deepEqual(reconcileTurnStatus({
     planStatus: 'needs_confirmation',

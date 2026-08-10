@@ -1,14 +1,29 @@
 const terminalFailureStatuses = new Set(['failed', 'send_failed']);
 const authoritativeReportStatuses = new Set(['completed', 'failed', 'needs_confirmation']);
 
+const completedValidationKeys = {
+  default: ['count', 'dimensions', 'alpha', 'annotation_conformance', 'obvious_exclusion'],
+  result_refinement: [
+    'dimensions',
+    'alpha',
+    'annotation_conformance',
+    'outside_pixel_lock',
+    'no_baked_checkerboard',
+    'structure_integrity',
+  ],
+};
+
+function completedValidationPassed(report) {
+  const validation = report?.validation_results;
+  const keys = completedValidationKeys[report?.execution_route]
+    || completedValidationKeys.default;
+  return Boolean(validation && keys.every((key) => validation[key] === true));
+}
+
 export function resolveExecutionReportStatus(report, { expectedCount, resultReady }) {
   if (report?.status === 'failed' || report?.status === 'needs_confirmation') return report.status;
   if (report?.status === 'completed') {
-    const validation = report.validation_results;
-    const validationPassed = validation
-      && ['count', 'dimensions', 'alpha', 'annotation_conformance', 'obvious_exclusion']
-        .every((key) => validation[key] === true);
-    if (resultReady && validationPassed) return 'completed';
+    if (resultReady && completedValidationPassed(report)) return 'completed';
   }
   if (typeof report?.status === 'string' && report.status !== 'completed') return report.status;
   if (!resultReady || !Number.isInteger(expectedCount) || expectedCount < 1) return null;
