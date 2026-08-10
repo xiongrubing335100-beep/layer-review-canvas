@@ -395,7 +395,17 @@ class FinalizeTargetedJobTests(unittest.TestCase):
     def test_result_structure_allows_fully_opaque_explicit_alpha_inclusion(self):
         base = Image.new("RGBA", (3, 2), (10, 20, 30, 0))
         result = Image.new("RGBA", base.size, (40, 50, 60, 255))
-        annotations = [{"id": "include", "operation_role": "repair"}]
+        annotations = [{
+            "id": "include",
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "boundary",
+            "operation_role": "repair",
+            "source_polygon_pixels": [
+                {"x": 0, "y": 0}, {"x": 3, "y": 0},
+                {"x": 3, "y": 2}, {"x": 0, "y": 2},
+            ],
+        }]
         operation = {
             "mode": "path_scoped",
             "subject_path_ids": [],
@@ -412,7 +422,17 @@ class FinalizeTargetedJobTests(unittest.TestCase):
     def test_result_structure_allows_fully_transparent_explicit_erase(self):
         base = Image.new("RGBA", (3, 2), (10, 20, 30, 255))
         result = Image.new("RGBA", base.size, (10, 20, 30, 0))
-        annotations = [{"id": "erase", "operation_role": "erase"}]
+        annotations = [{
+            "id": "erase",
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "erase",
+            "operation_role": "erase",
+            "source_polygon_pixels": [
+                {"x": 0, "y": 0}, {"x": 3, "y": 0},
+                {"x": 3, "y": 2}, {"x": 0, "y": 2},
+            ],
+        }]
 
         MODULE.validate_result_refinement_structure(
             result,
@@ -438,6 +458,34 @@ class FinalizeTargetedJobTests(unittest.TestCase):
                     "mode": "path_scoped",
                     "subject_path_ids": [],
                     "alpha_include_path_ids": [],
+                },
+            )
+
+    def test_result_structure_rejects_alpha_change_outside_local_inclusion(self):
+        base = Image.new("RGBA", (4, 4), (10, 20, 30, 255))
+        result = base.copy()
+        result.putpixel((3, 2), (10, 20, 30, 0))
+        local_include = {
+            "id": "include",
+            "shape": "bezier_path",
+            "closed": True,
+            "kind": "boundary",
+            "operation_role": "repair",
+            "source_polygon_pixels": [
+                {"x": 0, "y": 0}, {"x": 1, "y": 0},
+                {"x": 1, "y": 4}, {"x": 0, "y": 4},
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "unauthorized Alpha"):
+            MODULE.validate_result_refinement_structure(
+                result,
+                base,
+                annotations=[local_include],
+                operation={
+                    "mode": "path_scoped",
+                    "subject_path_ids": [],
+                    "alpha_include_path_ids": ["include"],
                 },
             )
 

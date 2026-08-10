@@ -15,10 +15,15 @@ try:
     from scripts.result_refinement_roi import (
         assert_canonical_roi_jobs,
         compose_result_refinement,
+        expected_result_refinement_alpha,
     )
 except ModuleNotFoundError:
     from safe_layer_path import contained_child, safe_layer_id
-    from result_refinement_roi import assert_canonical_roi_jobs, compose_result_refinement
+    from result_refinement_roi import (
+        assert_canonical_roi_jobs,
+        compose_result_refinement,
+        expected_result_refinement_alpha,
+    )
 
 
 VALIDATION_KEYS = (
@@ -320,16 +325,8 @@ def validate_source_rgb_fidelity(candidate, source_crop):
 
 
 def validate_result_refinement_structure(candidate, base, *, annotations, operation):
-    alpha_authorized = bool(operation.get("alpha_include_path_ids") or [])
-    alpha_authorized = alpha_authorized or operation.get("mode") == "keep_inside_delete_outside"
-    alpha_authorized = alpha_authorized or any(
-        annotation.get("operation_role") == "erase"
-        for annotation in annotations
-    )
-    if (
-        not alpha_authorized
-        and candidate.getchannel("A").tobytes() != base.getchannel("A").tobytes()
-    ):
+    expected_alpha = expected_result_refinement_alpha(base, annotations, operation)
+    if candidate.getchannel("A").tobytes() != expected_alpha.tobytes():
         raise ValueError("result_refinement output contains unauthorized Alpha changes")
 
 

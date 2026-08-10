@@ -557,6 +557,46 @@ def _stable_coverage(mask):
     return mask.point(lambda value: 0 if value <= 1 else 255 if value >= 254 else value)
 
 
+def _apply_structured_alpha_operations(result, base_rgba, masks, roles, operation):
+    structured = result.copy()
+    alpha = base_rgba.getchannel("A").copy()
+    for path_id in operation.get("alpha_include_path_ids") or []:
+        alpha = ImageChops.lighter(alpha, _stable_coverage(masks[path_id]))
+
+    for path_id, role in roles.items():
+        if role == "erase":
+            alpha.paste(0, mask=_stable_coverage(masks[path_id]))
+
+    if operation.get("mode") == "keep_inside_delete_outside":
+        subject_mask = _stable_coverage(_union_masks(
+            base_rgba.size,
+            [masks[path_id] for path_id in operation.get("subject_path_ids") or []],
+        ))
+        alpha = ImageChops.multiply(alpha, subject_mask)
+    structured.putalpha(alpha)
+
+    protect_mask = _stable_coverage(_union_masks(
+        base_rgba.size,
+        [masks[path_id] for path_id, role in roles.items() if role == "protect"],
+    ))
+    if protect_mask.getbbox() is not None:
+        structured.paste(base_rgba, mask=protect_mask)
+    return structured
+
+
+def expected_result_refinement_alpha(base, annotations, operation):
+    base_rgba = base.convert("RGBA")
+    masks, roles = _annotation_masks(annotations, base_rgba.size)
+    expected = _apply_structured_alpha_operations(
+        base_rgba,
+        base_rgba,
+        masks,
+        roles,
+        operation,
+    )
+    return expected.getchannel("A")
+
+
 def _intersection(first, second):
     left = max(first["x"], second["x"])
     top = max(first["y"], second["y"])
@@ -662,11 +702,16 @@ def compose_result_refinement(base, annotations, manifest, bindings):
         previous_tiles.append((job, tile_authority))
 
     result = Image.merge("RGBA", (*result_rgb.split(), base_rgba.getchannel("A")))
-    alpha = result.getchannel("A")
     operation = manifest["operation"]
+    result = _apply_structured_alpha_operations(
+        result,
+        base_rgba,
+        masks,
+        roles,
+        operation,
+    )
     for path_id in operation.get("alpha_include_path_ids") or []:
         include_mask = _stable_coverage(masks[path_id])
-        alpha = ImageChops.lighter(alpha, include_mask)
         approved_mask = ImageChops.lighter(approved_mask, include_mask)
 
     erase_masks = [
@@ -675,7 +720,6 @@ def compose_result_refinement(base, annotations, manifest, bindings):
         if role == "erase"
     ]
     for erase_mask in erase_masks:
-        alpha.paste(0, mask=erase_mask)
         approved_mask = ImageChops.lighter(approved_mask, erase_mask)
 
     if operation.get("mode") == "keep_inside_delete_outside":
@@ -683,16 +727,7 @@ def compose_result_refinement(base, annotations, manifest, bindings):
             base_rgba.size,
             [masks[path_id] for path_id in operation.get("subject_path_ids") or []],
         ))
-        alpha = ImageChops.multiply(alpha, subject_mask)
         approved_mask = ImageChops.lighter(approved_mask, ImageChops.invert(subject_mask))
-    result.putalpha(alpha)
-
-    protect_mask = _stable_coverage(_union_masks(
-        base_rgba.size,
-        [masks[path_id] for path_id, role in roles.items() if role == "protect"],
-    ))
-    if protect_mask.getbbox() is not None:
-        result.paste(base_rgba, mask=protect_mask)
 
     assert_unapproved_pixels_locked(base_rgba, result, approved_mask)
     return result
