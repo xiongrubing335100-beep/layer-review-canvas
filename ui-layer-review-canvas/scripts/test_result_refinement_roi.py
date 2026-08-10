@@ -445,6 +445,33 @@ class ResultRefinementCompositionTests(unittest.TestCase):
                 {job["roi_id"]: checker},
             )
 
+    def test_eight_pixel_checkerboard_in_small_native_content_is_rejected(self):
+        module = self.require_module()
+        base = Image.new("RGBA", (64, 64), (10, 20, 30, 128))
+        job = self.roi(
+            base_region={"x": 0, "y": 0, "width": 64, "height": 64},
+        )
+        repair = self.path(
+            "repair",
+            "repair",
+            [(0, 0), (64, 0), (64, 64), (0, 64)],
+        )
+        checker = Image.new("RGB", (1024, 1024), (100, 100, 100))
+        left = job["content_region"]["x"]
+        top = job["content_region"]["y"]
+        for y in range(64):
+            for x in range(64):
+                value = 240 if ((x // 8) + (y // 8)) % 2 else 16
+                checker.putpixel((left + x, top + y), (value, value, value))
+
+        with self.assertRaisesRegex(ValueError, "checkerboard"):
+            module.compose_result_refinement(
+                base,
+                [repair],
+                self.manifest(job, size=base.size),
+                {job["roi_id"]: checker},
+            )
+
     def test_deterministic_erase_only_task_accepts_zero_candidates(self):
         module = self.require_module()
         base = Image.new("RGBA", (6, 4), (10, 20, 30, 128))

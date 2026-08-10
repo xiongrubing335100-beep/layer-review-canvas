@@ -332,6 +332,14 @@ def _validate_candidate_image(candidate, roi_id):
         raise ValueError(f"candidate for {roi_id} contains a baked checkerboard")
 
 
+def _validate_native_candidate_content(candidate, roi_id):
+    similarity, contrast = checkerboard_score(candidate)
+    if similarity >= 0.94 and contrast >= 0.45:
+        raise ValueError(
+            f"candidate for {roi_id} contains a baked checkerboard in native content"
+        )
+
+
 def _integer_geometry(value, label):
     if not isinstance(value, Mapping):
         raise ValueError(f"result_refinement manifest {label} is invalid")
@@ -615,7 +623,9 @@ def compose_result_refinement(base, annotations, manifest, bindings):
         roi_id = job["roi_id"]
         candidate = bindings[roi_id]
         _validate_candidate_image(candidate, roi_id)
-        native = crop_native_candidate(candidate, job).convert("RGB")
+        native_content = crop_native_candidate(candidate, job)
+        _validate_native_candidate_content(native_content, roi_id)
+        native = native_content.convert("RGB")
         base_region = job["base_region"]
         if native.size != (base_region["width"], base_region["height"]):
             raise ValueError("candidate content region must preserve native ROI dimensions")

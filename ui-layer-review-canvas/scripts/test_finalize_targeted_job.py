@@ -88,7 +88,9 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             })
             repair_ids.append("repair")
             reference_path = self.job / "generated" / "layer-one-repair-tile-001-reference.png"
-            Image.new("RGBA", (1536, 1024), (0, 0, 0, 0)).save(reference_path)
+            reference = Image.new("RGBA", (1536, 1024), (0, 0, 0, 0))
+            reference.paste(base.crop((1, 0, 6, 4)), (765, 510))
+            reference.save(reference_path)
             jobs.append({
                 "roi_id": "repair-tile-001",
                 "path_id": "repair",
@@ -123,7 +125,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             "protect_path_ids": [],
             "refinement_operation": operation,
             "expected_roi_tile_count": len(jobs),
-            "maximum_imagegen_calls": 4,
+            "maximum_imagegen_calls": len(jobs) * 2,
         })
         (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
         manifest_path = self.job / "generated" / "layer-one-imagegen-manifest.json"
@@ -164,7 +166,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed")
         self.assertEqual(report["roi_count"], 1)
         self.assertEqual(report["candidate_count"], 1)
-        self.assertEqual(report["imagegen_call_budget"], 4)
+        self.assertEqual(report["imagegen_call_budget"], 2)
         self.assertEqual(report["asset_dimensions"], {"width": 6, "height": 4})
         self.assertEqual(report["validation_results"], {
             "dimensions": True,
@@ -257,6 +259,84 @@ class FinalizeTargetedJobTests(unittest.TestCase):
 
         self.assertEqual(list((self.job / "final").iterdir()), [])
 
+    def test_result_refinement_reference_content_must_equal_the_base_crop(self):
+        manifest_path, bindings = self.configure_result_refinement_v2()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        reference_path = Path(manifest["roi_jobs"][0]["reference_path"])
+        with Image.open(reference_path) as image:
+            tampered = image.copy()
+        tampered.putpixel((767, 512), (1, 2, 3, 4))
+        tampered.save(reference_path)
+
+        with self.assertRaisesRegex(ValueError, "reference pixels"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                bindings,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=manifest_path,
+            )
+
+        self.assertEqual(list((self.job / "final").iterdir()), [])
+
+    def test_result_refinement_reference_padding_must_be_transparent(self):
+        manifest_path, bindings = self.configure_result_refinement_v2()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        reference_path = Path(manifest["roi_jobs"][0]["reference_path"])
+        with Image.open(reference_path) as image:
+            tampered = image.copy()
+        tampered.putpixel((0, 0), (1, 2, 3, 255))
+        tampered.save(reference_path)
+
+        with self.assertRaisesRegex(ValueError, "reference pixels"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                bindings,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=manifest_path,
+            )
+
+        self.assertEqual(list((self.job / "final").iterdir()), [])
+
+    def test_result_refinement_reference_must_be_an_actual_rgba_png(self):
+        manifest_path, bindings = self.configure_result_refinement_v2()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        reference_path = Path(manifest["roi_jobs"][0]["reference_path"])
+        with Image.open(reference_path) as image:
+            image.convert("RGB").save(reference_path)
+
+        with self.assertRaisesRegex(ValueError, "reference.*canvas"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                bindings,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=manifest_path,
+            )
+
+    def test_result_refinement_imagegen_budget_must_be_exactly_twice_roi_count(self):
+        manifest_path, bindings = self.configure_result_refinement_v2()
+        self.plan["layers"][0]["maximum_imagegen_calls"] = 3
+        (self.job / "layer-review-plan.json").write_text(
+            json.dumps(self.plan), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly twice"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                bindings,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=manifest_path,
+            )
+
+        self.assertEqual(list((self.job / "final").iterdir()), [])
+
     def test_result_refinement_rejects_noncanonical_native_roi_geometry(self):
         manifest_path, bindings = self.configure_result_refinement_v2()
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -282,6 +362,7 @@ class FinalizeTargetedJobTests(unittest.TestCase):
 
     def test_result_refinement_zero_roi_task_needs_no_generated_input(self):
         manifest_path, bindings = self.configure_result_refinement_v2(with_repair=False)
+        self.assertEqual(self.plan["layers"][0]["maximum_imagegen_calls"], 0)
         erase = {
             "id": "erase",
             "shape": "bezier_path",
@@ -310,6 +391,55 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             self.assertEqual(output.getpixel((3, 2)), (10, 20, 30, 0))
             self.assertEqual(output.getpixel((0, 0)), (70, 80, 90, 0))
         self.assertEqual(report["candidate_count"], 0)
+
+    def test_result_structure_allows_fully_opaque_explicit_alpha_inclusion(self):
+        base = Image.new("RGBA", (3, 2), (10, 20, 30, 0))
+        result = Image.new("RGBA", base.size, (40, 50, 60, 255))
+        annotations = [{"id": "include", "operation_role": "repair"}]
+        operation = {
+            "mode": "path_scoped",
+            "subject_path_ids": [],
+            "alpha_include_path_ids": ["include"],
+        }
+
+        MODULE.validate_result_refinement_structure(
+            result,
+            base,
+            annotations=annotations,
+            operation=operation,
+        )
+
+    def test_result_structure_allows_fully_transparent_explicit_erase(self):
+        base = Image.new("RGBA", (3, 2), (10, 20, 30, 255))
+        result = Image.new("RGBA", base.size, (10, 20, 30, 0))
+        annotations = [{"id": "erase", "operation_role": "erase"}]
+
+        MODULE.validate_result_refinement_structure(
+            result,
+            base,
+            annotations=annotations,
+            operation={
+                "mode": "path_scoped",
+                "subject_path_ids": [],
+                "alpha_include_path_ids": [],
+            },
+        )
+
+    def test_result_structure_rejects_unauthorized_alpha_changes(self):
+        base = Image.new("RGBA", (3, 2), (10, 20, 30, 128))
+        result = Image.new("RGBA", base.size, (10, 20, 30, 255))
+
+        with self.assertRaisesRegex(ValueError, "unauthorized Alpha"):
+            MODULE.validate_result_refinement_structure(
+                result,
+                base,
+                annotations=[],
+                operation={
+                    "mode": "path_scoped",
+                    "subject_path_ids": [],
+                    "alpha_include_path_ids": [],
+                },
+            )
 
     def test_result_refinement_rejects_duplicate_cli_bindings(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
@@ -343,6 +473,56 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             )
 
         self.assertEqual(list(escaped_directory.iterdir()), [])
+        failed = json.loads((self.job / "execution-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(all(value is False for value in failed["validation_results"].values()))
+
+    def test_malformed_plan_writes_failed_report_without_replacing_existing_final(self):
+        existing = self.job / "final" / "layer-one.png"
+        existing.write_bytes(b"existing-success")
+        (self.job / "layer-review-plan.json").write_text("{", encoding="utf-8")
+
+        with self.assertRaises(json.JSONDecodeError):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+            )
+
+        self.assertEqual(existing.read_bytes(), b"existing-success")
+        failed = json.loads((self.job / "execution-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(all(value is False for value in failed["validation_results"].values()))
+
+    def test_early_result_validation_uses_result_fields_and_keeps_existing_version(self):
+        manifest_path, bindings = self.configure_result_refinement_v2()
+        existing = self.job / "final" / "layer-one-v001.png"
+        existing.write_bytes(b"existing-version")
+        self.plan["layers"][0]["expected_output"]["width"] = 0
+        (self.job / "layer-review-plan.json").write_text(
+            json.dumps(self.plan), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(ValueError, "expected output dimensions"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                bindings,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=manifest_path,
+            )
+
+        self.assertEqual(existing.read_bytes(), b"existing-version")
+        failed = json.loads((self.job / "execution-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(
+            set(failed["validation_results"]),
+            set(MODULE.RESULT_REFINEMENT_VALIDATION_KEYS),
+        )
+        self.assertTrue(all(value is False for value in failed["validation_results"].values()))
 
     def test_writes_exact_size_png_and_completed_report(self):
         report = MODULE.finalize_job(
