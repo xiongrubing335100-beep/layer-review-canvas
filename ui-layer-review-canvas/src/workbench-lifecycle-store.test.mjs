@@ -16,6 +16,7 @@ import {
   heartbeatPageLease,
   readDiscardedJob,
   readLivePageLeases,
+  resetWorkbenchForOpen,
   suspectPageLeaseClosed,
   writeLifecycleRecord,
 } from './workbench-lifecycle-store.js';
@@ -134,29 +135,99 @@ test('an expired unconfirmed delivery is removed before it can block a new submi
   });
 });
 
-test('queued jobs survive a workbench restart and remain available for later dispatch', async () => {
+test('reopening the workbench discards unconfirmed tasks and preserves completed results', async () => {
   await withOutputDirectory(async (outputDirectory) => {
-    const jobDirectory = await writeJob(
+    const queuedDirectory = await writeJob(
       outputDirectory,
       'queued-job',
       'queued',
       null,
       '2026-07-29T11:00:00.000Z',
     );
+    const deliveredDirectory = await writeJob(
+      outputDirectory,
+      'delivered-job',
+      'host_accepted',
+      null,
+      '2026-07-29T11:01:00.000Z',
+    );
+    const completedDirectory = await writeJob(
+      outputDirectory,
+      'completed-job',
+      'queued',
+      'completed',
+      '2026-07-29T11:02:00.000Z',
+    );
     await writeLifecycleRecord(outputDirectory, 'queued-job', {
+      status: 'active',
+      createdAt: '2026-07-29T11:00:00.000Z',
+    });
+    await writeLifecycleRecord(outputDirectory, 'delivered-job', {
+      status: 'active',
+      createdAt: '2026-07-29T11:01:00.000Z',
+    });
+    await writeLifecycleRecord(outputDirectory, 'completed-job', {
+      status: 'active',
+      createdAt: '2026-07-29T11:02:00.000Z',
+    });
+    await writeFile(
+      path.join(completedDirectory, 'foreground-dispatch.json'),
+      JSON.stringify({ jobId: 'completed-job', status: 'pending' }),
+    );
+
+    assert.deepEqual(
+      await resetWorkbenchForOpen(outputDirectory, '2026-07-29T12:01:00.000Z'),
+      {
+        abandonedJobIds: [],
+        discardedJobIds: ['delivered-job', 'queued-job'],
+      },
+    );
+    await assert.rejects(readFile(path.join(queuedDirectory, 'layer-review-plan.json')), {
+      code: 'ENOENT',
+    });
+    await assert.rejects(readFile(path.join(deliveredDirectory, 'layer-review-plan.json')), {
+      code: 'ENOENT',
+    });
+    assert.equal(JSON.parse(await readFile(
+      path.join(completedDirectory, 'execution-report.json'),
+      'utf8',
+    )).status, 'completed');
+    await assert.rejects(readFile(path.join(completedDirectory, 'foreground-dispatch.json')), {
+      code: 'ENOENT',
+    });
+    assert.equal(await findBlockingJob(outputDirectory), null);
+    const reopenedAt = Date.parse('2026-07-29T12:01:00.000Z');
+    assert.equal((await readDiscardedJob(outputDirectory, 'queued-job', reopenedAt)).status, 'discarded');
+    assert.equal((await readDiscardedJob(outputDirectory, 'delivered-job', reopenedAt)).status, 'discarded');
+  });
+});
+
+test('reopening hides an already started task without deleting its working files', async () => {
+  await withOutputDirectory(async (outputDirectory) => {
+    const jobDirectory = await writeJob(
+      outputDirectory,
+      'started-job',
+      'processing',
+      null,
+      '2026-07-29T11:00:00.000Z',
+    );
+    await writeLifecycleRecord(outputDirectory, 'started-job', {
       status: 'active',
       createdAt: '2026-07-29T11:00:00.000Z',
     });
 
     assert.deepEqual(
-      await discardBlockingJobsOnStartup(outputDirectory, '2026-07-29T12:01:00.000Z'),
-      [],
+      await resetWorkbenchForOpen(outputDirectory, '2026-07-29T12:01:00.000Z'),
+      {
+        abandonedJobIds: ['started-job'],
+        discardedJobIds: [],
+      },
     );
-    assert.equal((await findBlockingJob(outputDirectory)).jobId, 'queued-job');
     assert.equal(JSON.parse(await readFile(
       path.join(jobDirectory, 'layer-review-plan.json'),
       'utf8',
-    )).status, 'queued');
+    )).status, 'processing');
+    assert.equal(await findBlockingJob(outputDirectory), null);
   });
 });
 

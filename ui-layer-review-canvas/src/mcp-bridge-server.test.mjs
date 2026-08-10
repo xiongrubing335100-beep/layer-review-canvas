@@ -32,7 +32,8 @@ test('the MCP tool returns a right-panel browser URL and mounts the conversation
   assert.match(serverSource, /resourceUri: bridgeWidgetUri/);
   assert.match(serverSource, /openai\/outputTemplate.*bridgeWidgetUri/s);
   assert.match(serverSource, /workbenchUrl: z\.string/);
-  assert.match(serverSource, /workbenchUrl: `\$\{workbenchOrigin\}\/`/);
+  assert.match(serverSource, /workbenchUrl: `\$\{workbenchOrigin\}\/\?open=/);
+  assert.match(serverSource, /resetWorkbenchForOpen/);
   assert.doesNotMatch(serverSource, /mode: z\.literal\('native_canvas'\)/);
   assert.doesNotMatch(serverSource, /rendering: z\.literal\('native_widget'\)/);
   assert.match(serverSource, /codex_app__open_in_codex/);

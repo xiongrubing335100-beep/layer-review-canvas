@@ -73,6 +73,35 @@ test('the conversation bridge reports pending queue items even while another tas
   });
 });
 
+test('completed jobs never reappear in a reopened conversation queue', async (context) => {
+  const jobsDirectory = await mkdtemp(path.join(os.tmpdir(), 'layer-review-dispatch-'));
+  context.after(() => rm(jobsDirectory, { recursive: true, force: true }));
+  const jobDirectory = path.join(jobsDirectory, 'job-completed');
+  await mkdir(jobDirectory);
+  await writeFile(path.join(jobDirectory, 'layer-review-plan.json'), JSON.stringify({
+    job_id: 'job-completed',
+    status: 'queued',
+  }));
+  await writeFile(path.join(jobDirectory, 'execution-report.json'), JSON.stringify({
+    status: 'completed',
+  }));
+  await enqueueForegroundDispatch(jobDirectory, {
+    jobId: 'job-completed',
+    prompt: 'stale completed prompt',
+    submittedAt: '2026-07-28T10:00:00.000Z',
+    workbenchSessionId: 'workbench-current',
+  });
+
+  assert.deepEqual(await readForegroundQueueSummary(jobsDirectory, {
+    bridgeId: 'bridge-new',
+    workbenchSessionId: 'workbench-current',
+  }), {
+    count: 0,
+    jobIds: [],
+  });
+  assert.equal(await readNextForegroundDispatch(jobsDirectory), null);
+});
+
 test('newer tasks remain queued behind older tasks on the same conversation bridge', async (context) => {
   const jobsDirectory = await mkdtemp(path.join(os.tmpdir(), 'layer-review-dispatch-'));
   context.after(() => rm(jobsDirectory, { recursive: true, force: true }));

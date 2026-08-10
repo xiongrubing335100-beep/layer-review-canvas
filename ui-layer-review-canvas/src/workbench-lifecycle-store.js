@@ -14,7 +14,10 @@ import {
   activePageLeases,
   blocksNewSubmission,
   canCleanAbandonedJob,
+  isCancelablePlanStatus,
+  isStartedPlanStatus,
   isStaleUnconfirmedDelivery,
+  isTerminalExecutionReport,
 } from './workbench-lifecycle.js';
 
 const runtimeDirectoryName = 'workbench-runtime';
@@ -229,6 +232,37 @@ export async function discardBlockingJobsOnStartup(
     discarded.push(record.jobId);
   }
   return discarded;
+}
+
+export async function resetWorkbenchForOpen(
+  outputDirectory,
+  reopenedAt = new Date().toISOString(),
+) {
+  const records = await listJobRecords(outputDirectory);
+  const discardedJobIds = [];
+  const abandonedJobIds = [];
+  for (const record of records) {
+    if (isTerminalExecutionReport(record.report?.status)) {
+      await rm(path.join(record.jobDirectory, 'foreground-dispatch.json'), { force: true });
+      continue;
+    }
+    if (isCancelablePlanStatus(record.plan.status)) {
+      await discardJobDirectory(outputDirectory, record.jobId, reopenedAt);
+      discardedJobIds.push(record.jobId);
+      continue;
+    }
+    if (isStartedPlanStatus(record.plan.status)) {
+      await writeLifecycleRecord(outputDirectory, record.jobId, {
+        status: 'abandoned_running',
+        abandonedAt: reopenedAt,
+      });
+      abandonedJobIds.push(record.jobId);
+    }
+  }
+  return {
+    abandonedJobIds: abandonedJobIds.sort(),
+    discardedJobIds: discardedJobIds.sort(),
+  };
 }
 
 export async function cleanTerminalAbandonedJobs(

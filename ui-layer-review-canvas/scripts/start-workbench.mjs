@@ -18,10 +18,10 @@ import {
 } from '../src/workbench-lifecycle.js';
 import {
   cleanTerminalAbandonedJobs,
-  discardBlockingJobsOnStartup,
   discardJobDirectory,
   listJobRecords,
   readLivePageLeases,
+  resetWorkbenchForOpen,
   writeLifecycleRecord,
 } from '../src/workbench-lifecycle-store.js';
 import {
@@ -133,39 +133,7 @@ await writeFile(sessionPath, JSON.stringify({
 }, null, 2));
 
 async function clearInterruptedJobsOnStartup(now) {
-  const discardedAt = new Date(now).toISOString();
-  const records = await listJobRecords(outputDirectory);
-  for (const record of records) {
-    if (!blocksNewSubmission({
-      planStatus: record.plan.status,
-      reportStatus: record.report?.status || null,
-      lifecycleStatus: record.lifecycle?.status || null,
-      lifecycleCreatedAt: record.lifecycle?.createdAt || null,
-    })) continue;
-    if (isCancelablePlanStatus(record.plan.status) && !record.report?.status) {
-      await cancelForegroundDispatch(record.jobDirectory, discardedAt)
-        .catch((error) => error.code === 'ENOENT'
-          ? cancelDirectConversationJob(record.jobDirectory, discardedAt).catch(() => {})
-          : undefined);
-      continue;
-    }
-    if (
-      shouldMarkJobAbandoned({
-        lifecycleStatus: record.lifecycle?.status || null,
-        lifecycleCreatedAt: record.lifecycle?.createdAt || null,
-        planStatus: record.plan.status,
-        reportStatus: record.report?.status || null,
-        reportCompletedAt: record.reportCompletedAt,
-        pageMissingSince: now,
-      })
-    ) {
-      await writeLifecycleRecord(outputDirectory, record.jobId, {
-        status: 'abandoned_running',
-        abandonedAt: discardedAt,
-      });
-    }
-  }
-  return discardBlockingJobsOnStartup(outputDirectory, discardedAt);
+  return resetWorkbenchForOpen(outputDirectory, new Date(now).toISOString());
 }
 
 await clearInterruptedJobsOnStartup(Date.now());

@@ -33,6 +33,13 @@ async function readPendingDispatches(jobsDirectory) {
         'utf8',
       ));
       if (dispatch.status === 'pending' || dispatch.status === 'claimed') {
+        let report = null;
+        try {
+          report = JSON.parse(await readFile(path.join(jobDirectory, reportFileName), 'utf8'));
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        if (terminalReportStatuses.has(report?.status)) continue;
         records.push({ dispatch, jobDirectory });
       }
     } catch (error) {

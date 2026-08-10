@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
@@ -30,6 +31,8 @@ import {
   releaseForegroundDispatchClaim,
   readForegroundQueueSummary,
 } from './src/foreground-dispatch.js';
+import { withDirectoryLock } from './src/file-lock.js';
+import { resetWorkbenchForOpen } from './src/workbench-lifecycle-store.js';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
 const outputDirectory = path.join(rootDirectory, 'output');
@@ -206,7 +209,7 @@ function createLayerReviewBridgeServer() {
       readOnlyHint: false,
       destructiveHint: false,
       openWorldHint: false,
-      idempotentHint: true,
+      idempotentHint: false,
     },
     _meta: {
       ui: {
@@ -221,6 +224,12 @@ function createLayerReviewBridgeServer() {
     },
   };
   const toolHandler = async () => {
+    const reopenedAt = new Date().toISOString();
+    await withDirectoryLock(
+      path.join(outputDirectory, 'workbench-runtime', '.submission.lock'),
+      () => resetWorkbenchForOpen(outputDirectory, reopenedAt),
+      { timeoutMs: 10_000 },
+    );
     const session = await requestWorkbenchJson('/api/layer-review/workbench-session');
     return {
       content: [{
@@ -229,7 +238,7 @@ function createLayerReviewBridgeServer() {
       }],
       structuredContent: {
         state: 'ready',
-        workbenchUrl: `${workbenchOrigin}/`,
+        workbenchUrl: `${workbenchOrigin}/?open=${encodeURIComponent(randomUUID())}`,
         workbenchSessionId: session.workbench_session_id,
       },
     };
