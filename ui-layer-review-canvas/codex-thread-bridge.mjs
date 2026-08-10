@@ -440,7 +440,7 @@ export function buildWorkbenchPrompt({
       ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
       : '',
     targetedRepairLayers.length
-      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持整张标准画布不变。将原生结果保存到 generated/ 后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。返回画布尺寸变化则失败；禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
+      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持构图与宽高比一致。将原生结果保存到 generated/ 后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。ImageGen 返回同比例的原生尺寸时直接接受，由最终处理器按比例换算 content_region；宽高比变化或构图偏移才失败。禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
       : '',
     ...resultRefinementLines,
     nativeResolutionRmbgLayers.length

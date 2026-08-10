@@ -773,6 +773,89 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         with Image.open(self.job / "final" / "layer-one.png") as image:
             self.assertEqual(image.size, (1024, 1024))
 
+    def test_targeted_repair_rmbg_accepts_uniformly_scaled_native_canvas(self):
+        self.plan["layers"][0].update({
+            "execution_route_hint": "targeted_repair",
+            "expected_output": {
+                "width": 658,
+                "height": 665,
+                "original_source_x": 0,
+                "original_source_y": 214,
+            },
+            "remove_background": True,
+            "transparency_strategy": "rembg",
+            "rmbg_required": True,
+            "output_resolution_policy": "native_imagegen_content",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        Image.new("RGBA", (1254, 1254), (210, 40, 20, 255)).save(self.generated)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 5, "y": 0, "width": 1013, "height": 1024},
+            "expected_output": {"width": 658, "height": 665},
+        }), encoding="utf-8")
+        received = []
+
+        def fake_rmbg(input_path, output_path, width, height, _script):
+            with Image.open(input_path) as image:
+                received.append((image.size, width, height))
+                result = image.convert("RGBA")
+            result.putpixel((0, 0), (210, 40, 20, 0))
+            result.save(output_path)
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            rmbg_runner=fake_rmbg,
+        )
+
+        self.assertEqual(received, [((1241, 1254), 1241, 1254)])
+        self.assertEqual(report["asset_dimensions"], {"width": 1241, "height": 1254})
+        with Image.open(self.job / "final" / "layer-one.png") as image:
+            self.assertEqual(image.size, (1241, 1254))
+
+    def test_targeted_repair_rejects_a_native_canvas_with_changed_aspect_ratio(self):
+        self.plan["layers"][0].update({
+            "execution_route_hint": "targeted_repair",
+            "remove_background": True,
+            "transparency_strategy": "rembg",
+            "rmbg_required": True,
+            "output_resolution_policy": "native_imagegen_content",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        Image.new("RGBA", (1254, 1200), (210, 40, 20, 255)).save(self.generated)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "targeted_repair_canvas",
+            "execution_route": "targeted_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 2, "height": 2},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "aspect ratio"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+            )
+
     def test_native_targeted_repair_scales_declared_source_lock_regions(self):
         self.plan["layers"][0].update({
             "execution_route_hint": "targeted_repair",

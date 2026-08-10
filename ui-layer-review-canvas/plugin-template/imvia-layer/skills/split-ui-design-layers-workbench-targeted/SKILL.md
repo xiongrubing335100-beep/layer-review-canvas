@@ -55,11 +55,14 @@ plans are conservatively inferred by the executor; never infer a new layer or a 
   region back to the exact crop and apply it to the untouched source RGB. Never ask ImageGen to
   redraw the final glyph RGB, because its native output canvas is not the requested crop size.
   Never call RMBG for this route.
-- `targeted_repair`: prepare the fixed native ImageGen canvas and mapping, repair only approved
-  holes inside its declared `content_region`, and reject an ImageGen result whose full canvas size
-  differs from the prepared reference. With `transparency_strategy: rembg`, keep the extracted
-  native `content_region` resolution through RMBG and delivery; `expected_output` remains the
-  infinite-canvas logical placement size. Without RMBG, map the region to the exact logical crop.
+- `targeted_repair`: prepare the standard ImageGen reference canvas and mapping, then repair only
+  approved holes inside its declared `content_region`. With `transparency_strategy: rembg` and
+  `output_resolution_policy: native_imagegen_content`, accept an ImageGen result at a different
+  native pixel size when its canvas aspect ratio and composition remain unchanged; scale the
+  mapping coordinates uniformly and keep the extracted native `content_region` resolution through
+  RMBG and delivery. Reject aspect-ratio changes, stretched or compressed content, and composition
+  drift. `expected_output` remains the infinite-canvas logical placement size. Without this native
+  output policy, map the prepared region to the exact logical crop.
 - `result_refinement`: treat the current successful PNG as the only authoritative base, preserve
   its actual pixel dimensions and alpha, and edit only the scope compiled from the structured
   operation and closed Bézier pen paths. Natural-language text supplies the visual goal, never the
@@ -176,7 +179,7 @@ Use the shortest source-pixel-first route:
 2. Do not create alternate candidates before the first-candidate gate or perform full-page analysis.
 3. Use `targeted_repair` only when the requirement explicitly needs approved text removal, hole filling, or occlusion completion. Create one first working result.
 4. Immediately validate that result for the dimensions required by `output_resolution_policy`, annotation conformance, obvious exclusions, and structural integrity. When all four pass, accept it and skip repair-mask generation and source-locked recomposition.
-5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. For `codex_rgba` and `targeted_repair`, the candidate must preserve the prepared native canvas and content region. For `result_refinement`, apply the gate and one-retry ceiling to each manifest `roi_job`. Retry a canvas-size failure once; never stretch an arbitrary ImageGen canvas into the requested crop or ROI.
+5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. A `codex_rgba` candidate must preserve the prepared native canvas. A `targeted_repair` candidate under `native_imagegen_content` may use ImageGen's different native pixel dimensions when the canvas aspect ratio and composition remain unchanged; proportionally scale the declared `content_region` coordinates and keep the resulting native pixels. For `result_refinement`, apply the gate and one-retry ceiling to each manifest `roi_job`. Retry an aspect-ratio or composition failure once; never stretch, compress, or force-resize an arbitrary ImageGen canvas into the requested crop or ROI.
 6. Run the mandatory count, dimensions, alpha, annotation-conformance, and obvious-exclusion checks. Annotation conformance must honor forced keep and exclude annotations; when they overlap, the larger `order_index` wins.
 7. Emit no more than one progress message before final delivery.
 
@@ -204,10 +207,12 @@ For every submitted record:
 3. Apply submitted annotations and complete the requested split structure.
 4. Follow the selected execution mode and route. In fast `direct_crop` and `alpha_extract`, execute directly. In fast `targeted_repair`, `codex_rgba`, and `result_refinement`, run the first-candidate gate and short-circuit accepted work before any retry.
    For `targeted_repair`, first run `scripts/prepare-targeted-imagegen-canvas.py` with the current
-   `jobId` and `layerId`. Give ImageGen only the returned fixed reference canvas, require the entire
-   native canvas to remain unchanged, and edit only approved holes inside the returned
-   `content_region`. Save the native result in `generated/`. A different returned canvas size is a
-   failed candidate, not permission to resize it.
+   `jobId` and `layerId`. Give ImageGen only the returned standard reference canvas, require the
+   aspect ratio, composition, and approved repair scope to remain unchanged, and edit only approved
+   holes inside the returned `content_region`. Save the native result in `generated/`. Under
+   `native_imagegen_content`, a same-aspect-ratio native result such as `1024×1024 → 1254×1254` is
+   valid and must be passed unchanged to the finalizer; do not resize it manually. A changed aspect
+   ratio, stretched geometry, or composition drift is a failed candidate.
    For `codex_rgba`, first run `scripts/prepare-targeted-imagegen-canvas.py` with the current
    `jobId` and `layerId`. Use only the returned reference canvas for ImageGen and request a pure
    black-background/white-subject alpha matte without moving, resizing, redrawing, or reflowing the
@@ -219,8 +224,9 @@ For every submitted record:
    preparation command, then process the returned version-2 manifest one `roi_job` at a time. Attach
    only the current job's `reference_path`, enforce its closed-path mask, and never call RMBG.
 5. For `targeted_repair`, pass the native generated canvas plus the returned mapping JSON to
-   `scripts/finalize-targeted-job.py --imagegen-mapping`; the finalizer validates the full canvas
-   and extracts only the declared content region. If the record uses RMBG with
+   `scripts/finalize-targeted-job.py --imagegen-mapping`; the finalizer validates the canvas aspect
+   ratio, uniformly scales mapping coordinates when ImageGen returned a same-ratio native size, and
+   extracts only the declared content region. If the record uses RMBG with
    `output_resolution_policy: native_imagegen_content` (also the legacy default for targeted repair
    plus RMBG), the finalizer sends that native region directly to RMBG and delivers the same pixel
    dimensions. It must not resize to `expected_output` before RMBG. Otherwise it performs the
@@ -314,10 +320,12 @@ Produce only the selected component. When the requirement asks for a clean base,
   matte outside `final/`, then run `scripts/finalize-targeted-job.py --imagegen-mapping <mapping>`.
   It must reject a changed native canvas, a matte without black and white extrema, opaque output,
   or changed source glyph RGB.
-- For `execution_route_hint: targeted_repair`, keep the fixed reference, mapping JSON, and native
-  ImageGen result outside `final/`, then pass both result and mapping to the targeted finalizer. It
-  must reject a changed native canvas before any RMBG step. When RMBG is required, it must extract
-  the native `content_region`, run RMBG at that resolution, and return the high-resolution PNG.
+- For `execution_route_hint: targeted_repair`, keep the standard reference, mapping JSON, and native
+  ImageGen result outside `final/`, then pass both result and mapping to the targeted finalizer. With
+  `native_imagegen_content`, it must accept a same-aspect-ratio native canvas, scale the mapping
+  coordinates uniformly, and reject only aspect-ratio, geometry, or composition changes before any
+  RMBG step. When RMBG is required, it must extract the native `content_region`, run RMBG at that
+  resolution, and return the high-resolution PNG.
 - For `transparency_strategy: rembg`, write the pre-RMBG image outside `final/`; the targeted
   finalizer runs `scripts/finalize-rmbg.py` with the actual candidate asset width and height.
 - Put diagnostics, prompts, masks, and reports outside `final/`.

@@ -174,7 +174,7 @@ test('fast ImageGen routes accept a clean first candidate and retry only after f
   assert.match(prompt, /禁止绕过尺寸校验/);
 });
 
-test('targeted repair prompts require the fixed ImageGen canvas mapping', () => {
+test('targeted repair prompts accept uniformly scaled native ImageGen canvases', () => {
   const prompt = buildWorkbenchPrompt({
     ...base,
     plan: {
@@ -191,7 +191,11 @@ test('targeted repair prompts require the fixed ImageGen canvas mapping', () => 
   assert.match(prompt, /prepare-targeted-imagegen-canvas\.py/);
   assert.match(prompt, /标准参考画布/);
   assert.match(prompt, /--imagegen-mapping/);
-  assert.match(prompt, /返回画布尺寸变化则失败/);
+  assert.match(prompt, /宽高比一致/);
+  assert.match(prompt, /原生尺寸/);
+  assert.match(prompt, /按比例换算 content_region/);
+  assert.match(prompt, /宽高比变化或构图偏移才失败/);
+  assert.doesNotMatch(prompt, /返回画布尺寸变化则失败/);
 });
 
 test('targeted repair RMBG prompt keeps the native ImageGen content resolution', () => {

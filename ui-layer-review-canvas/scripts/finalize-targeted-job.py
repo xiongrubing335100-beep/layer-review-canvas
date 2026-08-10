@@ -417,12 +417,20 @@ def crop_mapped_imagegen_canvas(
     height,
     label,
     preserve_content_resolution=False,
+    allow_uniformly_scaled_canvas=False,
 ):
     canvas = mapping.get("canvas") or {}
     canvas_size = (int(canvas.get("width", 0)), int(canvas.get("height", 0)))
-    if candidate.size != canvas_size:
+    candidate_size = candidate.size
+    if candidate_size != canvas_size and not allow_uniformly_scaled_canvas:
         raise ValueError(
             f"{label} must preserve the prepared {canvas_size[0]}x{canvas_size[1]} canvas"
+        )
+    if candidate_size != canvas_size and (
+        candidate_size[0] * canvas_size[1] != candidate_size[1] * canvas_size[0]
+    ):
+        raise ValueError(
+            f"{label} native canvas aspect ratio must match the prepared canvas"
         )
 
     region = mapping.get("content_region") or {}
@@ -437,7 +445,13 @@ def crop_mapped_imagegen_canvas(
     ):
         raise ValueError("ImageGen content region is invalid")
 
-    content = candidate.crop((x, y, x + region_width, y + region_height))
+    scale_x = candidate_size[0] / canvas_size[0]
+    scale_y = candidate_size[1] / canvas_size[1]
+    mapped_left = round(x * scale_x)
+    mapped_top = round(y * scale_y)
+    mapped_right = round((x + region_width) * scale_x)
+    mapped_bottom = round((y + region_height) * scale_y)
+    content = candidate.crop((mapped_left, mapped_top, mapped_right, mapped_bottom))
     if not preserve_content_resolution and content.size != (width, height):
         content = content.resize((width, height), Image.Resampling.LANCZOS)
     return content
@@ -627,6 +641,7 @@ def finalize_job(
                     height,
                     "ImageGen targeted repair",
                     preserve_content_resolution=preserve_native_rmbg,
+                    allow_uniformly_scaled_canvas=preserve_native_rmbg,
                 )
             else:
                 raise ValueError("ImageGen mapping is only valid for codex_rgba or targeted_repair")
