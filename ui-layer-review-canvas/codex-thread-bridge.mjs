@@ -76,6 +76,23 @@ async function resolveCodexExecutable() {
   throw new Error('未找到 Codex 运行时。请确认 Codex CLI 已安装并在 PATH 中，或设置 CODEX_CLI_PATH 后重新运行 npm run setup。');
 }
 
+export function quoteShellArgument(value, platform = process.platform, force = false) {
+  const text = String(value);
+  if (/[\0\r\n]/.test(text)) throw new Error('命令参数包含不安全的控制字符');
+  const safe = platform === 'win32'
+    ? /^[A-Za-z0-9_@+=:,./\\-]+$/
+    : /^[A-Za-z0-9_@%+=:,./-]+$/;
+  if (!force && safe.test(text)) return text;
+  if (platform === 'win32') {
+    if (/[%!$`"]/.test(text)) throw new Error('Windows 命令参数包含不安全的 shell 展开字符');
+    const escaped = text
+      .replace(/(\\*)"/g, '$1$1\\"')
+      .replace(/(\\+)$/, '$1$1');
+    return `"${escaped}"`;
+  }
+  return `"${text.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
 export function resolvePythonInvocation(environment = process.env, platform = process.platform) {
   const command = environment.IMVIA_LAYER_PYTHON_COMMAND
     || (platform === 'win32' ? 'python' : 'python3');
@@ -87,7 +104,7 @@ export function resolvePythonInvocation(environment = process.env, platform = pr
     args = [];
   }
   return [command, ...args]
-    .map((part) => /\s/.test(part) ? `"${part.replaceAll('"', '\\"')}"` : part)
+    .map((part) => quoteShellArgument(part, platform))
     .join(' ');
 }
 
@@ -301,6 +318,10 @@ export function buildWorkbenchPrompt({
   const rmbgScriptPath = path.resolve(projectRoot, 'scripts', 'finalize-rmbg.py');
   const imagegenCanvasScriptPath = path.resolve(projectRoot, 'scripts', 'prepare-targeted-imagegen-canvas.py');
   const targetedFinalizerPath = path.resolve(projectRoot, 'scripts', 'finalize-targeted-job.py');
+  const quotedConfirmScriptPath = quoteShellArgument(confirmScriptPath, process.platform, true);
+  const quotedRmbgScriptPath = quoteShellArgument(rmbgScriptPath, process.platform, true);
+  const quotedImagegenCanvasScriptPath = quoteShellArgument(imagegenCanvasScriptPath, process.platform, true);
+  const quotedTargetedFinalizerPath = quoteShellArgument(targetedFinalizerPath, process.platform, true);
   const removeBackgroundLayers = (plan?.layers || [])
     .filter((layer) => layer.remove_background)
     .map((layer) => layer.name || layer.id)
@@ -326,6 +347,8 @@ export function buildWorkbenchPrompt({
     .filter((layer) => layer.execution_route_hint === 'result_refinement');
   const resultRefinementLines = resultRefinementLayers.flatMap((layer) => {
     const layerId = layer.id || '<layerId>';
+    const quotedJobId = quoteShellArgument(jobId, process.platform);
+    const quotedLayerId = quoteShellArgument(layerId, process.platform);
     const canvas = plan?.source?.canvas || layer.expected_output || {};
     const dimensions = Number.isInteger(canvas.width) && Number.isInteger(canvas.height)
       ? `${canvas.width}×${canvas.height}`
@@ -353,16 +376,22 @@ export function buildWorkbenchPrompt({
     const normalizedRequirement = String(
       layer.normalized_user_requirement ?? layer.requirement ?? '',
     ).trim().replace(/\s+/g, ' ');
+    const candidateBinding = quoteShellArgument('roi-id=/absolute/path.png', process.platform, true);
+    const manifestPath = quoteShellArgument(
+      '/absolute/path/to/result_refinement_roi_manifest.json',
+      process.platform,
+      true,
+    );
     const finalizerCommand = roiCount === 0
-      ? `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --imagegen-mapping /absolute/path/to/result_refinement_roi_manifest.json`
-      : `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --generated-input roi-id=/absolute/path.png --imagegen-mapping /absolute/path/to/result_refinement_roi_manifest.json`;
+      ? `${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId} --imagegen-mapping ${manifestPath}`
+      : `${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId} --generated-input ${candidateBinding} --imagegen-mapping ${manifestPath}`;
     return [
       `PNG 结果局部精修层：${layer.name || layerId}。`,
       `当前成功 PNG 是唯一权威 base；最终尺寸锁定为 ${dimensions}，禁止缩放或改变画布。`,
       `系统理解：${repairCount} 个修复路径、${eraseCount} 个删除路径、${protectCount} 个保护路径；${scopeSummary}；${canvasSummary}。`,
       `用户目标：${normalizedRequirement || '仅执行已提交的结构化 Alpha 操作。'}`,
       `精确修复 ROI 数：${roiCount}；ImageGen 调用预算：${callBudget}${roiCount > 0 ? '（每个 ROI 一次初始候选，失败时最多一次重试）' : ''}。`,
-      `先运行选定 Python 与绝对脚本路径：${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id ${layerId}`,
+      `先运行选定 Python 与绝对脚本路径：${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId}`,
       '读取返回的 result_refinement_roi_manifest（version 2）；每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选，禁止强制缩放、整页分析或混用 ROI。',
       roiCount === 0
         ? 'ROI manifest 的 roi_jobs 为空时禁止调用 ImageGen；finalizer 仅执行确定性 Alpha 操作。'
@@ -399,7 +428,7 @@ export function buildWorkbenchPrompt({
       ? `收到后先调用 confirm_layer_review_foreground_dispatch，参数 jobId=${jobId}；确认成功后再执行拆分。`
       : '',
     requireForegroundConfirmation
-      ? `若确认工具尚未出现在工具目录，改为运行：node "${confirmScriptPath}" "${jobId}"。`
+      ? `若确认工具尚未出现在工具目录，改为运行：node ${quotedConfirmScriptPath} ${quoteShellArgument(jobId, process.platform, true)}。`
       : '',
     '只处理计划 layers[]；在同一 turn 内规范化简短需求并执行。',
     '遵守 execution_mode、execution_route_hint 与 execution_policy；不要全页诊断或增加图层。',
@@ -408,17 +437,17 @@ export function buildWorkbenchPrompt({
       ? `去背景已开启：${removeBackgroundLayers.join('、')}。这些图层必须输出真实透明 RGBA PNG。`
       : '',
     codexRgbaLayers.length
-      ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
+      ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
       : '',
     targetedRepairLayers.length
-      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持整张标准画布不变。将原生结果保存到 generated/ 后运行 ${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。返回画布尺寸变化则失败；禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
+      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持整张标准画布不变。将原生结果保存到 generated/ 后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。返回画布尺寸变化则失败；禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
       : '',
     ...resultRefinementLines,
     nativeResolutionRmbgLayers.length
       ? `高分辨率透明输出层：${nativeResolutionRmbgLayers.join('、')}。最终处理器必须让原生 content_region 分辨率直接进入 BRIA RMBG，并回传同分辨率透明 PNG；框选宽高仅作为画布逻辑尺寸和定位元数据。禁止在 RMBG 前缩小到框选尺寸。`
       : '',
     rmbgLayers.length
-      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} "${rmbgScriptPath}" --input <中间PNG> --output <final PNG> --model ${RMBG_MODEL} --expected-width <宽> --expected-height <高>。`
+      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} ${quotedRmbgScriptPath} --input <中间PNG> --output <final PNG> --model ${RMBG_MODEL} --expected-width <宽> --expected-height <高>。`
       : '',
     rmbgLayers.length
       ? 'RMBG 成功并通过结构验收后才写入 final；禁止用色差、轮廓、膨胀、模糊或自制蒙版代替。'

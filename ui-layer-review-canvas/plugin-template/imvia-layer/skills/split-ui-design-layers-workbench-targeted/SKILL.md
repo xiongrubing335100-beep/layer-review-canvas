@@ -99,15 +99,17 @@ replace it with a guessed `python3` or a repository-relative script path.
 
 The preparation result is a version-2 `result_refinement_roi_manifest`. Process its `roi_jobs` one
 at a time. Give ImageGen only that job's `reference_path`; keep the declared canvas and
-`content_region` at native 1:1, and allow changes only inside that job's closed repair-path mask.
+`content_region` at native 1:1, and enforce the job's manifest-authorized scope. A local `roi_job`
+uses its closed repair-path mask. A job with `path_id: "full-canvas"` has no repair-path mask and
+instead uses the manifest's explicit full-canvas tile and `content_region` as its authorized scope.
 Never merge distant jobs, perform whole-page analysis, or use a forced resize to make a candidate
 fit. Save each accepted candidate outside `final/`.
 
-A candidate may be RGB or RGBA. Candidate RGB inside the authorized repair mask may be used, but
+A candidate may be RGB or RGBA. Candidate RGB inside the manifest-authorized scope may be used, but
 candidate Alpha is not authoritative. Final Alpha comes from the base PNG plus the structured
 `erase_path_ids`, `subject_path_ids`, `alpha_include_path_ids`, and protected base pixels. Never
 paint a checkerboard, infer transparency from chroma, create a chroma mask, or perform
-prompt-inferred deletion. All pixels outside authorized masks remain byte-for-byte locked to the
+prompt-inferred deletion. All pixels outside the manifest-authorized scope remain byte-for-byte locked to the
 base, and protected paths restore the base RGBA last. Never call RMBG.
 
 For each `roi_job`, make one initial ImageGen call. Inspect it before finalization; only a failed

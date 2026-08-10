@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildWorkbenchPrompt,
   buildWorkbenchTurnInput,
+  quoteShellArgument,
   resolvePythonInvocation,
   selectExecutionAttachments,
 } from '../codex-thread-bridge.mjs';
@@ -16,6 +17,7 @@ const base = {
   reviewCropPaths: ['C:/jobs/job-1/01-selection.png'],
 };
 const workbenchSkill = await readFile(new URL('../plugin-template/imvia-layer/skills/split-ui-design-layers-workbench-targeted/SKILL.md', import.meta.url), 'utf8');
+const refinementSpec = await readFile(new URL('../docs/superpowers/specs/2026-08-10-png-result-refinement-roi-execution-design.md', import.meta.url), 'utf8');
 
 function skillSection(title, nextTitle) {
   const start = workbenchSkill.indexOf(title);
@@ -50,6 +52,9 @@ test('the workbench skill defines the executable version-2 local ROI refinement 
     cursor = next;
   }
   assert.match(section, /one initial candidate and at most one retry per `roi_job`/);
+  assert.match(section, /manifest-authorized scope/);
+  assert.match(section, /local `roi_job`[\s\S]*?closed repair-path mask/);
+  assert.match(section, /`path_id: "full-canvas"`[\s\S]*?explicit full-canvas tile[\s\S]*?`content_region`/);
   assert.match(section, /empty `roi_jobs`[\s\S]*?must not call ImageGen/);
   assert.match(section, /resolved Python invocation[\s\S]*?absolute path/);
   assert.match(section, /original source[\s\S]*?earlier PNG version/);
@@ -111,6 +116,25 @@ test('split prompts reuse the Python runtime selected during setup', () => {
     IMVIA_LAYER_PYTHON_COMMAND: 'py',
     IMVIA_LAYER_PYTHON_ARGS: '["-3"]',
   }, 'win32'), 'py -3');
+});
+
+test('shell argument quoting covers Unix and Windows paths without allowing expansion', () => {
+  assert.equal(
+    quoteShellArgument('/workspace/Imvia Layer/finalize.py', 'darwin', true),
+    '"/workspace/Imvia Layer/finalize.py"',
+  );
+  assert.equal(
+    quoteShellArgument('C:\\Program Files\\Imvia Layer\\finalize.py', 'win32', true),
+    '"C:\\Program Files\\Imvia Layer\\finalize.py"',
+  );
+  assert.equal(
+    quoteShellArgument('/workspace/$(touch injected)/finalize.py', 'darwin', true),
+    '"/workspace/\\$(touch injected)/finalize.py"',
+  );
+  assert.throws(
+    () => quoteShellArgument('C:\\%PATH%\\finalize.py', 'win32', true),
+    /不安全的 shell 展开字符/,
+  );
 });
 
 test('title background removal is routed to visible Codex RGBA without RMBG', () => {
@@ -320,7 +344,7 @@ test('result refinement prompt compiles the trusted local ROI policy into an exe
   try {
     const prompt = buildWorkbenchPrompt({
       ...base,
-      jobPath: '/workspace/imvia/output/jobs/job-1/layer-review-plan.json',
+      jobPath: '/workspace/Imvia Layer/output/jobs/job-1/layer-review-plan.json',
       plan: {
         task: 'refine_split_result',
         source: { canvas: { width: 1024, height: 1243 } },
@@ -356,10 +380,11 @@ test('result refinement prompt compiles the trusted local ROI policy into an exe
     assert.match(prompt, /候选可为 RGB 或 RGBA/);
     assert.match(prompt, /候选 Alpha 不具有最终决定权/);
     assert.match(prompt, /禁止.*RMBG/);
-    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
-    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input roi-id=\/absolute\/path\.png/);
+    assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
+    assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input "roi-id=\/absolute\/path\.png"/);
     assert.match(prompt, /每个 roi_job 重复 --generated-input/);
-    assert.match(prompt, /--imagegen-mapping \/absolute\/path\/to\/result_refinement_roi_manifest\.json/);
+    assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
+    assert.doesNotMatch(prompt, /--generated-input roi-id=|--imagegen-mapping \/absolute/);
     assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
   } finally {
     if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
@@ -402,5 +427,61 @@ test('deterministic-only result refinement forbids ImageGen and finalizes with z
   const finalizerLine = prompt.split('\n').find((line) => line.includes('finalize-targeted-job.py'));
   assert.ok(finalizerLine);
   assert.doesNotMatch(finalizerLine, /--generated-input/);
-  assert.match(finalizerLine, /--imagegen-mapping \/absolute\/path\/to\/result_refinement_roi_manifest\.json/);
+  assert.match(finalizerLine, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
+});
+
+test('Unix refinement commands quote spaces, candidate bindings, manifests, and shell expansion characters', () => {
+  const previousCommand = process.env.IMVIA_LAYER_PYTHON_COMMAND;
+  const previousArgs = process.env.IMVIA_LAYER_PYTHON_ARGS;
+  process.env.IMVIA_LAYER_PYTHON_COMMAND = '/opt/Imvia Python/bin/python3';
+  process.env.IMVIA_LAYER_PYTHON_ARGS = '[]';
+  try {
+    const prompt = buildWorkbenchPrompt({
+      ...base,
+      jobPath: '/workspace/Imvia $(unsafe)/output/jobs/job-1/layer-review-plan.json',
+      plan: {
+        task: 'refine_split_result',
+        source: { canvas: { width: 64, height: 64 } },
+        layers: [{
+          id: 'button',
+          name: '按钮',
+          normalized_user_requirement: '修复按钮',
+          execution_route_hint: 'result_refinement',
+          refinement_operation: { mode: 'path_scoped' },
+          mask_annotations: [{ id: 'repair', kind: 'boundary', operation_role: 'repair' }],
+          maximum_imagegen_calls: 2,
+        }],
+      },
+    });
+
+    assert.match(prompt, /"\/opt\/Imvia Python\/bin\/python3" "\/workspace\/Imvia \\\$\(unsafe\)\/scripts\/prepare-targeted-imagegen-canvas\.py"/);
+    assert.match(prompt, /--generated-input "roi-id=\/absolute\/path\.png"/);
+    assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
+    assert.doesNotMatch(prompt, /"\/workspace\/Imvia \$\(unsafe\)\/scripts/);
+  } finally {
+    if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
+    else process.env.IMVIA_LAYER_PYTHON_COMMAND = previousCommand;
+    if (previousArgs === undefined) delete process.env.IMVIA_LAYER_PYTHON_ARGS;
+    else process.env.IMVIA_LAYER_PYTHON_ARGS = previousArgs;
+  }
+});
+
+test('the system spec separates persisted refinement plan fields from final report fields', () => {
+  const fields = refinementSpec.slice(
+    refinementSpec.indexOf('## 10. 任务字段'),
+    refinementSpec.indexOf('## 11. 测试要求'),
+  );
+  assert.match(fields, /### Persisted plan fields/);
+  assert.match(fields, /`source\.local_path`/);
+  assert.match(fields, /`parent_version_id`/);
+  assert.match(fields, /`source\.canvas`/);
+  assert.match(fields, /`layers\[\]\.placement`/);
+  assert.match(fields, /### Final execution report fields/);
+  assert.match(fields, /`asset_dimensions`/);
+  assert.match(fields, /`logical_placement`/);
+  const persisted = fields.slice(
+    fields.indexOf('### Persisted plan fields'),
+    fields.indexOf('### Final execution report fields'),
+  );
+  assert.doesNotMatch(persisted, /`base_result_path`|`base_result_version_id`|`asset_dimensions`|`logical_placement`/);
 });

@@ -216,29 +216,45 @@ PNG 二次编辑区需要：
 
 ## 10. 任务字段
 
-`result_refinement` 任务至少包含：
+### Persisted plan fields
 
-- `base_result_path`
-- `base_result_version_id`
-- `asset_dimensions`
-- `logical_placement`
-- `refinement_operation`
-- `refinement_operation.subject_path_ids`
-- `refinement_operation.alpha_include_path_ids`
-- `normalized_user_requirement`
-- `mask_annotations`
-- `roi_policy`
-- `repair_path_ids`
-- `erase_path_ids`
-- `protect_path_ids`
-- `expected_roi_tile_count`
-- `transparency_strategy: preserve_existing_alpha`
-- `output_resolution_policy: existing_result_pixels`
-- `rmbg_required: false`
-- `maximum_imagegen_calls`
+`result_refinement` 持久化计划使用现有字段：
+
+- `version: 0.8`
+- `task: refine_split_result`
+- `parent_job_id`
+- `parent_version_id`
+- `source.local_path`
+- `source.canvas`
+- `layers[].placement`
+- `layers[].refinement_operation`
+- `layers[].refinement_operation.subject_path_ids`
+- `layers[].refinement_operation.alpha_include_path_ids`
+- `layers[].normalized_user_requirement`
+- `layers[].mask_annotations`
+- `layers[].roi_policy`
+- `layers[].repair_path_ids`
+- `layers[].erase_path_ids`
+- `layers[].protect_path_ids`
+- `layers[].expected_roi_tile_count`
+- `layers[].transparency_strategy: preserve_existing_alpha`
+- `layers[].output_resolution_policy: existing_result_pixels`
+- `layers[].rmbg_required: false`
+- `layers[].maximum_imagegen_calls`
 
 准备阶段另行输出 `generated_input_kind: result_refinement_roi_manifest` 的 version 2 manifest，
-其中 `roi_jobs[]` 是候选绑定的唯一清单。不得把逻辑画布尺寸写入 `asset_dimensions`，不得把提示词中的范围描述当成结构化操作。
+其中 `roi_jobs[]` 是候选绑定的唯一清单。不得把提示词中的范围描述当成结构化操作。
+
+### Final execution report fields
+
+最终 `execution-report.json` 使用报告字段：
+
+- `asset_dimensions`
+- `logical_placement`
+
+这两个字段只描述最终输出资产和逻辑定位，不是持久化计划字段。资产来源与基准版本分别由
+`source.local_path` 和 `parent_version_id` 表达；画布与图层定位分别由 `source.canvas` 和
+`layers[].placement` 表达。
 
 ## 11. 测试要求
 
