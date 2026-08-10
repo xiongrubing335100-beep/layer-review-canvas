@@ -43,36 +43,37 @@
 
 ## 4. 结构化编辑操作
 
-二次编辑任务新增或规范以下显式操作：
+二次编辑任务通过 `refinement_operation` 保存显式操作模式；可信预检再从路径类型和
+`refinement_operation.subject_path_ids` 派生下列路径集合。自然语言不得覆盖这些字段。
 
-### 4.1 `repair_inside_paths`
+### 4.1 `repair_path_ids`
 
 - 使用 `boundary` 闭合路径定义允许生成式修改的区域。
 - 路径外所有 RGBA 像素逐字节等于基准 PNG。
 - 每条独立路径形成一个独立修复 ROI。
 - 不得把多条相距较远的路径合并为覆盖整图的大 ROI。
 
-### 4.2 `erase_paths`
+### 4.2 `erase_path_ids`
 
 - 使用 `exclude`、`erase`、`background` 或 `force_exclude` 路径。
 - 路径内部 Alpha 确定性设置为零。
 - 单纯擦除不调用 ImageGen。
 - 若同时要求补背景，补背景范围必须另有 `boundary` 修复路径。
 
-### 4.3 `protect_paths`
+### 4.3 `protect_path_ids`
 
 - 使用 `keep`、`foreground` 或 `force_keep` 路径。
 - 路径内部最终 RGBA 直接采用基准 PNG，不允许生成结果覆盖；保护路径拥有最高合成优先级。
 - 适用于人物脸部、Logo、文字和其他必须保持不变的内容。
 
-### 4.4 `keep_inside_delete_outside`
+### 4.4 `refinement_operation.mode: keep_inside_delete_outside`
 
 - 这是显式画布级操作，不得由 `boundary` 或自然语言隐式推断。
-- 指定的主体闭合路径内部保留，路径外 Alpha 确定性设置为零。
+- `refinement_operation.subject_path_ids` 指定的主体闭合路径内部保留，路径外 Alpha 确定性设置为零。
 - 主体内部需要补全时，必须另外提交修复路径。
 - 未选择该操作时，所有修复路径外像素保持基准 PNG，不得删除。
 
-### 4.5 `full_canvas_explicit`
+### 4.5 `refinement_operation.mode: full_canvas_explicit`
 
 - 只有用户明确选择“整图编辑”时才能启用。
 - 工作台必须展示比例漂移和重新构图风险，并要求二次确认。
@@ -95,6 +96,7 @@
 - 每条 `boundary` 路径分别计算最小包围盒。
 - 按目标尺寸增加 3%–15% 的上下文留白，留白仍不得超出 PNG 边界。
 - ROI mapping 记录 `base_x`、`base_y`、`width`、`height`、路径 ID 和标准画布内的 `content_region`。
+- `roi_policy.scale_mode` 必须为 `native_1_to_1`；留白、覆盖阈值、分块重叠和其他 ROI 参数都以受信任的 `roi_policy` 为准。
 - 多条重叠或相邻路径仅在合并后不会把无关对象纳入可编辑范围时才能合并。
 - ImageGen 候选只能回写到对应路径遮罩内部，ROI 留白只提供上下文，不自动获得修改权限。
 
@@ -143,6 +145,10 @@
 4. 为每条修复路径建立独立 ROI mapping 和 1:1 标准参考画布。
 5. 在调用 ImageGen 前完成所有可读检查和规范化提示词。
 
+准备脚本输出 version 2 manifest，且 `generated_input_kind` 必须为
+`result_refinement_roi_manifest`。执行器逐个读取 `roi_jobs[]`，每个 job 只使用自己的
+`reference_path`、`content_region` 和原生 1:1 mapping。
+
 ### 7.2 ImageGen
 
 - 每次生成只处理一个独立 ROI 或一组明确相邻的路径。
@@ -155,8 +161,8 @@
 - ImageGen 只拥有修复路径内部的 RGB 修改权限。
 - 候选为 RGB PNG 时，可以使用其路径内 RGB，不得因为缺少候选 Alpha 而把棋盘格当作透明度。
 - 默认 Alpha 来自基准 PNG。
-- Alpha 只能由 `erase_paths`、`protect_paths`、`keep_inside_delete_outside` 或其他明确结构化 Alpha 操作改变。
-- 如果补全对象需要扩展到原透明区域，必须由对应的显式保留或主体边界语义授权新增 Alpha；提示词本身不能授予 Alpha 修改权限。
+- Alpha 只能由 `erase_path_ids`、`protect_path_ids`、`refinement_operation.mode: keep_inside_delete_outside` 或其他明确结构化 Alpha 操作改变。
+- 如果补全对象需要扩展到原透明区域，路径 ID 必须列入 `refinement_operation.alpha_include_path_ids`；提示词本身不能授予 Alpha 修改权限。
 - PNG 二次编辑不得调用 RMBG。
 
 ### 7.4 最终合成
@@ -217,15 +223,22 @@ PNG 二次编辑区需要：
 - `asset_dimensions`
 - `logical_placement`
 - `refinement_operation`
+- `refinement_operation.subject_path_ids`
+- `refinement_operation.alpha_include_path_ids`
 - `normalized_user_requirement`
 - `mask_annotations`
-- `roi_mappings`
+- `roi_policy`
+- `repair_path_ids`
+- `erase_path_ids`
+- `protect_path_ids`
+- `expected_roi_tile_count`
 - `transparency_strategy: preserve_existing_alpha`
 - `output_resolution_policy: existing_result_pixels`
 - `rmbg_required: false`
 - `maximum_imagegen_calls`
 
-不得把逻辑画布尺寸写入 `asset_dimensions`，不得把提示词中的范围描述当成结构化操作。
+准备阶段另行输出 `generated_input_kind: result_refinement_roi_manifest` 的 version 2 manifest，
+其中 `roi_jobs[]` 是候选绑定的唯一清单。不得把逻辑画布尺寸写入 `asset_dimensions`，不得把提示词中的范围描述当成结构化操作。
 
 ## 11. 测试要求
 

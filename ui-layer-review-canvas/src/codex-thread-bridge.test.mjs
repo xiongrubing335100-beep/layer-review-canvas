@@ -17,46 +17,49 @@ const base = {
 };
 const workbenchSkill = await readFile(new URL('../plugin-template/imvia-layer/skills/split-ui-design-layers-workbench-targeted/SKILL.md', import.meta.url), 'utf8');
 
-test('the workbench skill documents PNG result refinement source locking', async () => {
-  assert.match(workbenchSkill, /result_refinement/);
-  assert.match(workbenchSkill, /当前成功 PNG/);
-  assert.match(workbenchSkill, /未标注 RGBA 像素/);
-  assert.match(workbenchSkill, /不得调用 RMBG/);
-});
+function skillSection(title, nextTitle) {
+  const start = workbenchSkill.indexOf(title);
+  const end = workbenchSkill.indexOf(nextTitle, start + title.length);
+  assert.notEqual(start, -1, `missing skill section ${title}`);
+  assert.notEqual(end, -1, `missing skill section boundary ${nextTitle}`);
+  return workbenchSkill.slice(start, end);
+}
 
-test('the workbench skill treats result refinement as a first-class fast ImageGen route', () => {
-  assert.match(
-    workbenchSkill,
-    /For `fast`,[\s\S]*?Call ImageGen only for `targeted_repair`, `codex_rgba`, or `result_refinement`/,
-  );
-  assert.match(
-    workbenchSkill,
-    /In fast `targeted_repair`, `codex_rgba`, and `result_refinement`, run the first-candidate gate/,
-  );
-  assert.match(
-    workbenchSkill,
-    /For `result_refinement`, first run[\s\S]*?prepare-targeted-imagegen-canvas\.py/,
-  );
-});
-
-test('the workbench skill documents the complete result refinement mutation scope', () => {
-  assert.match(workbenchSkill, /Attach only that base PNG/);
-  assert.match(workbenchSkill, /text-only[\s\S]*?full base PNG canvas editable/i);
-  assert.match(workbenchSkill, /closed Bézier pen paths[\s\S]*?complete\s+mutable scope/);
-  assert.match(workbenchSkill, /未标注 RGBA 像素[\s\S]*?locked byte-for-byte/);
-  assert.match(workbenchSkill, /actual pixel width and height[\s\S]*?never its logical selection/);
-  assert.match(workbenchSkill, /Inside a submitted closed path, RGBA and alpha may change/);
-  assert.match(workbenchSkill, /For a text-only refinement, RGBA and alpha may change across the full canvas/);
-  assert.match(workbenchSkill, /不得调用 RMBG/);
-});
-
-test('the workbench skill delegates exact commands to the resolved runtime and stops after finalization', () => {
-  assert.match(workbenchSkill, /resolved Python invocation/);
-  assert.match(workbenchSkill, /absolute path[\s\S]*?prepare-targeted-imagegen-canvas\.py/);
-  assert.match(workbenchSkill, /absolute path[\s\S]*?finalize-targeted-job\.py/);
-  assert.doesNotMatch(workbenchSkill, /python3 scripts\/(?:prepare-targeted-imagegen-canvas|finalize-targeted-job)\.py/);
-  assert.match(workbenchSkill, /last tool call in the Codex turn/);
-  assert.match(workbenchSkill, /immediately return the finalizer-approved PNG path and end the reply/);
+test('the workbench skill defines the executable version-2 local ROI refinement contract', () => {
+  const section = skillSection('## PNG Result Refinement', '## Performance Report');
+  const orderedStages = [
+    '当前成功 PNG',
+    'normalized_user_requirement',
+    'expected_roi_tile_count',
+    'maximum_imagegen_calls',
+    'prepare-targeted-imagegen-canvas.py',
+    'result_refinement_roi_manifest',
+    'roi_jobs',
+    'reference_path',
+    'native 1:1',
+    'RGB or RGBA',
+    'candidate Alpha is not authoritative',
+    '--generated-input roi-id=/absolute/path.png',
+    'finalize-targeted-job.py',
+    'last tool call',
+  ];
+  let cursor = -1;
+  for (const stage of orderedStages) {
+    const next = section.indexOf(stage, cursor + 1);
+    assert.ok(next > cursor, `missing or out-of-order result_refinement stage: ${stage}`);
+    cursor = next;
+  }
+  assert.match(section, /one initial candidate and at most one retry per `roi_job`/);
+  assert.match(section, /empty `roi_jobs`[\s\S]*?must not call ImageGen/);
+  assert.match(section, /resolved Python invocation[\s\S]*?absolute path/);
+  assert.match(section, /original source[\s\S]*?earlier PNG version/);
+  assert.match(section, /RMBG/);
+  assert.match(section, /whole-page analysis/);
+  assert.match(section, /forced resize/);
+  assert.match(section, /chroma mask/);
+  assert.match(section, /prompt-inferred deletion/);
+  assert.doesNotMatch(section, /text-only[\s\S]*?full base PNG canvas editable/i);
+  assert.doesNotMatch(section, /candidate must be[\s\S]*?RGBA PNG/i);
 });
 
 test('compact prompt points to the authoritative plan without duplicating requirements', () => {
@@ -303,84 +306,101 @@ test('refinement still attaches only the source when route-aware context is disa
   }
 });
 
-test('result refinement prompt treats the attached PNG as the locked authoritative base', () => {
-  const prompt = buildWorkbenchPrompt({
-    ...base,
-    plan: {
-      task: 'refine_split_result',
-      source: { canvas: { width: 1536, height: 837 } },
-      layers: [{
-        id: 'button',
-        name: '发送按钮',
-        requirement: '增强边缘高光',
-        execution_route_hint: 'result_refinement',
-        transparency_strategy: 'preserve_existing_alpha',
-        mask_annotations: [{ shape: 'bezier_path', closed: true }],
-      }],
-    },
-  });
-
-  assert.match(prompt, /附加.*权威.*base PNG|attached.*authoritative.*base PNG/i);
-  assert.match(prompt, /闭合路径.*之外.*RGBA.*锁定|路径外.*RGBA.*锁定/);
-  assert.match(prompt, /1536\s*[×x]\s*837/);
-  assert.match(prompt, /不得.*RMBG|禁止.*RMBG/);
-  assert.match(prompt, /prepare-targeted-imagegen-canvas\.py.*--job-id job-1.*--layer-id button/);
-  assert.match(prompt, /finalize-targeted-job\.py.*--job-id job-1.*--layer-id button.*--generated-input <PNG>.*--imagegen-mapping <JSON>/);
-  assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
-});
-
-test('text-only result refinement makes the full base PNG canvas editable', () => {
-  const prompt = buildWorkbenchPrompt({
-    ...base,
-    plan: {
-      task: 'refine_split_result',
-      source: { canvas: { width: 1536, height: 837 } },
-      layers: [{
-        id: 'button',
-        name: '发送按钮',
-        requirement: '整体增强高光',
-        execution_route_hint: 'result_refinement',
-        transparency_strategy: 'preserve_existing_alpha',
-        mask_annotations: [],
-      }],
-    },
-  });
-
-  assert.match(prompt, /纯文字|text-only/i);
-  assert.match(prompt, /全画布可编辑|full canvas.*editable/i);
-  assert.doesNotMatch(prompt, /路径外.*RGBA.*锁定/);
-});
-
-test('result refinement prompt reuses the configured Python runtime and absolute script paths', () => {
+test('result refinement prompt compiles the trusted local ROI policy into an executable message', () => {
   const previousCommand = process.env.IMVIA_LAYER_PYTHON_COMMAND;
   const previousArgs = process.env.IMVIA_LAYER_PYTHON_ARGS;
   process.env.IMVIA_LAYER_PYTHON_COMMAND = 'py';
   process.env.IMVIA_LAYER_PYTHON_ARGS = '["-3"]';
+  const annotation = (id, operationRole) => ({
+    id,
+    shape: 'bezier_path',
+    closed: true,
+    operation_role: operationRole,
+  });
   try {
     const prompt = buildWorkbenchPrompt({
       ...base,
       jobPath: '/workspace/imvia/output/jobs/job-1/layer-review-plan.json',
       plan: {
         task: 'refine_split_result',
-        source: { canvas: { width: 1536, height: 837 } },
+        source: { canvas: { width: 1024, height: 1243 } },
         layers: [{
           id: 'button',
-          name: '发送按钮',
-          requirement: '增强边缘高光',
+          name: '按钮',
+          requirement: '  补全两个金币，保持原位置、大小、材质和光影。  ',
+          normalized_user_requirement: '补全两个金币，保持原位置、大小、材质和光影。',
           execution_route_hint: 'result_refinement',
           transparency_strategy: 'preserve_existing_alpha',
-          mask_annotations: [],
+          refinement_operation: {
+            mode: 'path_scoped',
+            subject_path_ids: [],
+            alpha_include_path_ids: [],
+          },
+          mask_annotations: [
+            annotation('coin-left', 'repair'),
+            annotation('coin-right', 'repair'),
+            annotation('old-copy', 'erase'),
+          ],
+          maximum_imagegen_calls: 4,
         }],
       },
     });
 
+    assert.match(prompt, /PNG 结果局部精修层：按钮/);
+    assert.match(prompt, /当前成功 PNG 是唯一权威 base；最终尺寸锁定为 1024×1243，禁止缩放或改变画布/);
+    assert.match(prompt, /系统理解：2 个修复路径、1 个删除路径、0 个保护路径；路径外保持；非整图编辑/);
+    assert.match(prompt, /用户目标：补全两个金币，保持原位置、大小、材质和光影。/);
+    assert.match(prompt, /精确修复 ROI 数：2；ImageGen 调用预算：4/);
+    assert.match(prompt, /每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选/);
+    assert.match(prompt, /每个 ROI 一次初始候选，失败时最多一次重试/);
+    assert.match(prompt, /候选可为 RGB 或 RGBA/);
+    assert.match(prompt, /候选 Alpha 不具有最终决定权/);
+    assert.match(prompt, /禁止.*RMBG/);
     assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
-    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input <PNG> --imagegen-mapping <JSON>/);
-    assert.doesNotMatch(prompt, /python3 scripts\//);
+    assert.match(prompt, /py -3 "\/workspace\/imvia\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input roi-id=\/absolute\/path\.png/);
+    assert.match(prompt, /每个 roi_job 重复 --generated-input/);
+    assert.match(prompt, /--imagegen-mapping \/absolute\/path\/to\/result_refinement_roi_manifest\.json/);
+    assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
   } finally {
     if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
     else process.env.IMVIA_LAYER_PYTHON_COMMAND = previousCommand;
     if (previousArgs === undefined) delete process.env.IMVIA_LAYER_PYTHON_ARGS;
     else process.env.IMVIA_LAYER_PYTHON_ARGS = previousArgs;
   }
+});
+
+test('deterministic-only result refinement forbids ImageGen and finalizes with zero candidate bindings', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 1024, height: 1243 } },
+      layers: [{
+        id: 'button',
+        name: '按钮',
+        requirement: '',
+        normalized_user_requirement: '',
+        execution_route_hint: 'result_refinement',
+        refinement_operation: {
+          mode: 'keep_inside_delete_outside',
+          subject_path_ids: ['subject'],
+          alpha_include_path_ids: [],
+        },
+        mask_annotations: [
+          { id: 'subject', operation_role: 'subject' },
+          { id: 'old-copy', operation_role: 'erase' },
+        ],
+        maximum_imagegen_calls: 0,
+      }],
+    },
+  });
+
+  assert.match(prompt, /系统理解：0 个修复路径、1 个删除路径、0 个保护路径；路径外透明；非整图编辑/);
+  assert.match(prompt, /精确修复 ROI 数：0；ImageGen 调用预算：0/);
+  assert.match(prompt, /roi_jobs 为空时禁止调用 ImageGen/);
+  assert.match(prompt, /finalizer 仅执行确定性 Alpha 操作/);
+  const finalizerLine = prompt.split('\n').find((line) => line.includes('finalize-targeted-job.py'));
+  assert.ok(finalizerLine);
+  assert.doesNotMatch(finalizerLine, /--generated-input/);
+  assert.match(finalizerLine, /--imagegen-mapping \/absolute\/path\/to\/result_refinement_roi_manifest\.json/);
 });

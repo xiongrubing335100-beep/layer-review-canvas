@@ -61,8 +61,9 @@ plans are conservatively inferred by the executor; never infer a new layer or a 
   native `content_region` resolution through RMBG and delivery; `expected_output` remains the
   infinite-canvas logical placement size. Without RMBG, map the region to the exact logical crop.
 - `result_refinement`: treat the current successful PNG as the only authoritative base, preserve
-  its actual pixel dimensions and alpha, and edit only the scope declared by text and closed
-  Bézier pen paths. This route must never call RMBG.
+  its actual pixel dimensions and alpha, and edit only the scope compiled from the structured
+  operation and closed Bézier pen paths. Natural-language text supplies the visual goal, never the
+  scope or Alpha authority. This route must never call RMBG.
 
 Honor a submitted `execution_route_hint`. When it is absent, select the narrowest route that
 satisfies the normalized record requirement: `direct_crop`; `codex_rgba` for text, title, and logo
@@ -72,46 +73,57 @@ crop pixel dimensions except when `output_resolution_policy: native_imagegen_con
 `targeted_repair` RMBG record.
 
 For `fast`, do not create candidates speculatively or perform full-page analysis. Call ImageGen only for `targeted_repair`, `codex_rgba`, or `result_refinement`, and never exceed
-`maximum_imagegen_calls`. Create the
-first required working result and immediately run the first-candidate gate below. Accept a passing
-result without another call. Only when that result fails may one targeted ImageGen retry address
-the failed checks; if the retry fails, stop. For `quality`, keep the same route and call ceiling but
-add the existing validation depth.
+`maximum_imagegen_calls`. Create each first required working result and immediately run the
+first-candidate gate below. Accept a passing result without another call. Only when that result
+fails may one targeted ImageGen retry address the failed checks; for `result_refinement`, this
+limit applies independently to each `roi_job`. If the retry fails, stop. For `quality`, keep the
+same route and call ceiling but add the existing validation depth.
 
 ## PNG Result Refinement
 
-For `execution_route_hint: result_refinement`, the 当前成功 PNG is the only authoritative
-base. Attach only that base PNG; do not attach the original source, an earlier successful version,
-a logical selection crop, or any other visual context.
+For `execution_route_hint: result_refinement`, the 当前成功 PNG is the only authoritative base.
+Do not fall back to the original source or any earlier PNG version, logical selection crop, canvas
+screenshot, or other visual context. Its decoded pixel dimensions are the final dimensions.
 
-- A text-only requirement with no closed Bézier pen path makes the full base PNG canvas editable.
-- When closed Bézier pen paths exist, the text requirement and those paths define the complete
-  mutable scope. Every path must be closed; an open draft is not an annotation.
-- Outside that scope, all 未标注 RGBA 像素 are locked byte-for-byte to the base PNG.
-- Inside a submitted closed path, RGBA and alpha may change only as explicitly requested by the
-  submitted text requirement.
-- For a text-only refinement, RGBA and alpha may change across the full canvas only as explicitly
-  requested by the submitted text requirement.
-- Use the PNG's actual pixel width and height, never its logical selection or placement dimensions.
-- Preserve the base PNG's alpha channel and transparent structure. The generated candidate must be
-  an RGBA PNG at exactly the base PNG pixel dimensions.
-- Use `transparency_strategy: preserve_existing_alpha` and
-  `output_resolution_policy: existing_result_pixels`. 不得调用 RMBG for preparation,
-  generation, finalization, or retry.
+Read the trusted version-2 policy from preflight before visual work. Use
+`normalized_user_requirement` as the visual goal, and verify the structured summary from
+`refinement_operation`, `repair_path_ids`, `erase_path_ids`, `protect_path_ids`,
+`subject_path_ids`, and `alpha_include_path_ids`. The declared `expected_roi_tile_count` is the
+exact repair ROI count. `maximum_imagegen_calls` must equal twice that count: one initial candidate and at most one retry per `roi_job`. Text alone never grants local or full-canvas scope;
+`full_canvas_explicit` is valid only when it is already present in the trusted policy.
 
-Run the preparation command exactly as supplied in the workbench message: use its resolved Python invocation,
-the absolute path to `scripts/prepare-targeted-imagegen-canvas.py`, and its active
-`--job-id <jobId> --layer-id <layerId>` arguments. Do not replace that invocation with `python3` or
-replace the absolute script path with a repository-relative path.
+Run the preparation command exactly as supplied in the workbench message, using its resolved Python invocation
+and absolute path to `scripts/prepare-targeted-imagegen-canvas.py` with the active
+`--job-id <jobId> --layer-id <layerId>` arguments. This invocation may be `py -3` on Windows; never
+replace it with a guessed `python3` or a repository-relative script path.
 
-Give ImageGen only the returned reference canvas. Save its RGBA PNG candidate in `generated/`, then
-run the finalization command exactly as supplied in the workbench message: reuse the resolved Python
-invocation, the absolute path to `scripts/finalize-targeted-job.py`, and the returned mapping JSON
-with `--job-id <jobId> --layer-id <layerId> --generated-input <PNG> --imagegen-mapping <JSON>`.
+The preparation result is a version-2 `result_refinement_roi_manifest`. Process its `roi_jobs` one
+at a time. Give ImageGen only that job's `reference_path`; keep the declared canvas and
+`content_region` at native 1:1, and allow changes only inside that job's closed repair-path mask.
+Never merge distant jobs, perform whole-page analysis, or use a forced resize to make a candidate
+fit. Save each accepted candidate outside `final/`.
 
-Complete all inspection before finalization. When this finalizer succeeds, it must be the last tool
-call in the Codex turn; immediately return the finalizer-approved PNG path and end the reply. Do not
-preview, reread, list, or validate anything after it.
+A candidate may be RGB or RGBA. Candidate RGB inside the authorized repair mask may be used, but
+candidate Alpha is not authoritative. Final Alpha comes from the base PNG plus the structured
+`erase_path_ids`, `subject_path_ids`, `alpha_include_path_ids`, and protected base pixels. Never
+paint a checkerboard, infer transparency from chroma, create a chroma mask, or perform
+prompt-inferred deletion. All pixels outside authorized masks remain byte-for-byte locked to the
+base, and protected paths restore the base RGBA last. Never call RMBG.
+
+For each `roi_job`, make one initial ImageGen call. Inspect it before finalization; only a failed
+candidate may receive one retry for the failed checks. An empty `roi_jobs` array must not call ImageGen:
+continue directly to deterministic Alpha composition. If a candidate still fails, stop, keep the
+current successful PNG visible and unchanged, and write no replacement into `final/`.
+
+Bind every accepted candidate with one repeatable
+`--generated-input roi-id=/absolute/path.png` argument. Then run the workbench-supplied resolved
+Python invocation and absolute path to `scripts/finalize-targeted-job.py`, passing the active
+`--job-id`, `--layer-id`, every candidate binding, and the absolute manifest path through
+`--imagegen-mapping`. A zero-ROI task passes no `--generated-input` arguments.
+
+Complete all visual inspection and retry decisions before the finalizer. A successful finalizer
+must be the last tool call in the Codex turn; immediately return the finalizer-approved PNG path and
+end the reply. Do not preview, reread, list, or validate anything after it.
 
 ## Performance Report
 
@@ -162,7 +174,7 @@ Use the shortest source-pixel-first route:
 2. Do not create alternate candidates before the first-candidate gate or perform full-page analysis.
 3. Use `targeted_repair` only when the requirement explicitly needs approved text removal, hole filling, or occlusion completion. Create one first working result.
 4. Immediately validate that result for the dimensions required by `output_resolution_policy`, annotation conformance, obvious exclusions, and structural integrity. When all four pass, accept it and skip repair-mask generation and source-locked recomposition.
-5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. For `codex_rgba`, `targeted_repair`, and `result_refinement`, the candidate must preserve the prepared native canvas and content region. Retry a canvas-size failure once; never stretch an arbitrary ImageGen canvas into the requested crop.
+5. Only when the first working result fails this gate, perform one targeted ImageGen retry for the failed checks. Reuse the exact submitted crop and approved repair scope; do not infer a new region, create a third candidate, or upgrade to `quality`. For `codex_rgba` and `targeted_repair`, the candidate must preserve the prepared native canvas and content region. For `result_refinement`, apply the gate and one-retry ceiling to each manifest `roi_job`. Retry a canvas-size failure once; never stretch an arbitrary ImageGen canvas into the requested crop or ROI.
 6. Run the mandatory count, dimensions, alpha, annotation-conformance, and obvious-exclusion checks. Annotation conformance must honor forced keep and exclude annotations; when they overlap, the larger `order_index` wins.
 7. Emit no more than one progress message before final delivery.
 
@@ -201,9 +213,9 @@ For every submitted record:
    and dark preview backgrounds after the source RGB has been composed with the matte.
    Reject missing strokes, fragmented glyphs, altered wording, changed proportions, opaque
    backplates, or modified source material. Retry once only for failed checks. Do not fall back to RMBG.
-   For `result_refinement`, first run the workbench-supplied command whose absolute script path ends
-   in `scripts/prepare-targeted-imagegen-canvas.py`. Attach only the returned reference canvas to
-   ImageGen, enforce the submitted text-only or closed-path mutable scope, and never call RMBG.
+   For `result_refinement`, follow **PNG Result Refinement** above: run the workbench-supplied
+   preparation command, then process the returned version-2 manifest one `roi_job` at a time. Attach
+   only the current job's `reference_path`, enforce its closed-path mask, and never call RMBG.
 5. For `targeted_repair`, pass the native generated canvas plus the returned mapping JSON to
    `scripts/finalize-targeted-job.py --imagegen-mapping`; the finalizer validates the full canvas
    and extracts only the declared content region. If the record uses RMBG with

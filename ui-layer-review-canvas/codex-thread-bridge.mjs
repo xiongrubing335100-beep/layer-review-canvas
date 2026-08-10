@@ -330,18 +330,45 @@ export function buildWorkbenchPrompt({
     const dimensions = Number.isInteger(canvas.width) && Number.isInteger(canvas.height)
       ? `${canvas.width}×${canvas.height}`
       : '计划声明的输入像素尺寸';
-    const hasClosedPaths = Array.isArray(layer.mask_annotations)
-      && layer.mask_annotations.some((annotation) => (
-        annotation?.shape === 'bezier_path' && annotation.closed === true
-      ));
+    const annotations = Array.isArray(layer.mask_annotations) ? layer.mask_annotations : [];
+    const countRole = (ids, role, kinds) => {
+      if (Array.isArray(ids)) return ids.length;
+      return annotations.filter((annotation) => (
+        annotation?.operation_role === role
+        || (!annotation?.operation_role && kinds.includes(annotation?.kind))
+      )).length;
+    };
+    const repairCount = countRole(layer.repair_path_ids, 'repair', ['boundary']);
+    const eraseCount = countRole(layer.erase_path_ids, 'erase', ['background', 'exclude', 'erase']);
+    const protectCount = countRole(layer.protect_path_ids, 'protect', ['foreground', 'keep']);
+    const operationMode = layer.refinement_operation?.mode;
+    const scopeSummary = operationMode === 'keep_inside_delete_outside' ? '路径外透明' : '路径外保持';
+    const canvasSummary = operationMode === 'full_canvas_explicit' ? '整图编辑' : '非整图编辑';
+    const callBudget = Number.isInteger(layer.maximum_imagegen_calls)
+      ? layer.maximum_imagegen_calls
+      : 0;
+    const roiCount = Number.isInteger(layer.expected_roi_tile_count)
+      ? layer.expected_roi_tile_count
+      : Math.floor(callBudget / 2);
+    const normalizedRequirement = String(
+      layer.normalized_user_requirement ?? layer.requirement ?? '',
+    ).trim().replace(/\s+/g, ' ');
+    const finalizerCommand = roiCount === 0
+      ? `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --imagegen-mapping /absolute/path/to/result_refinement_roi_manifest.json`
+      : `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --generated-input roi-id=/absolute/path.png --imagegen-mapping /absolute/path/to/result_refinement_roi_manifest.json`;
     return [
-      `PNG 结果精修层：${layer.name || layerId}。附加图片是权威 base PNG；输入像素尺寸 ${dimensions} 就是强制输出尺寸，禁止缩放或改变画布，且不得运行 RMBG。`,
-      hasClosedPaths
-        ? '只允许执行权威计划中已提交的文字要求，并且仅可修改已提交的闭合路径区域；路径外所有未标记 RGBA 像素必须逐像素锁定。'
-        : '这是纯文字（text-only）精修，没有闭合路径范围；整张 base PNG 全画布可编辑，但必须保持既有透明结构并严格遵守提交的文字要求。',
-      `${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id ${layerId}`,
-      `${pythonInvocation} "${targetedFinalizerPath}" --job-id ${jobId} --layer-id ${layerId} --generated-input <PNG> --imagegen-mapping <JSON>`,
-      '上述结果最终处理器必须是本 turn 最后一个工具调用；调用后禁止预览、读取或再次校验。',
+      `PNG 结果局部精修层：${layer.name || layerId}。`,
+      `当前成功 PNG 是唯一权威 base；最终尺寸锁定为 ${dimensions}，禁止缩放或改变画布。`,
+      `系统理解：${repairCount} 个修复路径、${eraseCount} 个删除路径、${protectCount} 个保护路径；${scopeSummary}；${canvasSummary}。`,
+      `用户目标：${normalizedRequirement || '仅执行已提交的结构化 Alpha 操作。'}`,
+      `精确修复 ROI 数：${roiCount}；ImageGen 调用预算：${callBudget}${roiCount > 0 ? '（每个 ROI 一次初始候选，失败时最多一次重试）' : ''}。`,
+      `先运行选定 Python 与绝对脚本路径：${pythonInvocation} "${imagegenCanvasScriptPath}" --job-id ${jobId} --layer-id ${layerId}`,
+      '读取返回的 result_refinement_roi_manifest（version 2）；每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选，禁止强制缩放、整页分析或混用 ROI。',
+      roiCount === 0
+        ? 'ROI manifest 的 roi_jobs 为空时禁止调用 ImageGen；finalizer 仅执行确定性 Alpha 操作。'
+        : '候选可为 RGB 或 RGBA；不得绘制棋盘格，候选 Alpha 不具有最终决定权；每个 ROI 仅在初始候选失败后重试一次。',
+      `禁止调用 RMBG。最后运行选定 Python 与绝对脚本路径：${finalizerCommand}${roiCount > 0 ? '（每个 roi_job 重复 --generated-input，并绑定其 roi-id 与候选绝对路径）' : ''}。`,
+      '上述 finalizer 必须是本 turn 最后一个工具调用；成功后禁止预览、读取或再次校验，立即返回其 PNG 路径并结束回复。',
     ];
   });
   const nativeResolutionRmbgLayers = (plan?.layers || [])
