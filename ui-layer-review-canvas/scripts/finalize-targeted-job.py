@@ -1,6 +1,5 @@
 import argparse
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -9,12 +8,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 try:
     from scripts.safe_layer_path import contained_child, safe_layer_id
+    from scripts.result_refinement_roi import (
+        assert_canonical_roi_jobs,
+        compose_result_refinement,
+    )
 except ModuleNotFoundError:
     from safe_layer_path import contained_child, safe_layer_id
+    from result_refinement_roi import assert_canonical_roi_jobs, compose_result_refinement
 
 
 VALIDATION_KEYS = (
@@ -23,6 +27,15 @@ VALIDATION_KEYS = (
     "alpha",
     "annotation_conformance",
     "obvious_exclusion",
+    "structure_integrity",
+)
+
+RESULT_REFINEMENT_VALIDATION_KEYS = (
+    "dimensions",
+    "alpha",
+    "annotation_conformance",
+    "outside_pixel_lock",
+    "no_baked_checkerboard",
     "structure_integrity",
 )
 
@@ -48,14 +61,109 @@ def reserve_versioned_output_path(final_directory, layer_id):
     version = 1
     while True:
         candidate = contained_child(final_directory, f"{stem}-v{version:03d}.png")
+        if candidate.exists():
+            version += 1
+            continue
+        reservation = contained_child(final_directory, f".{stem}-v{version:03d}.reserve")
         try:
-            descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            descriptor = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             version += 1
             continue
         else:
             os.close(descriptor)
-            return candidate
+            if candidate.exists():
+                reservation.unlink(missing_ok=True)
+                version += 1
+                continue
+            return candidate, reservation
+
+
+def parse_result_refinement_bindings(values):
+    if values is None:
+        return {}
+    if isinstance(values, dict):
+        parsed = {}
+        items = values.items()
+    else:
+        if isinstance(values, (str, os.PathLike)):
+            values = [values]
+        parsed = {}
+        items = []
+        for value in values:
+            text = os.fspath(value)
+            roi_id, separator, candidate_path = text.partition("=")
+            if not separator or not roi_id or not candidate_path:
+                raise ValueError(
+                    "result_refinement --generated-input must be roi-id=/absolute/path.png"
+                )
+            items.append((roi_id, candidate_path))
+    for roi_id, candidate_path in items:
+        roi_id = safe_layer_id(roi_id)
+        if roi_id in parsed:
+            raise ValueError(f"duplicate result_refinement candidate binding: {roi_id}")
+        candidate_path = Path(candidate_path)
+        if not candidate_path.is_absolute():
+            raise ValueError("result_refinement candidate binding path must be absolute")
+        parsed[roi_id] = candidate_path
+    return parsed
+
+
+def load_result_refinement_manifest(mapping_path, generated_root, base_size, layer):
+    if mapping_path is None:
+        raise ValueError("result_refinement requires --imagegen-mapping")
+    resolved = Path(mapping_path).resolve()
+    if not contained(resolved, generated_root):
+        raise ValueError("result_refinement manifest must be inside the job generated directory")
+    if not resolved.is_file():
+        raise ValueError("result_refinement manifest does not exist")
+    manifest = json.loads(resolved.read_text(encoding="utf-8"))
+    if manifest.get("version") != 2:
+        raise ValueError("result_refinement requires manifest version 2")
+    if manifest.get("generated_input_kind") != "result_refinement_roi_manifest":
+        raise ValueError("result_refinement manifest kind is invalid")
+    if manifest.get("execution_route") != "result_refinement":
+        raise ValueError("result_refinement manifest execution route is invalid")
+    dimensions = manifest.get("base_png_dimensions") or {}
+    if (dimensions.get("width"), dimensions.get("height")) != base_size:
+        raise ValueError("result_refinement manifest base dimensions do not match the base PNG")
+    operation = layer.get("refinement_operation") or {}
+    if manifest.get("operation") != {
+        "mode": operation.get("mode"),
+        "subject_path_ids": list(operation.get("subject_path_ids") or []),
+        "alpha_include_path_ids": list(operation.get("alpha_include_path_ids") or []),
+    }:
+        raise ValueError("result_refinement manifest operation does not match the plan")
+    jobs = manifest.get("roi_jobs")
+    expected_count = layer.get("expected_roi_tile_count")
+    if not isinstance(jobs, list) or not isinstance(expected_count, int) or isinstance(expected_count, bool):
+        raise ValueError("result_refinement ROI count is invalid")
+    if len(jobs) != expected_count:
+        raise ValueError(
+            "result_refinement ROI count does not match the plan: "
+            f"expected {expected_count}, got {len(jobs)}"
+        )
+    budget = layer.get("maximum_imagegen_calls")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0 or len(jobs) > budget:
+        raise ValueError("result_refinement ROI count exceeds the ImageGen call budget")
+    for job in jobs:
+        reference_path = Path(job.get("reference_path", "")).resolve()
+        if not contained(reference_path, generated_root) or not reference_path.is_file():
+            raise ValueError("result_refinement manifest reference path is invalid")
+        canvas = job.get("canvas") or {}
+        expected_canvas = (canvas.get("width"), canvas.get("height"))
+        with Image.open(reference_path) as reference:
+            if reference.format != "PNG" or reference.size != expected_canvas:
+                raise ValueError(
+                    "result_refinement manifest reference does not match its canvas"
+                )
+    assert_canonical_roi_jobs(
+        manifest,
+        layer.get("mask_annotations") or [],
+        layer.get("roi_policy") or {},
+        base_size,
+    )
+    return manifest
 
 
 def load_plan(job_directory):
@@ -127,69 +235,6 @@ def apply_source_pixel_lock(candidate, source, width, height, source_x, source_y
             bottom,
         ))
     locked.paste(source_crop, mask=Image.eval(repair_mask, lambda value: 1 - value))
-    return locked
-
-
-def apply_result_refinement_pixel_lock(candidate, base, annotations):
-    if candidate.size != base.size:
-        raise ValueError("result_refinement candidate must match the base PNG dimensions")
-    if not isinstance(annotations, list):
-        raise ValueError("result_refinement mask_annotations must be an array")
-    if not annotations:
-        return candidate.convert("RGBA")
-
-    candidate_rgba = candidate.convert("RGBA")
-
-    edit_mask = Image.new("L", base.size, 0)
-    alpha_action = Image.new("L", base.size, 0)
-    edit_draw = ImageDraw.Draw(edit_mask)
-    alpha_draw = ImageDraw.Draw(alpha_action)
-    ordered = sorted(
-        enumerate(annotations),
-        key=lambda item: (int(item[1].get("order_index", item[0])), item[0]),
-    )
-    for _, annotation in ordered:
-        polygon = annotation.get("source_polygon_pixels")
-        if annotation.get("shape") != "bezier_path" or annotation.get("closed") is not True:
-            raise ValueError("result_refinement annotations must be closed bezier paths")
-        if not isinstance(polygon, list) or len(polygon) < 3:
-            raise ValueError("result_refinement annotation polygon must contain at least three points")
-        points = []
-        for point in polygon:
-            x = point.get("x") if isinstance(point, dict) else None
-            y = point.get("y") if isinstance(point, dict) else None
-            if (
-                not isinstance(x, (int, float))
-                or not isinstance(y, (int, float))
-                or not math.isfinite(x)
-                or not math.isfinite(y)
-                or x < 0
-                or y < 0
-                or x > base.width
-                or y > base.height
-            ):
-                raise ValueError("result_refinement annotation polygon is outside the base PNG")
-            points.append((round(x), round(y)))
-        edit_draw.polygon(points, fill=255)
-        explicit_erase = (
-            annotation.get("semantics") == "force_exclude"
-            or annotation.get("kind") in ("background", "exclude", "erase")
-        )
-        explicit_keep = (
-            annotation.get("semantics") == "force_keep"
-            or annotation.get("kind") in ("foreground", "keep")
-        )
-        if explicit_erase:
-            alpha_draw.polygon(points, fill=2)
-        elif explicit_keep:
-            alpha_draw.polygon(points, fill=1)
-
-    locked = base.copy()
-    locked.paste(candidate_rgba, mask=edit_mask)
-    erase_mask = alpha_action.point(lambda value: 255 if value == 2 else 0)
-    locked_alpha = locked.getchannel("A")
-    locked_alpha.paste(0, mask=erase_mask)
-    locked.putalpha(locked_alpha)
     return locked
 
 
@@ -389,6 +434,8 @@ def finalize_job(
     imagegen_mapping=None,
     clock=now_iso,
     rmbg_runner=run_rmbg,
+    asset_publisher=os.replace,
+    completed_report_writer=atomic_json,
 ):
     layer_id = safe_layer_id(layer_id)
     job_directory = (jobs_root / job_id).resolve()
@@ -399,11 +446,19 @@ def finalize_job(
     width, height, source_x, source_y = expected_output(layer)
     route = layer.get("execution_route_hint")
     generated_root = contained_child(job_directory, "generated")
-    generated_path = Path(generated_input).resolve()
-    if not contained(generated_path, generated_root):
-        raise ValueError("ImageGen input must be inside the job generated directory")
-    if not generated_path.is_file():
-        raise ValueError("ImageGen input does not exist")
+    generated_path = None
+    if route != "result_refinement":
+        if generated_input is None:
+            generated_input = []
+        if isinstance(generated_input, (list, tuple)):
+            if len(generated_input) != 1:
+                raise ValueError("non-refinement routes require exactly one --generated-input")
+            generated_input = generated_input[0]
+        generated_path = Path(generated_input).resolve()
+        if not contained(generated_path, generated_root):
+            raise ValueError("ImageGen input must be inside the job generated directory")
+        if not generated_path.is_file():
+            raise ValueError("ImageGen input does not exist")
 
     final_directory = contained_child(job_directory, "final")
     planned_output = Path(plan.get("output_directory", final_directory)).resolve()
@@ -416,13 +471,12 @@ def finalize_job(
         if route == "result_refinement"
         else contained_child(final_directory, f"{output_layer_id}.png")
     )
+    reservation_path = None
     temporary_directory = Path(tempfile.mkdtemp(prefix="targeted-finalize-", dir=generated_root))
     temporary_candidate = temporary_directory / "candidate.png"
     temporary_output = temporary_directory / "output.png"
     started = clock()
     try:
-        if route == "result_refinement":
-            final_path = reserve_versioned_output_path(final_directory, output_layer_id)
         base_image = None
         image_width, image_height = width, height
         if route == "result_refinement":
@@ -435,10 +489,6 @@ def finalize_job(
                 base_image = source.convert("RGBA")
             image_width, image_height = base_image.size
 
-        with Image.open(generated_path) as image:
-            if route == "result_refinement" and (image.format != "PNG" or image.mode != "RGBA"):
-                raise ValueError("result_refinement candidate must be an RGBA PNG")
-            candidate = image.convert("RGBA")
         transparency = resolve_transparency_strategy(layer)
         output_resolution_policy = layer.get("output_resolution_policy") or (
             "native_imagegen_content"
@@ -455,7 +505,41 @@ def finalize_job(
             raise ValueError(f"{route} requires --imagegen-mapping")
         annotations = layer.get("mask_annotations") or []
         mapping = None
-        if imagegen_mapping is not None:
+        if route == "result_refinement":
+            mapping = load_result_refinement_manifest(
+                imagegen_mapping,
+                generated_root,
+                base_image.size,
+                layer,
+            )
+            binding_paths = parse_result_refinement_bindings(generated_input)
+            loaded_candidates = {}
+            for roi_id, candidate_path in binding_paths.items():
+                resolved_candidate = candidate_path.resolve()
+                if not contained(resolved_candidate, generated_root):
+                    raise ValueError(
+                        "result_refinement candidate must be inside the job generated directory"
+                    )
+                if not resolved_candidate.is_file():
+                    raise ValueError(f"result_refinement candidate does not exist: {roi_id}")
+                with Image.open(resolved_candidate) as image:
+                    if image.format != "PNG" or image.mode not in ("RGB", "RGBA"):
+                        raise ValueError(
+                            f"result_refinement candidate for {roi_id} must be an RGB or RGBA PNG"
+                        )
+                    loaded_candidates[roi_id] = image.copy()
+            candidate = compose_result_refinement(
+                base_image,
+                annotations,
+                mapping,
+                loaded_candidates,
+            )
+            regions = None
+        else:
+            with Image.open(generated_path) as image:
+                candidate = image.convert("RGBA")
+
+        if route != "result_refinement" and imagegen_mapping is not None:
             mapping = load_imagegen_mapping(
                 imagegen_mapping,
                 generated_root,
@@ -465,17 +549,7 @@ def finalize_job(
                 image_height,
             )
             mapping_kind = mapping.get("generated_input_kind")
-            if route == "result_refinement":
-                if mapping_kind != "result_refinement_canvas":
-                    raise ValueError("result_refinement requires a result_refinement_canvas mapping")
-                candidate = crop_mapped_imagegen_canvas(
-                    candidate,
-                    mapping,
-                    image_width,
-                    image_height,
-                    "ImageGen result refinement",
-                )
-            elif transparency == "codex_rgba":
+            if transparency == "codex_rgba":
                 if mapping_kind != "codex_alpha_matte":
                     raise ValueError("Codex RGBA requires a codex_alpha_matte mapping")
             elif route == "targeted_repair":
@@ -491,15 +565,10 @@ def finalize_job(
                     preserve_content_resolution=preserve_native_rmbg,
                 )
             else:
-                raise ValueError(
-                    "ImageGen mapping is only valid for codex_rgba, targeted_repair, or result_refinement"
-                )
-        elif candidate.size != (width, height):
+                raise ValueError("ImageGen mapping is only valid for codex_rgba or targeted_repair")
+        elif route != "result_refinement" and candidate.size != (width, height):
             raise ValueError(f"ImageGen input must already be {width}x{height}")
-        if route == "result_refinement":
-            candidate = apply_result_refinement_pixel_lock(candidate, base_image, annotations)
-            regions = None
-        else:
+        if route != "result_refinement":
             regions = validate_repair_regions(layer, width, height)
         if route != "result_refinement" and regions:
             source_path = Path(plan.get("source", {}).get("local_path", ""))
@@ -561,7 +630,12 @@ def finalize_job(
         if remove_background:
             validate_transparent_structure(final_image, "final PNG")
         final_image.save(temporary_output, format="PNG")
-        os.replace(temporary_output, final_path)
+        if route == "result_refinement":
+            final_path, reservation_path = reserve_versioned_output_path(
+                final_directory,
+                output_layer_id,
+            )
+        asset_publisher(temporary_output, final_path)
         completed = clock()
         logical_placement = (
             dict(layer.get("placement"))
@@ -590,7 +664,14 @@ def finalize_job(
                 "validation_started_at": validation_started,
                 "completed_at": completed,
             },
-            "validation_results": {key: True for key in VALIDATION_KEYS},
+            "validation_results": {
+                key: True
+                for key in (
+                    RESULT_REFINEMENT_VALIDATION_KEYS
+                    if route == "result_refinement"
+                    else VALIDATION_KEYS
+                )
+            },
             "rmbg": {
                 "required": rmbg_required,
                 "model": RMBG_MODEL if rmbg_required else None,
@@ -613,20 +694,34 @@ def finalize_job(
                 "output_dimensions": {"width": asset_width, "height": asset_height},
                 "annotation_count": len(annotations),
                 "preserve_existing_alpha": True,
+                "roi_count": len(mapping["roi_jobs"]),
+                "candidate_count": len(binding_paths),
+                "imagegen_call_budget": layer.get("maximum_imagegen_calls"),
             } if route == "result_refinement" else {}),
         }
-        atomic_json(job_directory / "execution-report.json", report)
+        completed_report_writer(job_directory / "execution-report.json", report)
+        if reservation_path is not None:
+            reservation_path.unlink()
         return report
     except Exception as error:
         if route == "result_refinement" and final_path is not None:
             final_path.unlink(missing_ok=True)
+        if reservation_path is not None:
+            reservation_path.unlink(missing_ok=True)
         report = {
             "status": "failed",
             "execution_route": layer.get("execution_route_hint"),
             "layer_id": layer.get("id") or layer_id,
             "error": str(error),
             "timing": {"postprocess_started_at": started, "completed_at": clock()},
-            "validation_results": {key: False for key in VALIDATION_KEYS},
+            "validation_results": {
+                key: False
+                for key in (
+                    RESULT_REFINEMENT_VALIDATION_KEYS
+                    if route == "result_refinement"
+                    else VALIDATION_KEYS
+                )
+            },
         }
         atomic_json(job_directory / "execution-report.json", report)
         raise
@@ -638,7 +733,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Finalize one targeted ImageGen split result.")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--layer-id", required=True)
-    parser.add_argument("--generated-input", required=True, type=Path)
+    parser.add_argument("--generated-input", action="append", default=[])
     parser.add_argument("--imagegen-mapping", type=Path)
     parser.add_argument("--jobs-root", type=Path, default=Path("output") / "jobs")
     parser.add_argument("--rmbg-script", type=Path, default=Path("scripts") / "finalize-rmbg.py")
