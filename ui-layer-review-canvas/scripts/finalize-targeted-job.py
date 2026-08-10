@@ -114,7 +114,14 @@ def parse_result_refinement_bindings(values):
     return parsed
 
 
-def load_result_refinement_manifest(mapping_path, generated_root, base_image, layer):
+def load_result_refinement_manifest(
+    mapping_path,
+    generated_root,
+    base_image,
+    layer,
+    *,
+    trusted_layer=None,
+):
     base_rgba = base_image.convert("RGBA")
     base_size = base_rgba.size
     if mapping_path is None:
@@ -142,7 +149,8 @@ def load_result_refinement_manifest(mapping_path, generated_root, base_image, la
     }:
         raise ValueError("result_refinement manifest operation does not match the plan")
     jobs = manifest.get("roi_jobs")
-    expected_count = layer.get("expected_roi_tile_count")
+    policy_layer = trusted_layer or layer
+    expected_count = policy_layer.get("expected_roi_tile_count")
     if not isinstance(jobs, list) or not isinstance(expected_count, int) or isinstance(expected_count, bool):
         raise ValueError("result_refinement ROI count is invalid")
     if len(jobs) != expected_count:
@@ -150,7 +158,7 @@ def load_result_refinement_manifest(mapping_path, generated_root, base_image, la
             "result_refinement ROI count does not match the plan: "
             f"expected {expected_count}, got {len(jobs)}"
         )
-    budget = layer.get("maximum_imagegen_calls")
+    budget = policy_layer.get("maximum_imagegen_calls")
     if (
         not isinstance(budget, int)
         or isinstance(budget, bool)
@@ -202,6 +210,16 @@ def load_result_refinement_manifest(mapping_path, generated_root, base_image, la
 
 def load_plan(job_directory):
     return json.loads((job_directory / "layer-review-plan.json").read_text(encoding="utf-8"))
+
+
+def load_trusted_preflight_layer(job_directory, layer_id):
+    preflight_path = job_directory / "preflight.json"
+    if not preflight_path.is_file():
+        return None
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    if preflight.get("job_id") != job_directory.name:
+        raise ValueError("preflight job does not match jobId")
+    return find_layer(preflight, layer_id)
 
 
 def find_layer(plan, layer_id):
@@ -550,11 +568,13 @@ def finalize_job(
         annotations = layer.get("mask_annotations") or []
         mapping = None
         if route == "result_refinement":
+            trusted_layer = load_trusted_preflight_layer(job_directory, layer_id)
             mapping = load_result_refinement_manifest(
                 imagegen_mapping,
                 generated_root,
                 base_image,
                 layer,
+                trusted_layer=trusted_layer,
             )
             binding_paths = parse_result_refinement_bindings(generated_input)
             loaded_candidates = {}

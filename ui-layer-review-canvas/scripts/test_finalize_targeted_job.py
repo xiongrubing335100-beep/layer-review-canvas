@@ -376,7 +376,20 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         }
         self.plan["layers"][0]["mask_annotations"] = [erase]
         self.plan["layers"][0]["erase_path_ids"] = ["erase"]
+        self.plan["layers"][0].pop("expected_roi_tile_count")
         (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        trusted_layer = {
+            **self.plan["layers"][0],
+            "expected_roi_tile_count": 0,
+        }
+        (self.job / "preflight.json").write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "source_path": str(self.source),
+            "output_directory": str(self.job / "final"),
+            "generated_directory": str(self.job / "generated"),
+            "layers": [trusted_layer],
+        }), encoding="utf-8")
 
         report = MODULE.finalize_job(
             self.job_id,
