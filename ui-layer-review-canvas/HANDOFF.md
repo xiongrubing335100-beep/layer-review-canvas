@@ -1,6 +1,6 @@
 # Layer Review Canvas 交接文档
 
-更新时间：2026-07-26
+更新时间：2026-08-10
 
 ## 1. 项目位置
 
@@ -208,6 +208,15 @@ split-ui-design-layers-workbench-targeted
 - 重新启动后，应先用一个小拆分项验证当前会话桥接，而不是直接批量发送。
 
 ## 7. 已完成验证
+
+### 2026-08-10 PNG 结果精修 ROI 全量回归
+
+- 自动化：Node `387/387`、Python `66/66`，Vite production build 无 warning，`git diff --check` clean（Task 8 最终回归需以报告中的最新一轮为准）。
+- 真实 in-app Browser：通过 personal Imvia Layer 插件打开 `http://127.0.0.1:4173/`，监听状态为“已就绪”；载入 658×1424 RGBA fixture 后识别出 5 个候选项，边界钢笔可闭合并显示“1 个精修标注”，撤销/清空随即启用。
+- 确定性 PNG 精修：浏览器载入透明 PNG，经 `direct_crop` 形成 792×451 RGBA 成功基底；擦除钢笔摘要为“修复 0 处 · 擦除 1 处”，无提示词也可提交，等待期间仍显示父版本 URL。真实 prepare 输出空 `roi_jobs`，finalizer 报告 `roi_count: 0`、`candidate_count: 0`、`imagegen_call_budget: 0`，父子尺寸均为 792×451；RGB 变化 0、Alpha 变化 15,616、授权范围外 RGBA 变化 0。
+- Task 8 浏览器回归发现并修复：持久化 v0.8 计划按字段所有权不包含 `expected_roi_tile_count`，旧 finalizer 却从持久化层读取该可信派生字段，导致合法零 ROI 任务失败。现在 finalizer 优先从同 job 的 `preflight.json` 读取可信 ROI 数和调用预算；回归测试按真实字段所有权先红后绿。
+- 两个独立 ROI、错尺寸、棋盘格、路径外删除/保护与整图二次确认仍有 Node/Python 自动化合同覆盖。Task 8 的浏览器中，第二条 SVG 路径未稳定闭合，页面正确显示 open-draft 阻断；未提交该计划、未调用或伪造 ImageGen。详见 Task 8 报告。
+- personal 插件安装源版本：`0.1.0+local.20260810054541`。模板与 `~/plugins/imvia-layer` 的两个 SKILL、logo、`start-mcp.mjs` SHA-256 一致；runtime 指向当前工作台及 bundled Python。当前 Codex 会话未自动物化新的 personal cache 目录，仍需新任务或重启后核验 cache 版本。
 
 最近验证结果：
 
