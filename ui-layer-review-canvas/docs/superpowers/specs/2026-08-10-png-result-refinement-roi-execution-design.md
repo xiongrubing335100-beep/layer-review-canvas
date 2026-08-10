@@ -233,14 +233,27 @@ PNG 二次编辑区需要：
 - `layers[].normalized_user_requirement`
 - `layers[].mask_annotations`
 - `layers[].roi_policy`
-- `layers[].repair_path_ids`
-- `layers[].erase_path_ids`
-- `layers[].protect_path_ids`
-- `layers[].expected_roi_tile_count`
 - `layers[].transparency_strategy: preserve_existing_alpha`
 - `layers[].output_resolution_policy: existing_result_pixels`
 - `layers[].rmbg_required: false`
 - `layers[].maximum_imagegen_calls`
+
+### Trusted preflight derived fields
+
+`targeted-preflight` 只把持久化计划当作输入，并从结构化操作、路径标注和真实 PNG 像素尺寸
+独立校验、派生 `preflight.json` 字段：
+
+- `layers[].repair_path_ids`
+- `layers[].erase_path_ids`
+- `layers[].protect_path_ids`
+- `layers[].subject_path_ids`
+- `layers[].alpha_include_path_ids`
+- `layers[].repair_coverage_ratio`
+- `layers[].expected_roi_tile_count`
+- `layers[].refinement_warnings`
+
+这些字段是可信预检输出，不由 `buildResultRefinementPlan` 序列化为持久化计划权限；即使输入中
+出现同名值，预检也必须从 `layers[].refinement_operation` 和 `layers[].mask_annotations` 重新派生。
 
 准备阶段另行输出 `generated_input_kind: result_refinement_roi_manifest` 的 version 2 manifest，
 其中 `roi_jobs[]` 是候选绑定的唯一清单。不得把提示词中的范围描述当成结构化操作。

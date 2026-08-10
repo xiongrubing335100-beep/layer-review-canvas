@@ -8,6 +8,7 @@ import {
   resolvePythonInvocation,
   selectExecutionAttachments,
 } from '../codex-thread-bridge.mjs';
+import { buildResultRefinementPlan } from './result-refinement.js';
 
 const base = {
   jobId: 'job-1',
@@ -466,22 +467,53 @@ test('Unix refinement commands quote spaces, candidate bindings, manifests, and 
   }
 });
 
-test('the system spec separates persisted refinement plan fields from final report fields', () => {
+test('the system spec separates persisted plan, trusted preflight-derived, and final report fields', () => {
+  const serializedPlan = buildResultRefinementPlan({
+    pngSize: { width: 100, height: 100 },
+    placement: { x: 10, y: 20, width: 50, height: 50 },
+    prompt: '整体调整光影',
+    paths: [],
+    operation: { mode: 'full_canvas_explicit', subject_path_ids: [], alpha_include_path_ids: [] },
+    baseResult: { jobId: 'base-job', versionId: 'base-v1', fileName: 'base.png', dataUrl: 'data:image/png;base64,AA==' },
+    layer: { id: 'button', category: 'uiComponent', categoryLabel: 'UI组件', name: '按钮', executionMode: 'fast' },
+    project: { projectId: 'project-1', imageId: 'image-1', sourceRevision: 1 },
+  });
+  const serializedLayer = serializedPlan.layers[0];
   const fields = refinementSpec.slice(
     refinementSpec.indexOf('## 10. 任务字段'),
     refinementSpec.indexOf('## 11. 测试要求'),
   );
   assert.match(fields, /### Persisted plan fields/);
-  assert.match(fields, /`source\.local_path`/);
-  assert.match(fields, /`parent_version_id`/);
-  assert.match(fields, /`source\.canvas`/);
-  assert.match(fields, /`layers\[\]\.placement`/);
+  assert.match(fields, /### Trusted preflight derived fields/);
   assert.match(fields, /### Final execution report fields/);
-  assert.match(fields, /`asset_dimensions`/);
-  assert.match(fields, /`logical_placement`/);
   const persisted = fields.slice(
     fields.indexOf('### Persisted plan fields'),
+    fields.indexOf('### Trusted preflight derived fields'),
+  );
+  const preflight = fields.slice(
+    fields.indexOf('### Trusted preflight derived fields'),
     fields.indexOf('### Final execution report fields'),
   );
-  assert.doesNotMatch(persisted, /`base_result_path`|`base_result_version_id`|`asset_dimensions`|`logical_placement`/);
+  const report = fields.slice(fields.indexOf('### Final execution report fields'));
+  const fieldPattern = (field) => new RegExp(`\`${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\``);
+
+  for (const field of ['source.local_path', 'parent_version_id', 'source.canvas', 'layers[].placement']) {
+    assert.match(persisted, fieldPattern(field));
+  }
+  for (const field of [
+    'layers[].repair_path_ids',
+    'layers[].erase_path_ids',
+    'layers[].protect_path_ids',
+    'layers[].expected_roi_tile_count',
+  ]) {
+    const layerKey = field.slice('layers[].'.length);
+    assert.equal(Object.hasOwn(serializedLayer, layerKey), false, `${field} must not be serialized by buildResultRefinementPlan`);
+    const pattern = fieldPattern(field);
+    assert.doesNotMatch(persisted, pattern, `${field} is derived by targeted preflight`);
+    assert.match(preflight, pattern, `${field} must be documented as trusted preflight output`);
+  }
+  assert.match(report, /`asset_dimensions`/);
+  assert.match(report, /`logical_placement`/);
+  assert.doesNotMatch(persisted + preflight, /`asset_dimensions`|`logical_placement`/);
+  assert.doesNotMatch(fields, /`base_result_path`|`base_result_version_id`/);
 });
