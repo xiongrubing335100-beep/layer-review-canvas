@@ -553,7 +553,7 @@ Do not weaken dimension, alpha, coordinate, mask-priority, or output-directory c
 Run:
 
 ```powershell
-$skill = Get-Content -Raw 'C:\Users\Amoiz\.codex\skills\split-ui-design-layers-workbench-targeted\SKILL.md'
+$skill = Get-Content -Raw '<repo-root>\plugin-template\imvia-layer\skills\split-ui-design-layers-workbench-targeted\SKILL.md'
 @('direct_crop','alpha_extract','targeted_repair','Single-Turn Intent Normalization','execution-report.json') |
   ForEach-Object { if (-not $skill.Contains($_)) { throw "Missing contract: $_" } }
 ```

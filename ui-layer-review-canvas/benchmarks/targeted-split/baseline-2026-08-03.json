@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "status": "historical_incomplete",
+  "generated_at": "2026-08-03T07:46:48.389Z",
+  "machine_time_contract": "confirmation_accepted_at_to_completed_at",
+  "gate_ready": false,
+  "reason": "Existing jobs predate confirmation_accepted_at and do not cover the required 15-sample matrix. This file is historical evidence only and must not be used as a passing performance gate.",
+  "samples": [
+    {
+      "job_id": "layer-job-2026-07-28T14-05-10-360Z",
+      "route": "alpha_extract",
+      "seconds_submitted_to_completed": 790.043,
+      "status": "completed",
+      "source_available": false
+    },
+    {
+      "job_id": "layer-job-2026-07-28T14-37-05-178Z",
+      "route": "targeted_repair",
+      "seconds_submitted_to_completed": 2617.158,
+      "status": "completed",
+      "source_available": false
+    },
+    {
+      "job_id": "layer-job-2026-07-28T18-31-21-167Z",
+      "route": "targeted_repair",
+      "seconds_submitted_to_completed": 1628.27,
+      "status": "completed",
+      "source_available": true
+    },
+    {
+      "job_id": "layer-job-2026-07-29T03-47-56-396Z",
+      "route": "targeted_repair",
+      "seconds_submitted_to_completed": 196.548,
+      "status": "completed",
+      "source_available": false
+    },
+    {
+      "job_id": "layer-job-2026-07-29T09-55-08-263Z",
+      "route": "targeted_repair",
+      "seconds_submitted_to_completed": 612.918,
+      "status": "completed",
+      "source_available": true
+    },
+    {
+      "job_id": "layer-job-2026-08-03T05-47-35-911Z",
+      "route": "targeted_repair",
+      "status": "completed",
+      "source_available": true,
+      "timing_available": false
+    },
+    {
+      "job_id": "layer-job-2026-08-03T06-36-57-480Z",
+      "route": "targeted_repair",
+      "seconds_submitted_to_completed": 631.636,
+      "status": "completed",
+      "source_available": true
+    }
+  ],
+  "summary": {
+    "alpha_extract": {
+      "completed": 1,
+      "failed": 0,
+      "medianSeconds": 790.043,
+      "p50Seconds": 790.043,
+      "p90Seconds": 790.043,
+      "medianPostprocessSeconds": null,
+      "maxPostprocessSeconds": null
+    },
+    "targeted_repair": {
+      "completed": 5,
+      "failed": 0,
+      "medianSeconds": 631.636,
+      "p50Seconds": 631.636,
+      "p90Seconds": 2221.6028,
+      "medianPostprocessSeconds": null,
+      "maxPostprocessSeconds": null
+    }
+  }
+}

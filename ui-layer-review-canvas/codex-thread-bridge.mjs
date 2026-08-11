@@ -1,14 +1,19 @@
 import { spawn } from 'node:child_process';
-import { access, readFile, readdir, stat } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { isExecutionFeatureEnabled } from './src/execution-features.js';
+import { RMBG_MODEL, transparencyStrategy } from './src/split-execution.js';
 
 const startupTimeoutMs = 8_000;
 const requestTimeoutMs = 20_000;
-const turnCompletionTimeoutMs = 6 * 60 * 60 * 1_000;
 const splitSkillName = 'split-ui-design-layers-workbench-targeted';
-const splitSkillPath = 'C:\\Users\\Amoiz\\.codex\\skills\\split-ui-design-layers-workbench-targeted\\SKILL.md';
+const repositoryRoot = path.dirname(fileURLToPath(import.meta.url));
+const splitSkillPath = path.resolve(
+  process.env.IMVIA_LAYER_SKILL_PATH
+    || path.join(repositoryRoot, 'plugin-template', 'imvia-layer', 'skills', splitSkillName, 'SKILL.md'),
+);
 let bridgePromise = null;
 
 async function resolveCodexExecutable() {
@@ -50,7 +55,57 @@ async function resolveCodexExecutable() {
       // Keep looking.
     }
   }
-  throw new Error('未找到 Codex 桌面运行时，请从当前 Codex 任务重新启动工作台');
+
+  const pathEntries = (process.env.PATH || process.env.Path || '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  const names = process.platform === 'win32'
+    ? ['codex.exe', 'codex.cmd', 'codex.bat', 'codex']
+    : ['codex'];
+  for (const directory of pathEntries) {
+    for (const name of names) {
+      const candidate = path.join(directory, name);
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+        // Keep looking.
+      }
+    }
+  }
+  throw new Error('未找到 Codex 运行时。请确认 Codex CLI 已安装并在 PATH 中，或设置 CODEX_CLI_PATH 后重新运行 npm run setup。');
+}
+
+export function quoteShellArgument(value, platform = process.platform, force = false) {
+  const text = String(value);
+  if (/[\0\r\n]/.test(text)) throw new Error('命令参数包含不安全的控制字符');
+  const safe = platform === 'win32'
+    ? /^[A-Za-z0-9_@+=:,./\\-]+$/
+    : /^[A-Za-z0-9_@%+=:,./-]+$/;
+  if (!force && safe.test(text)) return text;
+  if (platform === 'win32') {
+    if (/[%!$`"]/.test(text)) throw new Error('Windows 命令参数包含不安全的 shell 展开字符');
+    const escaped = text
+      .replace(/(\\*)"/g, '$1$1\\"')
+      .replace(/(\\+)$/, '$1$1');
+    return `"${escaped}"`;
+  }
+  return `"${text.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+export function resolvePythonInvocation(environment = process.env, platform = process.platform) {
+  const command = environment.IMVIA_LAYER_PYTHON_COMMAND
+    || (platform === 'win32' ? 'python' : 'python3');
+  let args = [];
+  try {
+    const parsed = JSON.parse(environment.IMVIA_LAYER_PYTHON_ARGS || '[]');
+    args = Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : [];
+  } catch {
+    args = [];
+  }
+  return [command, ...args]
+    .map((part) => quoteShellArgument(part, platform))
+    .join(' ');
 }
 
 function allocatePort() {
@@ -215,7 +270,7 @@ async function startBridge() {
     const socket = await connectWebSocket(`ws://127.0.0.1:${port}`);
     const client = new RpcClient(socket);
     await client.request('initialize', {
-      clientInfo: { name: 'ui-layer-review-canvas', title: 'UI Layer Review Canvas', version: '0.5.0' },
+      clientInfo: { name: 'ui-layer-review-canvas', title: 'Imvia Layer', version: '0.5.0' },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     client.notify('initialized');
@@ -239,6 +294,225 @@ async function getBridge() {
     throw error;
   });
   return bridgePromise;
+}
+export function buildWorkbenchPrompt({
+  jobId,
+  jobPath,
+  sourcePath,
+  outputDirectory,
+  plan,
+  requireForegroundConfirmation = true,
+}) {
+  const pythonInvocation = resolvePythonInvocation();
+  const projectRoot = path.resolve(
+    path.dirname(jobPath),
+    '..',
+    '..',
+    '..',
+  );
+  const confirmScriptPath = path.resolve(
+    projectRoot,
+    'scripts',
+    'confirm-layer-review-dispatch.mjs',
+  );
+  const rmbgScriptPath = path.resolve(projectRoot, 'scripts', 'finalize-rmbg.py');
+  const imagegenCanvasScriptPath = path.resolve(projectRoot, 'scripts', 'prepare-targeted-imagegen-canvas.py');
+  const targetedFinalizerPath = path.resolve(projectRoot, 'scripts', 'finalize-targeted-job.py');
+  const quotedConfirmScriptPath = quoteShellArgument(confirmScriptPath, process.platform, true);
+  const quotedRmbgScriptPath = quoteShellArgument(rmbgScriptPath, process.platform, true);
+  const quotedImagegenCanvasScriptPath = quoteShellArgument(imagegenCanvasScriptPath, process.platform, true);
+  const quotedTargetedFinalizerPath = quoteShellArgument(targetedFinalizerPath, process.platform, true);
+  const removeBackgroundLayers = (plan?.layers || [])
+    .filter((layer) => layer.remove_background)
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const layerTransparencyStrategy = (layer) => layer.transparency_strategy
+    || transparencyStrategy({ category: layer.category, removeBackground: Boolean(layer.remove_background) });
+  const codexRgbaLayers = (plan?.layers || [])
+    .filter((layer) => layer.remove_background && layerTransparencyStrategy(layer) === 'codex_rgba')
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const rmbgLayers = (plan?.layers || [])
+    .filter((layer) => layer.remove_background && layerTransparencyStrategy(layer) === 'rembg')
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const targetedRepairLayers = (plan?.layers || [])
+    .filter((layer) => (
+      layer.execution_route_hint === 'targeted_repair'
+      && layerTransparencyStrategy(layer) !== 'codex_rgba'
+    ))
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const resultRefinementLayers = (plan?.layers || [])
+    .filter((layer) => layer.execution_route_hint === 'result_refinement');
+  const resultRefinementLines = resultRefinementLayers.flatMap((layer) => {
+    const layerId = layer.id || '<layerId>';
+    const quotedJobId = quoteShellArgument(jobId, process.platform);
+    const quotedLayerId = quoteShellArgument(layerId, process.platform);
+    const canvas = plan?.source?.canvas || layer.expected_output || {};
+    const dimensions = Number.isInteger(canvas.width) && Number.isInteger(canvas.height)
+      ? `${canvas.width}×${canvas.height}`
+      : '计划声明的输入像素尺寸';
+    const annotations = Array.isArray(layer.mask_annotations) ? layer.mask_annotations : [];
+    const countRole = (ids, role, kinds) => {
+      if (Array.isArray(ids)) return ids.length;
+      return annotations.filter((annotation) => (
+        annotation?.operation_role === role
+        || (!annotation?.operation_role && kinds.includes(annotation?.kind))
+      )).length;
+    };
+    const repairCount = countRole(layer.repair_path_ids, 'repair', ['boundary']);
+    const eraseCount = countRole(layer.erase_path_ids, 'erase', ['background', 'exclude', 'erase']);
+    const protectCount = countRole(layer.protect_path_ids, 'protect', ['foreground', 'keep']);
+    const operationMode = layer.refinement_operation?.mode;
+    const scopeSummary = operationMode === 'keep_inside_delete_outside' ? '路径外透明' : '路径外保持';
+    const canvasSummary = operationMode === 'full_canvas_explicit' ? '整图编辑' : '非整图编辑';
+    const callBudget = Number.isInteger(layer.maximum_imagegen_calls)
+      ? layer.maximum_imagegen_calls
+      : 0;
+    const roiCount = Number.isInteger(layer.expected_roi_tile_count)
+      ? layer.expected_roi_tile_count
+      : Math.floor(callBudget / 2);
+    const normalizedRequirement = String(
+      layer.normalized_user_requirement ?? layer.requirement ?? '',
+    ).trim().replace(/\s+/g, ' ');
+    const candidateBinding = quoteShellArgument('roi-id=/absolute/path.png', process.platform, true);
+    const manifestPath = quoteShellArgument(
+      '/absolute/path/to/result_refinement_roi_manifest.json',
+      process.platform,
+      true,
+    );
+    const finalizerCommand = roiCount === 0
+      ? `${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId} --imagegen-mapping ${manifestPath}`
+      : `${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId} --generated-input ${candidateBinding} --imagegen-mapping ${manifestPath}`;
+    return [
+      `PNG 结果局部精修层：${layer.name || layerId}。`,
+      `当前成功 PNG 是唯一权威 base；最终尺寸锁定为 ${dimensions}，禁止缩放或改变画布。`,
+      `系统理解：${repairCount} 个修复路径、${eraseCount} 个删除路径、${protectCount} 个保护路径；${scopeSummary}；${canvasSummary}。`,
+      `用户目标：${normalizedRequirement || '仅执行已提交的结构化 Alpha 操作。'}`,
+      `精确修复 ROI 数：${roiCount}；ImageGen 调用预算：${callBudget}${roiCount > 0 ? '（每个 ROI 一次初始候选，失败时最多一次重试）' : ''}。`,
+      `先运行选定 Python 与绝对脚本路径：${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${quotedJobId} --layer-id ${quotedLayerId}`,
+      '读取返回的 result_refinement_roi_manifest（version 2）；每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选，禁止强制缩放、整页分析或混用 ROI。',
+      roiCount === 0
+        ? 'ROI manifest 的 roi_jobs 为空时禁止调用 ImageGen；finalizer 仅执行确定性 Alpha 操作。'
+        : '候选可为 RGB 或 RGBA；不得绘制棋盘格，候选 Alpha 不具有最终决定权；每个 ROI 仅在初始候选失败后重试一次。',
+      `禁止调用 RMBG。最后运行选定 Python 与绝对脚本路径：${finalizerCommand}${roiCount > 0 ? '（每个 roi_job 重复 --generated-input，并绑定其 roi-id 与候选绝对路径）' : ''}。`,
+      '上述 finalizer 必须是本 turn 最后一个工具调用；成功后禁止预览、读取或再次校验，立即返回其 PNG 路径并结束回复。',
+    ];
+  });
+  const nativeResolutionRmbgLayers = (plan?.layers || [])
+    .filter((layer) => (
+      layer.execution_route_hint === 'targeted_repair'
+      && layerTransparencyStrategy(layer) === 'rembg'
+      && (!layer.output_resolution_policy
+        || layer.output_resolution_policy === 'native_imagegen_content')
+    ))
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const previewLines = (plan?.layers || [])
+    .map((layer) => {
+      const previewPath = layer.review_snapshot?.local_crop_path;
+      if (!previewPath) return '';
+      return `框选预览图（${layer.name || layer.id || '拆分项'}）：\n![${layer.name || '拆分项'}](${previewPath})`;
+    })
+    .filter(Boolean);
+  return [
+    '执行本地 UI 拆图工作台的已确认任务。',
+    `任务编号：${jobId}`,
+    `权威计划：${jobPath}`,
+    `原图路径：${sourcePath}`,
+    `唯一输出目录：${outputDirectory}`,
+    ...previewLines,
+    `严格调用：[$${splitSkillName}](${splitSkillPath})`,
+    requireForegroundConfirmation
+      ? `收到后先调用 confirm_layer_review_foreground_dispatch，参数 jobId=${jobId}；确认成功后再执行拆分。`
+      : '',
+    requireForegroundConfirmation
+      ? `若确认工具尚未出现在工具目录，改为运行：node ${quotedConfirmScriptPath} ${quoteShellArgument(jobId, process.platform, true)}。`
+      : '',
+    '只处理计划 layers[]；在同一 turn 内规范化简短需求并执行。',
+    '遵守 execution_mode、execution_route_hint 与 execution_policy；不要全页诊断或增加图层。',
+    '快速 ImageGen 路由：首个工作结果通过尺寸、标注、明显排除和结构完整性验收就立即结束；仅在失败时允许一次定向 ImageGen 重试，第二次仍失败则停止，禁止绕过尺寸校验。',
+    removeBackgroundLayers.length
+      ? `去背景已开启：${removeBackgroundLayers.join('、')}。这些图层必须输出真实透明 RGBA PNG。`
+      : '',
+    codexRgbaLayers.length
+      ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
+      : '',
+    targetedRepairLayers.length
+      ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持构图与宽高比一致。将原生结果保存到 generated/ 后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。ImageGen 返回同比例的原生尺寸时直接接受，由最终处理器按比例换算 content_region；宽高比变化或构图偏移才失败。禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
+      : '',
+    ...resultRefinementLines,
+    nativeResolutionRmbgLayers.length
+      ? `高分辨率透明输出层：${nativeResolutionRmbgLayers.join('、')}。最终处理器必须让原生 content_region 分辨率直接进入 BRIA RMBG，并回传同分辨率透明 PNG；框选宽高仅作为画布逻辑尺寸和定位元数据。禁止在 RMBG 前缩小到框选尺寸。`
+      : '',
+    rmbgLayers.length
+      ? `RMBG 图层：${rmbgLayers.join('、')}。先完成 Codex 最终拆分结果，再运行 ${pythonInvocation} ${quotedRmbgScriptPath} --input <中间PNG> --output <final PNG> --model ${RMBG_MODEL} --expected-width <宽> --expected-height <高>。`
+      : '',
+    rmbgLayers.length
+      ? 'RMBG 成功并通过结构验收后才写入 final；禁止用色差、轮廓、膨胀、模糊或自制蒙版代替。'
+      : '',
+    '终态快速结束：最终处理器写入 PNG 和 completed execution-report 后，该调用必须是本 turn 最后一个工具调用；禁止再预览、读取或重复校验，立即交付返回的 PNG 路径并结束回复。',
+    '开始时发送一条简短进度，完成时交付 PNG；处理中不要重复发送耗时消息。',
+  ].filter(Boolean).join('\n');
+}
+
+export function buildWorkbenchTurnInput({
+  prompt,
+  plan,
+  sourcePath,
+  reviewCropPaths,
+}) {
+  if (plan.task === 'refine_split_result') {
+    return [
+      { type: 'text', text: prompt, text_elements: [] },
+      ...selectExecutionAttachments({}, { task: plan.task, sourcePath, reviewCropPaths }),
+    ];
+  }
+  if (!isExecutionFeatureEnabled('route_aware_context_v1')) {
+    const legacyNeedsSource = plan.layers.some((layer) => (
+      layer.execution_mode === 'quality'
+      || layer.execution_route_hint === 'targeted_repair'
+      || layer.category === 'kvBackground'
+    ));
+    return [
+      { type: 'text', text: prompt, text_elements: [] },
+      ...(legacyNeedsSource ? [{ type: 'localImage', path: sourcePath, detail: 'high' }] : []),
+      ...reviewCropPaths.map((path) => ({ type: 'localImage', path, detail: 'high' })),
+    ];
+  }
+  const attachments = plan.layers.flatMap((layer) => selectExecutionAttachments(layer, {
+    sourcePath,
+    reviewCropPaths,
+  }));
+  const uniqueAttachments = [...new Map(attachments.map((item) => [item.path, item])).values()];
+  return [
+    { type: 'text', text: prompt, text_elements: [] },
+    ...uniqueAttachments,
+  ];
+}
+
+export function selectExecutionAttachments(layer = {}, {
+  sourcePath = null,
+  reviewCropPaths = [],
+  task = null,
+} = {}) {
+  if (task === 'refine_split_result') {
+    return sourcePath ? [{ type: 'localImage', path: sourcePath, detail: 'high' }] : [];
+  }
+
+  const route = layer.execution_route_hint || 'direct_crop';
+  if (route === 'direct_crop') return [];
+  const attachments = reviewCropPaths.map((path) => ({ type: 'localImage', path, detail: 'high' }));
+  const needsSource = layer.requires_global_context === true
+    || (layer.requires_global_context === undefined && (
+      layer.execution_mode === 'quality'
+      || route === 'targeted_repair'
+      || layer.category === 'kvBackground'
+    ));
+  return needsSource && sourcePath
+    ? [{ type: 'localImage', path: sourcePath, detail: 'high' }, ...attachments]
+    : attachments;
 }
 
 export async function probeCurrentThread(threadId = process.env.CODEX_THREAD_ID) {
@@ -275,70 +549,4 @@ export async function readCodexTurnStatus(threadId, turnId) {
     if (!cursor) break;
   }
   return { status: 'missing', completedAt: null };
-}
-
-export async function sendPlanToCurrentThread({
-  jobId,
-  jobPath,
-  sourcePath,
-  reviewCropPaths = [],
-  outputDirectory,
-}) {
-  const threadId = process.env.CODEX_THREAD_ID;
-  if (!threadId) throw new Error('未识别到当前 Codex 任务，请从该任务中重新运行工作台');
-
-  const { client } = await getBridge();
-  await client.request('thread/resume', { threadId, excludeTurns: true });
-  const plan = JSON.parse(await readFile(jobPath, 'utf8'));
-  const layerSummary = (plan.layers || []).flatMap((layer, index) => [
-    `${index + 1}. ${layer.name}（${layer.category_label || layer.category}）`,
-    `   执行模式：${layer.execution_mode === 'quality' ? '高质量' : '快速'}`,
-    `   框选区域：x ${layer.source_region_pixels?.x}, y ${layer.source_region_pixels?.y}, ${layer.source_region_pixels?.width} × ${layer.source_region_pixels?.height}px`,
-    `   拆分与精修提示词：${layer.requirement || '按框选区域忠实拆分'}`,
-    layer.review_snapshot?.local_crop_path ? `   框选预览图：${layer.review_snapshot.local_crop_path}` : null,
-  ].filter(Boolean));
-  const prompt = [
-    '这是从本地无限画布拆图工作台提交的已确认拆分任务。',
-    `任务编号：${jobId}`,
-    `拆分计划：${jobPath}`,
-    `原始 UI 图片：${sourcePath}`,
-    `输出目录：${outputDirectory}`,
-    `必须调用的执行 Skill：[$${splitSkillName}](${splitSkillPath})`,
-    '',
-    '本次已确认拆分项与完整提示词：',
-    ...layerSummary,
-    '',
-    '开始执行后，先在当前 Codex 对话发送一条简短 commentary，明确正在拆分该任务；处理期间继续用 commentary 汇报当前图层和耗时，完成后在当前对话交付结果。',
-    '请调用并严格执行上述 Skill，再读取拆分计划和原图，在当前任务中完成拆分、修复、验收与最终交付。',
-    '该 Skill 只负责执行人工计划：工作台计划是唯一图层清单，禁止启动全页诊断或自动规划。',
-    '每个 layers[] 记录的 execution_mode 是硬约束：fast 走最短定向路径，quality 才启用完整补全、复检和最多一次定向重试。',
-    '严格使用计划内已确认的图层名称、框选区域、保留/排除标注和去背景设置，不要重新分析或生成另一套粗分类。',
-    '如果计划 task 是 refine_split_result，输入图片是已经拆分完成的透明 PNG：必须以该 PNG 为唯一编辑底图，只修改本次标注区域，未标注像素、已有透明通道、画布尺寸和原始位置都必须保持不变。',
-    '最终只产出计划 layers[] 中已经确认的拆分元素，每个确认项对应一个最终 PNG。不得增加未选择的背景板、普通文字层、装饰层、预览图、联系表或其他自动推断图层。',
-    '只有计划明确包含普通文字项时才输出一个共享普通文字层；只有计划明确包含背景项时才输出背景。艺术标题按计划保持独立。',
-    'UI 底板需要去字时必须补全被挖空的材质；被遮挡区域仅在计划明确要求时修复。',
-    '每个最终 PNG 必须按该项 source_region_pixels 精确裁切，宽高等于框选区域；不要补成原图全画布。原始 x/y 仅作为回放定位元数据保留。',
-    `唯一合法交付目录是：${outputDirectory}。必须直接写入该绝对路径，不得写入当前 Codex 工作目录或另建同名任务目录。`,
-    '不要停留在分析或方案说明，直接执行到所选元素 PNG 和逐层验收通过；manifest 放在工作目录，不要混入最终图片目录。',
-  ].join('\n');
-
-  const turn = await client.request('turn/start', {
-    threadId,
-    clientUserMessageId: randomUUID(),
-    input: [
-      { type: 'text', text: prompt, text_elements: [] },
-      { type: 'localImage', path: sourcePath, detail: 'high' },
-      ...reviewCropPaths.map((cropPath) => ({ type: 'localImage', path: cropPath, detail: 'high' })),
-    ],
-    responsesapiClientMetadata: { source: 'ui-layer-review-canvas', job_id: jobId },
-  });
-  const turnId = turn?.turn?.id || null;
-  if (!turnId) throw new Error('Codex 未返回拆分任务标识');
-  await client.waitForNotification('turn/started', (params) => (
-    params.turn?.id === turnId || params.turnId === turnId
-  ));
-  const completion = client.waitForNotification('turn/completed', (params) => (
-    params.threadId === threadId && (params.turn?.id === turnId || params.turnId === turnId)
-  ), turnCompletionTimeoutMs);
-  return { threadId, turnId, completion };
 }
