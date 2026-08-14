@@ -123,6 +123,18 @@ test('topbar uses a compact centered brand and an adjacent ready state', () => {
   assert.match(styles, /\.brand-lockup\s*\{[\s\S]*?align-items:\s*center;/);
 });
 
+test('topbar exposes an explicit reconnect action only while the conversation bridge is disconnected', () => {
+  const topbar = source.slice(
+    source.indexOf('<header className="topbar">'),
+    source.indexOf('<ModeSwitch value={reviewMode}'),
+  );
+
+  assert.match(topbar, /conversationBridge\.online \? '已就绪' : '已断开'/);
+  assert.match(topbar, /conversationBridge\.checked && !conversationBridge\.online/);
+  assert.match(topbar, /onClick=\{reconnectConversation\}/);
+  assert.match(topbar, />重新连接<\/button>/);
+});
+
 test('pen overlays use a pen cursor, circular green anchors, and animated dashed paths', () => {
   assert.match(penOverlay, /<ellipse[\s\S]*?className=\{`pen-anchor/);
   assert.match(penOverlay, /rx=\{anchorRadii\.rx\}/);

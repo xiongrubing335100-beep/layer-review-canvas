@@ -4349,6 +4349,26 @@ body,
   white-space: nowrap;
 }
 
+.conversation-bridge-indicator__reconnect {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid #6f433a;
+  border-radius: 999px;
+  color: #efb4a5;
+  background: #2c1d19;
+  font: inherit;
+  cursor: pointer;
+}
+
+.conversation-bridge-indicator__reconnect:hover {
+  border-color: #b86f5d;
+  color: #ffd3c8;
+  background: #3a241f;
+}
+
 .project-context {
   padding-left: 0;
 }

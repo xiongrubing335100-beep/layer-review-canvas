@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlignHorizontalJustifyCenter,
@@ -36,6 +36,7 @@ import {
   Trash2,
   Type,
   Redo2,
+  RefreshCw,
   Undo2,
   Upload,
   WandSparkles,
@@ -55,10 +56,10 @@ import {
 import { PAGE_HEARTBEAT_INTERVAL_MS } from './workbench-lifecycle.js';
 import {
   cancelQueuedSplit,
-  getConversationBridgePresence,
   getLayerReviewJob,
   markLayerReviewMessageFailed,
   markLayerReviewMessageSent,
+  reconnectConversationBridge,
   resolveWorkbenchUrl,
   submitLayerReviewPlan,
   uploadMcpSourcePreview,
@@ -619,6 +620,7 @@ function App() {
   const resultEditPreviewRef = useRef(null);
   const reviewPenOverlayRef = useRef(null);
   const resultPenOverlayRef = useRef(null);
+  const bridgeRefreshSequenceRef = useRef(0);
   const reviewPenPathsRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
@@ -1288,34 +1290,29 @@ function App() {
     return () => window.clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const refreshBridgePresence = async () => {
-      try {
-        const presence = await getConversationBridgePresence();
-        if (cancelled) return;
-        setConversationBridge({
-          online: Boolean(presence?.online),
-          lastSeen: presence?.last_seen || null,
-          checked: true,
-        });
-      } catch {
-        if (cancelled) return;
-        setConversationBridge((current) => ({
-          ...current,
-          online: false,
-          checked: true,
-        }));
-      }
-    };
+  const refreshConversationBridge = useCallback(async ({ showConnecting = false } = {}) => {
+    const sequence = bridgeRefreshSequenceRef.current + 1;
+    bridgeRefreshSequenceRef.current = sequence;
+    if (showConnecting) {
+      setConversationBridge((current) => ({ ...current, checked: false }));
+    }
+    const next = await reconnectConversationBridge();
+    if (bridgeRefreshSequenceRef.current === sequence) setConversationBridge(next);
+    return next;
+  }, []);
 
-    refreshBridgePresence();
-    const interval = window.setInterval(refreshBridgePresence, 2000);
+  const reconnectConversation = () => {
+    refreshConversationBridge({ showConnecting: true });
+  };
+
+  useEffect(() => {
+    refreshConversationBridge();
+    const interval = window.setInterval(refreshConversationBridge, 2000);
     return () => {
-      cancelled = true;
+      bridgeRefreshSequenceRef.current += 1;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [refreshConversationBridge]);
 
   useEffect(() => {
     const pageId = window.crypto.randomUUID();
@@ -3645,9 +3642,17 @@ function App() {
             <span className="conversation-bridge-indicator__dot" />
             <span className="conversation-bridge-indicator__label">
               {conversationBridge.checked
-                ? (conversationBridge.online ? '已就绪' : '未连接')
-                : '检测中'}
+                ? (conversationBridge.online ? '已就绪' : '已断开')
+                : '连接中'}
             </span>
+            {conversationBridge.checked && !conversationBridge.online ? (
+              <button
+                type="button"
+                className="conversation-bridge-indicator__reconnect"
+                onClick={reconnectConversation}
+              >
+                <RefreshCw size={11} />重新连接</button>
+            ) : null}
           </div>
           <div className="project-context" aria-label="拆分确认进度">
             {hasSource ? <small>{`${acceptedCount} / ${nodes.length} 已确认`}</small> : null}

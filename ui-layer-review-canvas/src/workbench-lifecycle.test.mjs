@@ -169,7 +169,7 @@ test('an abandoned task is cleaned only after a terminal report or the conservat
   }), true);
 });
 
-test('warm shutdown waits for no pages, no jobs, no cleanup, and five minutes idle', () => {
+test('idle time never terminates the workbench without an explicit close or restart', () => {
   const idleSince = new Date(now - WARM_SHUTDOWN_DELAY_MS).toISOString();
   assert.equal(shouldEnterWarmShutdown({
     leaseCount: 0,
@@ -177,7 +177,7 @@ test('warm shutdown waits for no pages, no jobs, no cleanup, and five minutes id
     cleanupInProgress: false,
     idleSince,
     now,
-  }), true);
+  }), false);
   assert.equal(shouldEnterWarmShutdown({
     leaseCount: 1,
     activeJobCount: 0,
