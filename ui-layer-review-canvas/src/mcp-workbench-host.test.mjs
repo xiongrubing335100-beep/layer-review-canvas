@@ -55,6 +55,36 @@ test('the embedded workbench also reads the real listener status instead of assu
   }
 });
 
+test('manual reconnect normalizes the latest bridge presence for the topbar', async () => {
+  assert.equal(typeof workbenchHost.reconnectConversationBridge, 'function');
+  const state = await workbenchHost.reconnectConversationBridge(async () => ({
+    ok: true,
+    json: async () => ({
+      online: true,
+      last_seen: '2026-07-29T02:00:00.000Z',
+    }),
+  }));
+
+  assert.deepEqual(state, {
+    online: true,
+    lastSeen: '2026-07-29T02:00:00.000Z',
+    checked: true,
+  });
+});
+
+test('manual reconnect returns a stable disconnected state when the bridge cannot be reached', async () => {
+  assert.equal(typeof workbenchHost.reconnectConversationBridge, 'function');
+  const state = await workbenchHost.reconnectConversationBridge(async () => {
+    throw new Error('offline');
+  });
+
+  assert.deepEqual(state, {
+    online: false,
+    lastSeen: null,
+    checked: true,
+  });
+});
+
 test('a queued split can be cancelled through the workbench API', async () => {
   const requests = [];
   const result = await cancelQueuedSplit('layer-job-1', async (url, options) => {

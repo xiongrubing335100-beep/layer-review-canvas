@@ -105,15 +105,16 @@ export function canCleanAbandonedJob({
 }
 
 export function shouldEnterWarmShutdown({
-  leaseCount,
-  activeJobCount,
-  cleanupInProgress,
-  idleSince,
-  now = Date.now(),
+  leaseCount: _leaseCount,
+  activeJobCount: _activeJobCount,
+  cleanupInProgress: _cleanupInProgress,
+  idleSince: _idleSince,
+  now: _now = Date.now(),
 }) {
-  if (leaseCount > 0 || activeJobCount > 0 || cleanupInProgress) return false;
-  const idleTime = Date.parse(idleSince || '');
-  return Number.isFinite(idleTime) && now - idleTime >= WARM_SHUTDOWN_DELAY_MS;
+  // Page leases still drive abandoned-job cleanup, but idleness must never
+  // terminate the user-owned workbench. SIGINT/SIGTERM remain the explicit
+  // close/restart boundary.
+  return false;
 }
 
 export function blocksNewSubmission({

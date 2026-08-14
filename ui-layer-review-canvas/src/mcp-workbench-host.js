@@ -18,6 +18,23 @@ export async function getConversationBridgePresence(fetchImpl = fetch) {
   return response.json();
 }
 
+export async function reconnectConversationBridge(fetchImpl = fetch) {
+  try {
+    const presence = await getConversationBridgePresence(fetchImpl);
+    return {
+      online: Boolean(presence?.online),
+      lastSeen: presence?.last_seen || null,
+      checked: true,
+    };
+  } catch {
+    return {
+      online: false,
+      lastSeen: null,
+      checked: true,
+    };
+  }
+}
+
 export async function markLayerReviewMessageSent(jobId, fetchImpl = fetch) {
   if (isMcpAppHost()) {
     return callMcpAppTool('mark_layer_review_message_sent', { jobId });
