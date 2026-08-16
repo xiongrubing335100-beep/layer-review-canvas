@@ -1,23 +1,48 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+function runProcess(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...options,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${command} ${args.join(' ')} exited ${code}: ${stderr || stdout}`));
+    });
+  });
+}
 
-async function runNpm(command, args, options) {
-  return execFileAsync(command, args, {
-    ...options,
-    shell: process.platform === 'win32',
+export function runNpmCommand(args, {
+  cwd,
+  env = process.env,
+  platform = process.platform,
+  runCommand = runProcess,
+} = {}) {
+  const command = platform === 'win32' ? 'npm.cmd' : 'npm';
+  return runCommand(command, args, {
+    ...(cwd !== undefined ? { cwd } : {}),
+    env,
+    shell: platform === 'win32',
   });
 }
 
 export async function resolveNpmCacheDirectory({
   env = process.env,
   platform = process.platform,
-  runCommand = runNpm,
+  runCommand = runProcess,
 } = {}) {
-  const command = platform === 'win32' ? 'npm.cmd' : 'npm';
-  const { stdout } = await runCommand(command, ['config', 'get', 'cache'], { env });
+  const { stdout } = await runNpmCommand(['config', 'get', 'cache'], {
+    env,
+    platform,
+    runCommand,
+  });
   const cacheDirectory = String(stdout).trim();
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   if (!pathApi.isAbsolute(cacheDirectory)) {

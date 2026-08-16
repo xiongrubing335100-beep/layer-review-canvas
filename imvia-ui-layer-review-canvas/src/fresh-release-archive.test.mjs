@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ensurePersistentNodeLauncher } from '../scripts/node-runtime.mjs';
-import { resolveNpmCacheDirectory } from './fixtures/npm-cache-directory.mjs';
+import { resolveNpmCacheDirectory, runNpmCommand } from './fixtures/npm-cache-directory.mjs';
 
 const applicationRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(applicationRoot, '..');
@@ -116,7 +116,32 @@ test('npm cache discovery accepts the absolute path reported by npm.cmd on Windo
   assert.deepEqual(calls, [{
     command: 'npm.cmd',
     args: ['config', 'get', 'cache'],
-    options: { env },
+    options: { env, shell: true },
+  }]);
+});
+
+test('npm lifecycle commands use npm.cmd through the Windows command shell', async () => {
+  const calls = [];
+  const env = { PATH: 'C:\\node' };
+  const result = await runNpmCommand(['run', 'setup'], {
+    cwd: 'C:\\release archive',
+    env,
+    platform: 'win32',
+    runCommand: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { stdout: 'setup complete\n', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(result, { stdout: 'setup complete\n', stderr: '' });
+  assert.deepEqual(calls, [{
+    command: 'npm.cmd',
+    args: ['run', 'setup'],
+    options: {
+      cwd: 'C:\\release archive',
+      env,
+      shell: true,
+    },
   }]);
 });
 
@@ -168,12 +193,12 @@ test('a clean tracked archive setup and update build a fresh bundle before MCP i
     ...(pipCache ? { PIP_CACHE_DIR: pipCache } : {}),
     ...(process.platform === 'win32' ? { IMVIA_LAYER_SKIP_MODEL_PREWARM: '1' } : {}),
   };
-  await run('npm', ['run', 'setup'], { cwd: archiveRoot, env });
+  await runNpmCommand(['run', 'setup'], { cwd: archiveRoot, env });
   const distIndexPath = path.join(archiveRoot, 'dist', 'index.html');
   assert.match(await readFile(distIndexPath, 'utf8'), /<script[^>]+assets\/index-/);
 
   await writeFile(distIndexPath, 'STALE-BUNDLE-MUST-NOT-SURVIVE');
-  await run('npm', ['run', 'update'], { cwd: archiveRoot, env });
+  await runNpmCommand(['run', 'update'], { cwd: archiveRoot, env });
   assert.doesNotMatch(await readFile(distIndexPath, 'utf8'), /STALE-BUNDLE-MUST-NOT-SURVIVE/);
 
   const hash = (contents) => createHash('sha256').update(contents).digest('hex');
