@@ -110,7 +110,7 @@ import {
 } from './result-refinement-ui.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import { ResultVersionGallery } from './result-version-gallery.js';
-import { IMVIA_AUTHOR_NAME, IMVIA_AUTHOR_URL } from './attribution.js';
+import { DeveloperAttribution } from './attribution.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -3826,16 +3826,7 @@ function App() {
               </div>
             </>
           ) : null}
-          <a
-            className="developer-attribution"
-            href={IMVIA_AUTHOR_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="访问开发者青木的小红书主页"
-          >
-            <span>开发者</span>
-            <strong>{IMVIA_AUTHOR_NAME}</strong>
-          </a>
+          <DeveloperAttribution />
         </aside>
 
         {reviewMode === 'guided' ? (
