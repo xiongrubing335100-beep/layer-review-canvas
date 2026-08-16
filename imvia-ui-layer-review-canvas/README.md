@@ -2,6 +2,8 @@
 
 Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
 
+仓库首页提供 macOS 与 Windows 的完整安装、启动、重连、更新、卸载和故障排除说明：[imvia-layer-review-canvas](../README.md)。本目录是应用目录 `imvia-ui-layer-review-canvas`。
+
 ## 当前版本：v0.1.0
 
 这是首个可安装版本，提供以下能力：
@@ -29,7 +31,7 @@ Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆�
 
 - 发布 Codex Desktop 本地插件与右侧工作台的一体化安装流程。
 - 提供可见会话拆分、任务队列、透明 PNG 回传、RMBG 最终处理和多图画布总览。
-- 提供插件模板、安装脚本、开源许可证与 GitHub 发布说明。
+- 提供插件模板、安装脚本、source-available 许可证与 GitHub 发布说明。
 - 安装器支持 Windows 与 macOS：自动记录本机可用的 Python 命令，后续拆分任务会复用该命令执行 RMBG 处理。
 - ImageGen 定向修复使用 mapping 提取原生 `content_region`；同比例原生画布会自动换算 mapping 坐标，宽高比变化、拉伸压缩或构图偏移才会被拒绝。BRIA 预处理保持原始宽高比并输出高分辨率透明 PNG；框选尺寸只负责无限画布中的显示与定位。
 
@@ -38,10 +40,12 @@ Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆�
 前置条件：Codex Desktop、Node.js 20+、Python 3.10+。Windows 与 macOS 均支持；macOS 请先通过 [python.org](https://www.python.org/downloads/macos/) 或 Homebrew 安装 Python 3.10+。`npm run setup` 会自动下载 RMBG 的 Python 依赖和 BRIA RMBG 2.0 模型，首次运行需要联网。RMBG 2.0 权重按 BRIA 的 CC BY-NC 4.0 许可提供，仅限非商业使用；商业部署需取得授权。
 
 ```sh
-git clone <你的 GitHub 仓库地址>
-cd <克隆或解压后的项目目录>
+git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
+cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
+
+如使用 ZIP，请解压仓库后进入其中的 `imvia-ui-layer-review-canvas` 目录，再运行同一条 `npm run setup` 命令。
 
 `npm run setup` 是唯一的安装命令：它会先安装前端依赖，再安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。该命令必须完整成功才会注册插件：若 Python、RMBG 依赖或模型下载失败，安装会停止并给出原因，不会留下半安装插件。完成后重启 Codex Desktop（或新建任务），在对话中发送：
 
@@ -73,4 +77,6 @@ npm run install:codex-plugin
 
 ## 许可证与发布
 
-本项目采用 [MIT License](LICENSE)。发布 GitHub 前，请把 `<你的 GitHub 仓库地址>` 替换为实际地址，并按 [GitHub 发布说明](docs/GITHUB_RELEASE.md) 完成检查。
+本项目为 source-available 软件，采用根目录 [Imvia Layer Personal & Commercial License](../LICENSE)；本目录的 [LICENSE](LICENSE) 是其字节一致的发布副本。个人非商业使用免费；商业使用需事先取得付费书面授权。第三方组件、模型和素材仍受其各自许可证约束，特别是 BRIA RMBG 2.0 的许可不会被本项目的商业授权覆盖或自动授予。
+
+商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。发布操作见 [GitHub 发布说明](docs/GITHUB_RELEASE.md)，作者与第三方归属见根目录 [NOTICE.md](../NOTICE.md)。
