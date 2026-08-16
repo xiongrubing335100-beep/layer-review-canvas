@@ -4,9 +4,12 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { DeveloperAttribution } from './attribution.js';
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const packageLock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
@@ -22,12 +25,19 @@ const attributionSource = await readFile(new URL('./attribution.js', import.meta
 const viteSource = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
 const targetedFinalizer = await readFile(new URL('../scripts/finalize-targeted-job.py', import.meta.url), 'utf8');
 const rmbgFinalizer = await readFile(new URL('../scripts/finalize-rmbg.py', import.meta.url), 'utf8');
+const refinementRoi = await readFile(new URL('../scripts/result_refinement_roi.py', import.meta.url), 'utf8');
+const imagegenCanvasPreparer = await readFile(new URL('../scripts/prepare-targeted-imagegen-canvas.py', import.meta.url), 'utf8');
 const authorUrl = 'https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b';
 const attributionModule = new URL('./attribution.js', import.meta.url);
 const applicationDirectory = fileURLToPath(new URL('..', import.meta.url));
 const viteCli = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url));
 const execFileAsync = promisify(execFile);
 const attributionTransportPattern = /\b(?:navigator\.sendBeacon|sendBeacon|WebSocket|fetch|XMLHttpRequest|axios|got|undici|https?\.(?:request|get|post))\b/i;
+const attributionResourcePattern = /(?:\b(?:new\s+Image|EventSource|sendBeacon|WebSocket|fetch|XMLHttpRequest)\b|createElement\(\s*['"](?:img|iframe|picture|source|video|audio|object|embed|script|link)['"])/i;
+const forbiddenAttributionElementPattern = /<\/?(?:img|iframe|picture|source|video|audio|object|embed|script|link)\b/i;
+const entryBodyAttributionPattern = /(?:青木|xiaohongshu\.com\/user\/profile\/5cdb80ac000000001601466b|Copyright\s*(?:\(c\)|©)\s*2026|开发者\s*·\s*青木|IMVIA_(?:AUTHOR|COPYRIGHT)_)/i;
+const pngAttributionPattern = /(?:青木|xiaohongshu\.com\/user\/profile\/5cdb80ac000000001601466b|Copyright\s*(?:\(c\)|©)\s*2026|开发者\s*·\s*青木|IMVIA_(?:AUTHOR|COPYRIGHT)_|DeveloperAttribution|watermark)/i;
+const authorTextDrawingPattern = /(?:\b(?:draw|ImageDraw\.Draw\([^\n]*\))\.(?:text|multiline_text)\s*\()/i;
 const prohibitedManifestTerm = /(?:attribution|watermark|telemetry|analytics|fingerprint(?:ing)?|remote[-_\s]?disable|\blicen[cs]e\b)/i;
 const allowedLicenseMetadata = new Set(['license=SEE LICENSE IN LICENSE']);
 
@@ -59,9 +69,16 @@ function collectProhibitedManifestEntries(value, parts = []) {
 }
 
 function sourceWithoutAttributionHeader(source) {
-  return source.startsWith('# Imvia Layer © 2026 青木')
+  return /^(?:\/\/|#) Imvia Layer © 2026 青木/.test(source)
     ? source.slice(source.indexOf('\n') + 1)
     : source;
+}
+
+function sourceSection(source, startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, `${label} should remain identifiable`);
+  return source.slice(start, end);
 }
 
 test('the application uses its final Imvia package identity', () => {
@@ -210,6 +227,32 @@ test('the attribution-only surfaces contain no tracking, remote-disable, or lice
   }
 });
 
+test('developer attribution renders as one exact author link with text-only inline content', () => {
+  const markup = renderToStaticMarkup(createElement(DeveloperAttribution));
+  assert.equal([...markup.matchAll(/<a\b/gi)].length, 1);
+  assert.deepEqual([...markup.matchAll(/\bhref="([^"]+)"/g)].map((match) => match[1]), [authorUrl]);
+  assert.deepEqual([...markup.matchAll(/<([a-z][\w-]*)\b/gi)].map((match) => match[1].toLowerCase()), ['a', 'span', 'strong']);
+  assert.equal(markup.replace(/<[^>]+>/g, ''), '开发者 · 青木');
+  assert.doesNotMatch(markup, forbiddenAttributionElementPattern);
+  assert.doesNotMatch(attributionSource, attributionResourcePattern);
+  assert.doesNotMatch(attributionSource, /\bon[A-Z][A-Za-z]*\s*:/);
+});
+
+test('critical entry bodies retain no attribution beyond their allowed first-line headers', async () => {
+  for (const relativePath of [
+    './main.jsx',
+    '../codex-thread-bridge.mjs',
+    '../layer-review-mcp-server.mjs',
+    '../scripts/start-workbench.mjs',
+    '../scripts/install-codex-plugin.mjs',
+    '../scripts/finalize-targeted-job.py',
+    '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
+  ]) {
+    const source = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+    assert.doesNotMatch(sourceWithoutAttributionHeader(source), entryBodyAttributionPattern, relativePath);
+  }
+});
+
 test('author attribution is structurally isolated from PNG finalizers and export composition', () => {
   assert.doesNotMatch(attributionSource, /\b(?:png|watermark|download|zipSync|canvas)\b/i);
   assert.equal(mainSource.split('DeveloperAttribution').length - 1, 2, 'the attribution component may only be imported and rendered once');
@@ -220,6 +263,24 @@ test('author attribution is structurally isolated from PNG finalizers and export
   assert.doesNotMatch(exportAndDownloadSource, /DeveloperAttribution|IMVIA_AUTHOR|青木|xiaohongshu|IMVIA_COPYRIGHT|watermark/i);
   for (const finalizer of [sourceWithoutAttributionHeader(targetedFinalizer), rmbgFinalizer]) {
     assert.doesNotMatch(finalizer, /attribution(?:\.js)?|IMVIA_AUTHOR|青木|xiaohongshu|IMVIA_COPYRIGHT|watermark|ImageDraw|draw\.text/i);
+  }
+});
+
+test('pixel generation, composition, and direct-download paths contain no author or watermark injection', () => {
+  const cropCanvasSource = sourceSection(mainSource, 'async function cropRegionDataUrl', 'function defaultRemoveBackground', 'crop canvas path');
+  const exportAndDownloadSource = sourceSection(mainSource, '  const exportAccepted = () => {', '  const submitLayers = async', 'export and download path');
+  const mainBody = sourceWithoutAttributionHeader(mainSource);
+  assert.deepEqual(mainBody.match(/DeveloperAttribution|IMVIA_(?:AUTHOR|COPYRIGHT)_|青木|xiaohongshu/g) || [], ['DeveloperAttribution', 'DeveloperAttribution']);
+  for (const source of [
+    cropCanvasSource,
+    exportAndDownloadSource,
+    sourceWithoutAttributionHeader(targetedFinalizer),
+    rmbgFinalizer,
+    refinementRoi,
+    imagegenCanvasPreparer,
+  ]) {
+    assert.doesNotMatch(source, pngAttributionPattern);
+    assert.doesNotMatch(source, authorTextDrawingPattern);
   }
 });
 

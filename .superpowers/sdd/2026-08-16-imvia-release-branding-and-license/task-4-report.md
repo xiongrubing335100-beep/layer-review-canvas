@@ -39,3 +39,18 @@ Completed with Fix Round 1. The application package and plugin metadata credit é
 - Proves attribution stays out of PNG finalizers, RMBG, and the export/download composition block. It treats the required Python header separately, then rejects author URL/banner/watermark injection in the finalizer bodies.
 - Focused contract: 13 passed, 0 failed. Full Node suite: 411 passed, 0 failed.
 - `vite build --sourcemap`, every-bundle legal-banner/source-map inspection, and `git diff --check` all passed.
+
+## Fix Round 3 â€” Render tree, entry body, and complete PNG-path isolation
+
+### RED / GREEN
+
+- RED: temporarily injected a guarded `new Image()` allocation into `src/attribution.js`. The new rendered-attribution contract failed exactly on the tracking/resource-node prohibition.
+- GREEN: removed the temporary injection. The production module remains unchanged; the fix is limited to regression contracts.
+
+### Coverage and verification
+
+- Renders the developer attribution component and permits one exact-author `a` link with text-only inline content, while rejecting resource elements, event handlers, and image/network tracking APIs.
+- For every Task 4 header entry, strips only the legal first-line comment before asserting the entire body contains no author URL, copyright/author text, or author/banner constant markers. Plugin metadata remains verified structurally in its dedicated manifest test instead of being treated as an entry script.
+- Covers actual pixel generation and delivery sources: `finalize-targeted-job.py`, `finalize-rmbg.py`, `result_refinement_roi.py`, `prepare-targeted-imagegen-canvas.py`, plus the complete `main.jsx` crop-canvas and direct export/download sections. It allows legitimate `canvas`, `drawImage`, and `ImageDraw` processing while rejecting author constants, URLs, watermarks, and text-drawing injection.
+- Focused contract: 16 passed, 0 failed. Full Node suite: 414 passed, 0 failed.
+- `vite build --sourcemap`, per-bundle legal-banner/source-map inspection, and `git diff --check` all passed.
