@@ -9,6 +9,8 @@ const rootReadme = await readFile(new URL('../../README.md', import.meta.url), '
 const rootLicense = await readFile(new URL('../../LICENSE', import.meta.url), 'utf8');
 const packagedLicense = await readFile(new URL('../LICENSE', import.meta.url), 'utf8');
 const notice = await readFile(new URL('../../NOTICE.md', import.meta.url), 'utf8');
+const appReadme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+const releaseGuide = await readFile(new URL('../docs/GITHUB_RELEASE.md', import.meta.url), 'utf8');
 const authorUrl = 'https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b';
 
 test('the application uses its final Imvia package identity', () => {
@@ -39,4 +41,20 @@ test('the distributed license and notice preserve the author terms', () => {
   assert.match(notice, /青木/);
   assert.match(notice, new RegExp(authorUrl.replaceAll('.', '\\.')));
   assert.match(notice, /third-party/i);
+});
+
+test('application documentation preserves the final Imvia distribution terms', () => {
+  for (const document of [appReadme, releaseGuide]) {
+    assert.match(document, /https:\/\/github\.com\/xiongrubing335100-beep\/imvia-layer-review-canvas/);
+    assert.match(document, /imvia-ui-layer-review-canvas/);
+    assert.doesNotMatch(document, /MIT License|<你的 GitHub 仓库地址>/);
+    assert.match(document, new RegExp(`\\[青木\\]\\(${authorUrl.replaceAll('.', '\\.')}\\)`));
+    assert.match(document, /prior written paid authorization/i);
+    assert.match(document, /BRIA RMBG 2\.0[\s\S]*third-party license/i);
+  }
+});
+
+test('the release guide renames the repository only after the release PR merges', () => {
+  assert.match(releaseGuide, /合并发布 PR 后[\s\S]*仓库名称切换为 `imvia-layer-review-canvas`/);
+  assert.doesNotMatch(releaseGuide, /创建或重命名为空仓库/);
 });

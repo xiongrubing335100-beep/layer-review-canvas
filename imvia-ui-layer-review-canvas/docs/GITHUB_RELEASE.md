@@ -14,13 +14,14 @@ npm run build
 - `.env`、日志、本地 RMBG 模型缓存；
 - 任何用户路径、访问令牌或 Codex 对话内容。
 
-## 创建 GitHub 仓库
+## 合并、发布与仓库改名
 
-1. 在 GitHub 创建或重命名为空仓库 `imvia-layer-review-canvas`，地址为 `https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas`。
-2. 将本项目作为初始内容推送到该仓库。
-3. 在仓库 About 中说明：这是需要 Codex Desktop、Node.js 和 Python 的本地 UI 拆图工作台。
-4. 保持根目录 [README.md](../../README.md) 的克隆地址和应用目录 `imvia-ui-layer-review-canvas` 与发布仓库一致。
-5. 以根目录 [LICENSE](../../LICENSE) 的 Imvia Layer Personal & Commercial License 发布；本项目为 source-available，个人非商业使用免费，商业使用必须事先取得付费书面授权。不得以发布操作覆盖第三方组件或 BRIA RMBG 2.0 的各自许可证。
+1. 在当前 `layer-review-canvas` 仓库完成发布 PR 的审阅并合并到 `main`。
+2. 合并发布 PR 后，再在 GitHub 将仓库名称切换为 `imvia-layer-review-canvas`，最终地址为 `https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas`。
+3. 仓库改名后更新本地 `origin`，并确认根目录 [README.md](../../README.md) 的克隆地址和应用目录 `imvia-ui-layer-review-canvas` 都指向最终仓库。
+4. 在仓库 About 中说明：这是需要 Codex Desktop、Node.js 和 Python 的本地 UI 拆图工作台。
+5. 以根目录 [LICENSE](../../LICENSE) 的 Imvia Layer Personal & Commercial License 发布；本项目为 source-available，个人非商业使用免费，商业使用必须事先取得付费书面授权（prior written paid authorization）。不得以发布操作覆盖第三方组件或 BRIA RMBG 2.0 的 third-party license。
+6. 商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。
 
 ## 用户安装方式
 
@@ -47,5 +48,3 @@ ZIP 用户解压后进入其中的 `imvia-ui-layer-review-canvas`，运行同一
 ```
 
 插件不会使用发布者机器上的固定目录；每个用户的安装脚本都会写入自己的下载位置。Windows 与 macOS 都使用同一条 `npm run setup` 命令；发布前请至少在两种系统各完成一次“克隆、安装、打开插件、RMBG 拆分”的干净环境验证。
-
-合并发布 PR 后，再在 GitHub 将仓库名称切换为 `imvia-layer-review-canvas`；随后更新本地 `origin` 并确认 README、克隆地址和链接都指向最终 URL。

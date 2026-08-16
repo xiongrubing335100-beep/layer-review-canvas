@@ -57,7 +57,7 @@ npm run setup
 
 ## 仅更新插件
 
-工作台源码更新后，在下载目录运行：
+工作台源码更新后，确保当前工作目录是 `imvia-ui-layer-review-canvas` 应用目录，再运行：
 
 ```sh
 npm run install:codex-plugin
@@ -77,6 +77,6 @@ npm run install:codex-plugin
 
 ## 许可证与发布
 
-本项目为 source-available 软件，采用根目录 [Imvia Layer Personal & Commercial License](../LICENSE)；本目录的 [LICENSE](LICENSE) 是其字节一致的发布副本。个人非商业使用免费；商业使用需事先取得付费书面授权。第三方组件、模型和素材仍受其各自许可证约束，特别是 BRIA RMBG 2.0 的许可不会被本项目的商业授权覆盖或自动授予。
+本项目为 source-available 软件，采用根目录 [Imvia Layer Personal & Commercial License](../LICENSE)；本目录的 [LICENSE](LICENSE) 是其字节一致的发布副本。个人非商业使用免费；商业使用必须事先取得付费书面授权（prior written paid authorization）。第三方组件、模型和素材仍受其各自许可证约束；特别是 BRIA RMBG 2.0 的 third-party license 不会被本项目的商业授权覆盖或自动授予。
 
 商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。发布操作见 [GitHub 发布说明](docs/GITHUB_RELEASE.md)，作者与第三方归属见根目录 [NOTICE.md](../NOTICE.md)。
