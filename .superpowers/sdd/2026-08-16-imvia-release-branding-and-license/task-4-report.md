@@ -23,3 +23,19 @@ Completed with Fix Round 1. The application package and plugin metadata credit é
 
 - The existing untracked `ui-layer-review-canvas/.vite/` cache directory was intentionally left untouched.
 - Attribution remains passive metadata, comments, and a build banner only: no telemetry, fingerprinting, hidden network access, license checks, or PNG watermarking was added.
+
+## Fix Round 2 â€” Prohibited-control and watermark contracts
+
+### RED / GREEN
+
+- RED: temporarily injected nested `attribution.remoteDisable` metadata into `package.json`. The focused contract failed exactly as intended, reporting `attribution (key)` and `attribution.remoteDisable (key)`.
+- GREEN: removed the temporary fault. The recursive manifest contract now rejects prohibited keys and string values at every depth, while exactly allowlisting `license=SEE LICENSE IN LICENSE`.
+- No production behavior changed: the fix is a regression contract only.
+
+### Coverage and verification
+
+- Locks the current package scripts and rejects all npm lifecycle hooks capable of hidden pre/post-install licensing behavior.
+- Restricts transport and enforcement assertions to the attribution module, source headers, Vite attribution configuration, and plugin developer metadata; it deliberately leaves legitimate Codex/MCP local communication and existing `sourceFingerprint` behavior out of scope.
+- Proves attribution stays out of PNG finalizers, RMBG, and the export/download composition block. It treats the required Python header separately, then rejects author URL/banner/watermark injection in the finalizer bodies.
+- Focused contract: 13 passed, 0 failed. Full Node suite: 411 passed, 0 failed.
+- `vite build --sourcemap`, every-bundle legal-banner/source-map inspection, and `git diff --check` all passed.
