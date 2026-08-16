@@ -270,7 +270,7 @@ async function startBridge() {
     const socket = await connectWebSocket(`ws://127.0.0.1:${port}`);
     const client = new RpcClient(socket);
     await client.request('initialize', {
-      clientInfo: { name: 'ui-layer-review-canvas', title: 'Imvia Layer', version: '0.5.0' },
+      clientInfo: { name: 'imvia-ui-layer-review-canvas', title: 'Imvia Layer', version: '0.5.0' },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     client.notify('initialized');
