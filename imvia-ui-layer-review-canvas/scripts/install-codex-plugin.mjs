@@ -3,25 +3,13 @@ import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensurePersistentPythonRuntime } from './python-runtime.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginTemplateRoot = path.join(repositoryRoot, 'plugin-template', 'imvia-layer');
 const pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer');
 const marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const cachebuster = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
-
-function installedPythonRuntime() {
-  let args = [];
-  try {
-    args = JSON.parse(process.env.IMVIA_LAYER_PYTHON_ARGS || '[]');
-  } catch {
-    args = [];
-  }
-  return {
-    command: process.env.IMVIA_LAYER_PYTHON_COMMAND || (process.platform === 'win32' ? 'python' : 'python3'),
-    args: Array.isArray(args) && args.every((item) => typeof item === 'string') ? args : [],
-  };
-}
 
 async function readMarketplace() {
   try {
@@ -37,6 +25,7 @@ async function readMarketplace() {
 }
 
 async function install() {
+  const python = await ensurePersistentPythonRuntime({ repositoryRoot, pluginRoot });
   await mkdir(path.dirname(pluginRoot), { recursive: true });
   await cp(pluginTemplateRoot, pluginRoot, { recursive: true, force: true });
 
@@ -47,7 +36,7 @@ async function install() {
 
   await writeFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), `${JSON.stringify({
     workbenchRoot: repositoryRoot,
-    python: installedPythonRuntime(),
+    python: { command: python.command, args: python.args },
     installedAt: new Date().toISOString(),
   }, null, 2)}\n`);
 
