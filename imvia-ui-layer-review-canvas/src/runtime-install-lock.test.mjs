@@ -137,7 +137,7 @@ test('fresh-runner workflow installs locked Node dependencies before every runti
   );
   const npmCi = workflow.indexOf('run: npm ci');
   const productionBuild = workflow.indexOf('run: npm run build');
-  const firstNodeContract = workflow.indexOf('run: node --test');
+  const firstNodeContract = workflow.indexOf('run: npm test');
   const realInstaller = workflow.indexOf('run: node scripts/install-codex-plugin.mjs');
 
   assert.ok(npmCi >= 0, 'fresh runner must install package-lock dependencies');
@@ -145,7 +145,8 @@ test('fresh-runner workflow installs locked Node dependencies before every runti
   assert.ok(npmCi < realInstaller, 'npm ci must precede the real installer');
   assert.ok(productionBuild > npmCi, 'fresh checkout must build the ignored dist after npm ci');
   assert.ok(productionBuild < firstNodeContract, 'production build must precede focused Node contracts');
-  assert.match(workflow, /node --test src\/\*\.test\.mjs/);
+  assert.match(workflow, /run:\s*npm test/);
+  assert.doesNotMatch(workflow, /node --test src\/\*\.test\.mjs/);
 });
 
 test('CI runs the complete release contract on macOS and Windows at the minimum supported Node', async () => {
@@ -155,7 +156,8 @@ test('CI runs the complete release contract on macOS and Windows at the minimum 
   );
   assert.match(workflow, /os:\s*\[macos-latest, windows-latest\]/);
   assert.match(workflow, /node-version:\s*['"]?20\.19\.0['"]?/);
-  assert.match(workflow, /run:\s*node --test src\/\*\.test\.mjs/);
+  assert.match(workflow, /run:\s*npm test/);
+  assert.doesNotMatch(workflow, /node --test src\/\*\.test\.mjs/);
   assert.match(workflow, /run:\s*node scripts\/run-managed-python-tests\.mjs/);
   assert.match(workflow, /run:\s*node scripts\/verify-installed-runtime\.mjs/);
   assert.match(workflow, /run:\s*node scripts\/verify-production-build\.mjs/);

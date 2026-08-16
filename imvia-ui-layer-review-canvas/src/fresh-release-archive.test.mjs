@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ensurePersistentNodeLauncher } from '../scripts/node-runtime.mjs';
+import { resolveNpmCacheDirectory } from './fixtures/npm-cache-directory.mjs';
 
 const applicationRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(applicationRoot, '..');
@@ -99,6 +100,36 @@ async function initializeMcp(command, args, cwd, env) {
   assert.doesNotMatch(stderr, /ENOENT/);
 }
 
+test('npm cache discovery accepts the absolute path reported by npm.cmd on Windows', async () => {
+  const calls = [];
+  const env = {};
+  const cacheDirectory = await resolveNpmCacheDirectory({
+    env,
+    platform: 'win32',
+    runCommand: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { stdout: 'C:\\Users\\runner\\AppData\\Local\\npm-cache\r\n' };
+    },
+  });
+
+  assert.equal(cacheDirectory, 'C:\\Users\\runner\\AppData\\Local\\npm-cache');
+  assert.deepEqual(calls, [{
+    command: 'npm.cmd',
+    args: ['config', 'get', 'cache'],
+    options: { env },
+  }]);
+});
+
+test('npm cache discovery does not require HOME or npm_config_cache', async () => {
+  const cacheDirectory = await resolveNpmCacheDirectory({
+    env: {},
+    platform: 'linux',
+    runCommand: async () => ({ stdout: '/var/tmp/npm-cache\n' }),
+  });
+
+  assert.equal(cacheDirectory, '/var/tmp/npm-cache');
+});
+
 test('a clean tracked archive setup and update build a fresh bundle before MCP import', { timeout: 300_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia clean archive-'));
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
@@ -109,7 +140,7 @@ test('a clean tracked archive setup and update build a fresh bundle before MCP i
   const npmCache = path.join(temporaryRoot, 'npm-cache');
   await copyTrackedApplication(archiveRoot);
   if (process.platform !== 'win32') await writeFakePython(fakePython);
-  const sourceNpmCache = process.env.npm_config_cache || path.join(os.homedir(), '.npm');
+  const sourceNpmCache = await resolveNpmCacheDirectory();
   await mkdir(npmCache, { recursive: true });
   await cp(path.join(sourceNpmCache, '_cacache'), path.join(npmCache, '_cacache'), { recursive: true });
   await ensurePersistentNodeLauncher({

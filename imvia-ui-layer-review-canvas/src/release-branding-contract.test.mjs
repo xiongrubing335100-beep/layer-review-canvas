@@ -193,7 +193,7 @@ test('package scripts retain only their declared workflow and no lifecycle hooks
     'mcp:bridge': 'node layer-review-mcp-server.mjs',
     build: 'vite build',
     preview: 'vite preview',
-    test: 'node --test src/*.test.mjs',
+    test: 'node --test',
     'benchmark:splits': 'node scripts/report-split-performance.mjs',
     'install:codex-plugin': 'node scripts/install-codex-plugin.mjs',
     'uninstall:codex-plugin': 'node scripts/uninstall-codex-plugin.mjs',

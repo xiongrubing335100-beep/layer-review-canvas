@@ -34,7 +34,7 @@ jobs:
       - name: Verify every production bundle has exactly one legal banner
         run: node scripts/verify-production-build.mjs
       - name: Run the complete Node suite
-        run: node --test src/*.test.mjs
+        run: npm test
       - name: Install real managed runtimes without downloading the model
         env:
           PYTHON: python
