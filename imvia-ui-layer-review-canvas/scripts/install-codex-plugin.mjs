@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePersistentNodeLauncher } from './node-runtime.mjs';
 import { ensurePersistentPythonRuntime } from './python-runtime.mjs';
+import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginTemplateRoot = path.join(repositoryRoot, 'plugin-template', 'imvia-layer');
@@ -25,9 +26,9 @@ async function readMarketplace() {
   }
 }
 
-async function install() {
-  const python = await ensurePersistentPythonRuntime({ repositoryRoot, pluginRoot });
-  const node = await ensurePersistentNodeLauncher({ pluginRoot });
+async function installWhileLocked() {
+  const python = await ensurePersistentPythonRuntime({ repositoryRoot, pluginRoot, lockAlreadyHeld: true });
+  const node = await ensurePersistentNodeLauncher({ pluginRoot, lockAlreadyHeld: true });
   await mkdir(path.dirname(pluginRoot), { recursive: true });
   await cp(pluginTemplateRoot, pluginRoot, { recursive: true, force: true });
 
@@ -70,6 +71,10 @@ async function install() {
     `工作台目录：${repositoryRoot}`,
     '请重启 Codex Desktop 或新建一个任务，然后发送：[@imvia-layer](plugin://imvia-layer@personal) 打开工作台',
   ].join('\n') + '\n');
+}
+
+async function install() {
+  return withRuntimeInstallLock({ pluginRoot, task: installWhileLocked });
 }
 
 install().catch((error) => {

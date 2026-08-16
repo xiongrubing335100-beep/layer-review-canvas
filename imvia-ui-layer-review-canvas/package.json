@@ -30,6 +30,7 @@
     "@vitejs/plugin-react": "latest",
     "fflate": "^0.8.3",
     "lucide-react": "latest",
+    "proper-lockfile": "^4.1.2",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest",

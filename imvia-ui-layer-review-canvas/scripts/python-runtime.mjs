@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as realFileSystem from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
 const VERSION_PROBE = 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")';
 const REMBG_PROBE = 'import importlib.metadata; import rembg; print(importlib.metadata.version("rembg"))';
@@ -59,20 +60,6 @@ if errors:
 print("locked distributions verified")
 `;
 const OWNED_TRANSIENT_PATTERN = /^\.python-runtime\.(?:staging|backup)-\d+-\d+(?:-[a-f0-9]{12})?$/;
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function processIsAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
-  }
-}
 
 export function runCommand(command, args, { cwd, env = process.env, stdio = 'pipe', spawnImpl = spawn } = {}) {
   return new Promise((resolve, reject) => {
@@ -219,80 +206,6 @@ async function pathExists(targetPath, fileSystem) {
   }
 }
 
-async function readLockSnapshot(lockRoot, ownerPath, fileSystem) {
-  let metadata;
-  try {
-    metadata = await fileSystem.stat(lockRoot);
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-  return {
-    owner: await readMarker(ownerPath, fileSystem),
-    mtimeMs: metadata.mtimeMs,
-  };
-}
-
-function sameLockSnapshot(left, right) {
-  return Boolean(left && right)
-    && left.mtimeMs === right.mtimeMs
-    && left.owner?.token === right.owner?.token
-    && left.owner?.pid === right.owner?.pid
-    && left.owner?.createdAtMs === right.owner?.createdAtMs;
-}
-
-function staleLockSnapshot(snapshot, { now, lockStaleMs, isProcessAlive }) {
-  if (!snapshot) return false;
-  if (snapshot.owner && Number.isFinite(snapshot.owner.createdAtMs)) {
-    return now() - snapshot.owner.createdAtMs > lockStaleMs && !isProcessAlive(snapshot.owner.pid);
-  }
-  return now() - snapshot.mtimeMs > lockStaleMs;
-}
-
-async function releaseOwnedDirectory(directoryRoot, ownerPath, token, fileSystem) {
-  const owner = await readMarker(ownerPath, fileSystem);
-  if (owner?.token === token) await fileSystem.rm(directoryRoot, { recursive: true, force: true });
-}
-
-async function tryReapStaleLock({
-  lockRoot,
-  ownerPath,
-  observed,
-  reaperRoot,
-  reaperOwnerPath,
-  fileSystem,
-  now,
-  pid,
-  token,
-  lockStaleMs,
-  isProcessAlive,
-}) {
-  try {
-    await fileSystem.mkdir(reaperRoot);
-  } catch (error) {
-    if (error.code === 'EEXIST') return false;
-    throw error;
-  }
-
-  try {
-    await fileSystem.writeFile(reaperOwnerPath, `${JSON.stringify({ pid, createdAtMs: now(), token }, null, 2)}\n`);
-  } catch (error) {
-    await fileSystem.rm(reaperRoot, { recursive: true, force: true });
-    throw error;
-  }
-
-  try {
-    const verified = await readLockSnapshot(lockRoot, ownerPath, fileSystem);
-    if (sameLockSnapshot(observed, verified)
-      && staleLockSnapshot(verified, { now, lockStaleMs, isProcessAlive })) {
-      await fileSystem.rm(lockRoot, { recursive: true, force: true });
-    }
-    return true;
-  } finally {
-    await releaseOwnedDirectory(reaperRoot, reaperOwnerPath, token, fileSystem);
-  }
-}
-
 function ownedTransientNames(names, kind) {
   const prefix = `.python-runtime.${kind}-`;
   return names.filter((name) => name.startsWith(prefix) && OWNED_TRANSIENT_PATTERN.test(name));
@@ -326,66 +239,7 @@ async function recoverManagedRuntime({ pluginRoot, runtimeRoot, fileSystem, path
   }
 }
 
-async function acquireManagedRuntimeLock({
-  pluginRoot,
-  fileSystem,
-  pathApi,
-  now,
-  pid,
-  token,
-  lockTimeoutMs,
-  lockPollMs,
-  lockStaleMs,
-  isProcessAlive,
-  sleep,
-}) {
-  const lockRoot = pathApi.join(pluginRoot, '.python-runtime.lock');
-  const ownerPath = pathApi.join(lockRoot, 'owner.json');
-  const reaperRoot = `${lockRoot}.reaper`;
-  const reaperOwnerPath = pathApi.join(reaperRoot, 'owner.json');
-  const deadline = now() + lockTimeoutMs;
-  await fileSystem.mkdir(pluginRoot, { recursive: true });
-
-  while (true) {
-    if (await pathExists(reaperRoot, fileSystem)) {
-      if (now() >= deadline) throw new Error('等待 Imvia Layer Python runtime stale-lock reaper 超时');
-      await sleep(lockPollMs);
-      continue;
-    }
-    try {
-      await fileSystem.mkdir(lockRoot);
-      await fileSystem.writeFile(ownerPath, `${JSON.stringify({ pid, createdAtMs: now(), token }, null, 2)}\n`);
-      return () => releaseOwnedDirectory(lockRoot, ownerPath, token, fileSystem);
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-
-    const observed = await readLockSnapshot(lockRoot, ownerPath, fileSystem);
-    if (!observed) continue;
-    if (staleLockSnapshot(observed, { now, lockStaleMs, isProcessAlive })) {
-      await tryReapStaleLock({
-        lockRoot,
-        ownerPath,
-        observed,
-        reaperRoot,
-        reaperOwnerPath,
-        fileSystem,
-        now,
-        pid,
-        token,
-        lockStaleMs,
-        isProcessAlive,
-      });
-      continue;
-    }
-    if (now() >= deadline) {
-      throw new Error(`等待 Imvia Layer Python runtime lock 超时（owner pid=${observed.owner?.pid ?? 'unknown'}）`);
-    }
-    await sleep(lockPollMs);
-  }
-}
-
-export async function ensurePersistentPythonRuntime({
+async function ensurePersistentPythonRuntimeUnlocked({
   repositoryRoot,
   pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
   env = process.env,
@@ -396,33 +250,13 @@ export async function ensurePersistentPythonRuntime({
   now = Date.now,
   pid = process.pid,
   token = randomBytes(6).toString('hex'),
-  lockTimeoutMs = 30_000,
-  lockPollMs = 100,
-  lockStaleMs = 5 * 60_000,
-  isProcessAlive = processIsAlive,
-  sleep = delay,
 } = {}) {
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const lockPath = pathApi.join(repositoryRoot, 'requirements-rmbg.lock');
   const runtimeRoot = pathApi.join(pluginRoot, '.python-runtime');
   const runtimePython = runtimePythonPath(runtimeRoot, platform);
   const markerPath = pathApi.join(runtimeRoot, '.imvia-layer-runtime.json');
-  const releaseLock = await acquireManagedRuntimeLock({
-    pluginRoot,
-    fileSystem,
-    pathApi,
-    now,
-    pid,
-    token,
-    lockTimeoutMs,
-    lockPollMs,
-    lockStaleMs,
-    isProcessAlive,
-    sleep,
-  });
-
-  try {
-    await recoverManagedRuntime({ pluginRoot, runtimeRoot, fileSystem, pathApi });
+  await recoverManagedRuntime({ pluginRoot, runtimeRoot, fileSystem, pathApi });
     const lockSha256 = await requirementsHash(lockPath, fileSystem);
     const currentMarker = await readMarker(markerPath, fileSystem);
 
@@ -509,12 +343,14 @@ export async function ensurePersistentPythonRuntime({
     }
     if (movedCurrent) await fileSystem.rm(backupRoot, { recursive: true, force: true });
 
-    return { command: runtimePython, args: [], version: base.version, lockSha256 };
-  } finally {
-    try {
-      await releaseLock();
-    } catch (error) {
-      process.stderr.write(`释放 Imvia Layer Python runtime lock 失败：${error.message}\n`);
-    }
-  }
+  return { command: runtimePython, args: [], version: base.version, lockSha256 };
+}
+
+export async function ensurePersistentPythonRuntime(options = {}) {
+  if (options.lockAlreadyHeld) return ensurePersistentPythonRuntimeUnlocked(options);
+  return withRuntimeInstallLock({
+    pluginRoot: options.pluginRoot ?? path.join(os.homedir(), 'plugins', 'imvia-layer'),
+    lockOptions: options.runtimeLockOptions,
+    task: () => ensurePersistentPythonRuntimeUnlocked(options),
+  });
 }

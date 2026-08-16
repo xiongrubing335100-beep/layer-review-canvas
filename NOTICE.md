@@ -17,6 +17,9 @@ Imvia Layer.
 
 The local installer copies the host's existing Node.js executable into the
 user-owned Imvia Layer plugin directory as `.node-runtime`; it does not bundle
-or commit a private Node.js distribution in this repository. That local copy
-remains subject to the Node.js license and third-party notices:
-https://github.com/nodejs/node/blob/main/LICENSE
+or commit a private Node.js distribution in this repository. It downloads the
+complete `LICENSE` for the copied executable's exact version from the official
+Node repository's versioned GitHub API URL
+`https://api.github.com/repos/nodejs/node/contents/LICENSE?ref=vX.Y.Z` using the
+raw-file media type and records its SHA-256 digest. That local copy remains
+subject to the accompanying Node.js license and third-party notices.
