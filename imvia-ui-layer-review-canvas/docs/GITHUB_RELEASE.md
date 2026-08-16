@@ -2,6 +2,8 @@
 
 ## 发布前检查
 
+发布和安装环境要求 Node.js `^20.19.0 || >=22.12.0`，推荐 Node.js 22 LTS。
+
 ```sh
 npm install
 npm test
@@ -56,3 +58,11 @@ npm run uninstall:codex-plugin
 ```
 
 该命令不会清理模型缓存；之后可用 `npm run setup` 重建。
+
+已安装用户在更新源码后运行：
+
+```sh
+npm run update
+```
+
+该命令与 `npm run setup` 共享 fail-closed 顺序：先检查 Node 版本，再以 `npm ci` 同步锁定依赖、重新生成 production `dist/`，成功后才更新插件与托管 runtime，因此不会留下 stale bundle。

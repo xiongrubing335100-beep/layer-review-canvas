@@ -215,7 +215,7 @@ async function recoverNodeRuntime({ pluginRoot, runtimeRoot, fileSystem, pathApi
   }
 }
 
-async function ensurePersistentNodeLauncherUnlocked({
+export async function ensurePersistentNodeLauncherLocked({
   pluginRoot,
   nodeExecutable = process.execPath,
   platform = process.platform,
@@ -359,10 +359,9 @@ async function ensurePersistentNodeLauncherUnlocked({
 }
 
 export async function ensurePersistentNodeLauncher(options = {}) {
-  if (options.lockAlreadyHeld) return ensurePersistentNodeLauncherUnlocked(options);
   return withRuntimeInstallLock({
     pluginRoot: options.pluginRoot,
     lockOptions: options.runtimeLockOptions,
-    task: () => ensurePersistentNodeLauncherUnlocked(options),
+    task: () => ensurePersistentNodeLauncherLocked(options),
   });
 }

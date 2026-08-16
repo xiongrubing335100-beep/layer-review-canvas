@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
-async function uninstallLocalPluginUnlocked({
+export async function uninstallLocalPluginLocked({
   pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
   marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json'),
   fileSystem = realFileSystem,
@@ -24,19 +24,18 @@ async function uninstallLocalPluginUnlocked({
 }
 
 export async function uninstallLocalPlugin(options = {}) {
-  if (options.lockAlreadyHeld) return uninstallLocalPluginUnlocked(options);
   const pluginRoot = options.pluginRoot ?? path.join(os.homedir(), 'plugins', 'imvia-layer');
   return withRuntimeInstallLock({
     pluginRoot,
     lockOptions: options.runtimeLockOptions,
-    task: () => uninstallLocalPluginUnlocked({ ...options, pluginRoot }),
+    task: () => uninstallLocalPluginLocked({ ...options, pluginRoot }),
   });
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   uninstallLocalPlugin().then(() => {
-    process.stdout.write('Imvia Layer 插件及其托管 Python runtime 已卸载。\n');
+    process.stdout.write('Imvia Layer 插件及其托管 Python 和 Node runtime 已卸载。\n');
   }).catch((error) => {
     process.stderr.write(`卸载 Imvia Layer 失败：${error.message}\n`);
     process.exitCode = 1;

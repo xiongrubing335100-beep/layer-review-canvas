@@ -3,17 +3,13 @@ import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensurePersistentNodeLauncher } from './node-runtime.mjs';
-import { ensurePersistentPythonRuntime } from './python-runtime.mjs';
+import { ensurePersistentNodeLauncherLocked } from './node-runtime.mjs';
+import { ensurePersistentPythonRuntimeLocked } from './python-runtime.mjs';
 import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginTemplateRoot = path.join(repositoryRoot, 'plugin-template', 'imvia-layer');
-const pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer');
-const marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
-const cachebuster = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+const defaultRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-async function readMarketplace() {
+async function readMarketplace(marketplacePath) {
   try {
     return JSON.parse(await readFile(marketplacePath, 'utf8'));
   } catch (error) {
@@ -26,16 +22,20 @@ async function readMarketplace() {
   }
 }
 
-async function installWhileLocked() {
-  const python = await ensurePersistentPythonRuntime({ repositoryRoot, pluginRoot, lockAlreadyHeld: true });
-  const node = await ensurePersistentNodeLauncher({ pluginRoot, lockAlreadyHeld: true });
+export async function installCodexPluginLocked({
+  repositoryRoot = defaultRepositoryRoot,
+  pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
+  marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json'),
+  preparedPython,
+  ensurePythonLockedImpl = ensurePersistentPythonRuntimeLocked,
+  ensureNodeLockedImpl = ensurePersistentNodeLauncherLocked,
+  writeOutput = (chunk) => process.stdout.write(chunk),
+} = {}) {
+  const pluginTemplateRoot = path.join(repositoryRoot, 'plugin-template', 'imvia-layer');
+  const python = preparedPython ?? await ensurePythonLockedImpl({ repositoryRoot, pluginRoot });
+  const node = await ensureNodeLockedImpl({ pluginRoot });
   await mkdir(path.dirname(pluginRoot), { recursive: true });
   await cp(pluginTemplateRoot, pluginRoot, { recursive: true, force: true });
-
-  const manifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  manifest.version = `0.1.0+local.${cachebuster}`;
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   await writeFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), `${JSON.stringify({
     workbenchRoot: repositoryRoot,
@@ -53,7 +53,7 @@ async function installWhileLocked() {
     },
   }, null, 2)}\n`);
 
-  const marketplace = await readMarketplace();
+  const marketplace = await readMarketplace(marketplacePath);
   const pluginEntry = {
     name: 'imvia-layer',
     source: { source: 'local', path: './plugins/imvia-layer' },
@@ -65,19 +65,29 @@ async function installWhileLocked() {
   await mkdir(path.dirname(marketplacePath), { recursive: true });
   await writeFile(marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`);
 
-  process.stdout.write([
+  writeOutput([
     'Imvia Layer 插件已安装。',
     `插件目录：${pluginRoot}`,
     `工作台目录：${repositoryRoot}`,
     '请重启 Codex Desktop 或新建一个任务，然后发送：[@imvia-layer](plugin://imvia-layer@personal) 打开工作台',
   ].join('\n') + '\n');
+
+  return { python, node, pluginRoot, marketplacePath };
 }
 
-async function install() {
-  return withRuntimeInstallLock({ pluginRoot, task: installWhileLocked });
+export async function installCodexPlugin(options = {}) {
+  const pluginRoot = options.pluginRoot ?? path.join(os.homedir(), 'plugins', 'imvia-layer');
+  return withRuntimeInstallLock({
+    pluginRoot,
+    lockOptions: options.runtimeLockOptions,
+    task: () => installCodexPluginLocked({ ...options, pluginRoot }),
+  });
 }
 
-install().catch((error) => {
-  process.stderr.write(`安装 Imvia Layer 失败：${error.message}\n`);
-  process.exitCode = 1;
-});
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+if (invokedPath === fileURLToPath(import.meta.url)) {
+  installCodexPlugin().catch((error) => {
+    process.stderr.write(`安装 Imvia Layer 失败：${error.message}\n`);
+    process.exitCode = 1;
+  });
+}

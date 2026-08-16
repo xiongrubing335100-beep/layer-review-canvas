@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { withRuntimeInstallLock } from '../../scripts/runtime-install-lock.mjs';
-import { uninstallLocalPlugin } from '../../scripts/uninstall-codex-plugin.mjs';
+import { uninstallLocalPlugin, uninstallLocalPluginLocked } from '../../scripts/uninstall-codex-plugin.mjs';
 
 const [operation, pluginRoot, enteredPath, gatePath, sentinelPath] = process.argv.slice(2);
 
@@ -35,7 +35,7 @@ if (operation === 'install') {
   await withRuntimeInstallLock({
     pluginRoot,
     task: async () => {
-      await uninstallLocalPlugin({ pluginRoot, marketplacePath: null, lockAlreadyHeld: true });
+      await uninstallLocalPluginLocked({ pluginRoot, marketplacePath: null });
       await writeFile(enteredPath, 'entered');
       await waitForGate();
     },

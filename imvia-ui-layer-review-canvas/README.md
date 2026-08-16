@@ -37,7 +37,7 @@ Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆�
 
 ## 一次安装
 
-前置条件：Codex Desktop、Node.js 20+、Python 3.10+。Windows 与 macOS 均支持；macOS 请先通过 [python.org](https://www.python.org/downloads/macos/) 或 Homebrew 安装 Python 3.10+。`npm run setup` 会自动下载 RMBG 的 Python 依赖和 BRIA RMBG 2.0 模型，首次运行需要联网。RMBG 2.0 权重按 BRIA 的 CC BY-NC 4.0 许可提供，仅限非商业使用；商业部署需取得授权。
+前置条件：Codex Desktop、Node.js `^20.19.0 || >=22.12.0`（推荐 Node.js 22 LTS）、Python 3.10+。Windows 与 macOS 均支持；macOS 请先通过 [python.org](https://www.python.org/downloads/macos/) 或 Homebrew 安装 Python 3.10+。`npm run setup` 会自动下载 RMBG 的 Python 依赖和 BRIA RMBG 2.0 模型，首次运行需要联网。RMBG 2.0 权重按 BRIA 的 CC BY-NC 4.0 许可提供，仅限非商业使用；商业部署需取得授权。
 
 ```sh
 git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
@@ -47,7 +47,7 @@ npm run setup
 
 如使用 ZIP，请解压仓库后进入其中的 `imvia-ui-layer-review-canvas` 目录，再运行同一条 `npm run setup` 命令。
 
-`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`）和插件自有 Node launcher `.node-runtime`，安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--only-binary=:all:` 与 `--require-hashes` 校验所有 wheel；lock、Python ABI、系统与架构变化会触发安全重建。Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留上一个有效 runtime；模型预热发生在 runtime 发布之后，因此预热失败会停止注册但不会回滚已验证 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
+`npm run setup` 是唯一的安装命令：它会先检查 Node 版本，以 `npm ci` 同步锁定的 JavaScript 依赖并生成全新的 production `dist/`，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`）和插件自有 Node launcher `.node-runtime`，安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--only-binary=:all:` 与 `--require-hashes` 校验所有 wheel；lock、Python ABI、系统与架构变化会触发安全重建。Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留上一个有效 runtime；模型预热发生在 runtime 发布之后，因此预热失败会停止注册但不会回滚已验证 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
 
 ```text
 [@imvia-layer](plugin://imvia-layer@personal) 打开工作台
@@ -57,10 +57,10 @@ npm run setup
 
 ## 仅更新插件
 
-工作台源码更新后，确保当前工作目录是 `imvia-ui-layer-review-canvas` 应用目录，再运行：
+工作台源码更新后，确保当前工作目录是 `imvia-ui-layer-review-canvas` 应用目录，再运行会重新同步依赖、production build 并注册插件的完整更新命令：
 
 ```sh
-npm run install:codex-plugin
+npm run update
 ```
 
 然后重启 Codex Desktop 以重新加载插件清单。

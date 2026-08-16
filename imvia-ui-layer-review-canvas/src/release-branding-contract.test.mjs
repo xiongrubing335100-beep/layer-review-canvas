@@ -17,7 +17,9 @@ const bridge = await readFile(new URL('../codex-thread-bridge.mjs', import.meta.
 const rootReadme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
 const rootLicense = await readFile(new URL('../../LICENSE', import.meta.url), 'utf8');
 const packagedLicense = await readFile(new URL('../LICENSE', import.meta.url), 'utf8');
+const pluginLicense = await readFile(new URL('../plugin-template/imvia-layer/LICENSE', import.meta.url), 'utf8').catch(() => null);
 const notice = await readFile(new URL('../../NOTICE.md', import.meta.url), 'utf8');
+const pluginNotice = await readFile(new URL('../plugin-template/imvia-layer/NOTICE.md', import.meta.url), 'utf8');
 const appReadme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 const releaseGuide = await readFile(new URL('../docs/GITHUB_RELEASE.md', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('./main.jsx', import.meta.url), 'utf8');
@@ -96,13 +98,16 @@ test('package and plugin metadata credit Qingmu', async () => {
     url: authorUrl,
   });
   assert.equal(packageJson.license, 'SEE LICENSE IN LICENSE');
+  assert.equal(packageJson.engines.node, '^20.19.0 || >=22.12.0');
   assert.equal(packageLock.packages[''].license, packageJson.license);
+  assert.equal(packageLock.packages[''].engines.node, packageJson.engines.node);
   assert.equal(packageJson.repository.type, 'git');
   assert.equal(packageJson.repository.url, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git');
   assert.equal(packageJson.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas#readme');
   assert.equal(plugin.author.name, '青木');
   assert.equal(plugin.author.url, authorUrl);
   assert.equal(plugin.interface.developerName, '青木');
+  assert.equal(plugin.license, 'SEE LICENSE IN LICENSE');
   assert.equal(plugin.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
   assert.equal(plugin.repository, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
   assert.equal(plugin.interface.websiteURL, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
@@ -192,7 +197,8 @@ test('package scripts retain only their declared workflow and no lifecycle hooks
     'benchmark:splits': 'node scripts/report-split-performance.mjs',
     'install:codex-plugin': 'node scripts/install-codex-plugin.mjs',
     'uninstall:codex-plugin': 'node scripts/uninstall-codex-plugin.mjs',
-    setup: 'npm install && node scripts/setup-imvia-layer.mjs',
+    setup: 'node scripts/node-version-preflight.mjs && npm ci && npm run build && node scripts/setup-imvia-layer.mjs',
+    update: 'node scripts/node-version-preflight.mjs && npm ci && npm run build && node scripts/setup-imvia-layer.mjs',
   });
   for (const lifecycleScript of ['preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare', 'prepublish', 'prepublishOnly', 'prepack', 'postpack']) {
     assert.equal(Object.hasOwn(packageJson.scripts, lifecycleScript), false, `${lifecycleScript} must not be a package lifecycle hook`);
@@ -313,6 +319,7 @@ test('public docs expose the final install path and author license', () => {
 
 test('the distributed license and notice preserve the author terms', () => {
   assert.equal(rootLicense, packagedLicense);
+  assert.equal(pluginLicense, rootLicense);
   assert.match(rootLicense, /Imvia Layer Personal & Commercial License/);
   assert.match(rootLicense, /personal non-commercial use/i);
   assert.match(rootLicense, /paid commercial license/i);
@@ -321,6 +328,9 @@ test('the distributed license and notice preserve the author terms', () => {
   assert.match(notice, /青木/);
   assert.match(notice, new RegExp(authorUrl.replaceAll('.', '\\.')));
   assert.match(notice, /third-party/i);
+  for (const required of [/青木/, /Personal & Commercial License/, /third-party/i, /\.node-runtime/, /exact Node\.js version/, /license and third-party notices/i]) {
+    assert.match(pluginNotice, required);
+  }
 });
 
 test('application documentation preserves the final Imvia distribution terms', () => {
@@ -332,6 +342,16 @@ test('application documentation preserves the final Imvia distribution terms', (
     assert.match(document, /prior written paid authorization/i);
     assert.match(document, /BRIA RMBG 2\.0[\s\S]*third-party license/i);
   }
+});
+
+test('public install and release docs state the exact Node range and self-contained update command', () => {
+  for (const document of [rootReadme, appReadme, releaseGuide]) {
+    assert.match(document, /\^20\.19\.0 \|\| >=22\.12\.0/);
+    assert.match(document, /推荐[^\n]*Node\.js 22 LTS|Node\.js 22 LTS[^\n]*推荐|Node\.js 22 LTS[^\n]*recommended/i);
+    assert.match(document, /npm run update/);
+  }
+  assert.doesNotMatch(rootReadme, /Node\.js 20\+/);
+  assert.doesNotMatch(appReadme, /Node\.js 20\+/);
 });
 
 test('the release guide renames the repository only after the release PR merges', () => {

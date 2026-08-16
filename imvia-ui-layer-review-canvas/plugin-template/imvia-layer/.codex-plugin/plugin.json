@@ -8,6 +8,7 @@
   },
   "homepage": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas",
   "repository": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas",
+  "license": "SEE LICENSE IN LICENSE",
   "skills": "./skills/",
   "interface": {
     "displayName": "Imvia Layer",

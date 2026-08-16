@@ -7,7 +7,7 @@ Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆�
 ## 前置条件
 
 - Codex Desktop（用于安装和打开本地插件）。
-- Node.js 20+ 与 npm（可在 macOS Terminal 或 Windows PowerShell 中使用）。
+- Node.js `^20.19.0 || >=22.12.0` 与 npm（推荐 Node.js 22 LTS；可在 macOS Terminal 或 Windows PowerShell 中使用）。
 - Python 3.10+（安装器会按当前平台探测可用的 Python）。
 - 首次安装时的网络连接，用于下载 npm 依赖、Python 依赖和 BRIA RMBG 2.0 模型。
 
@@ -23,7 +23,7 @@ cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
 
-`npm run setup` 是唯一安装命令：它安装前端依赖，在插件目录创建可持久复用的 `.python-runtime` 与 `.node-runtime`，再准备 RMBG 模型并注册本地 Imvia Layer 插件。Python 依赖来自提交的 universal `requirements-rmbg.lock`，pip 以 `--only-binary=:all:` 和 `--require-hashes` 校验完整 wheel 依赖树。只有 Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留并继续使用上一个有效 runtime；模型预热发生在 runtime 发布之后，预热失败会停止插件注册，但不会回滚已经验证的 runtime。修复报错后重新运行该命令即可。
+`npm run setup` 是唯一安装命令：它先检查 Node 版本，以 `npm ci` 同步锁定的 JavaScript 依赖并生成全新的 production `dist/`，然后在插件目录创建可持久复用的 `.python-runtime` 与 `.node-runtime`，准备 RMBG 模型并注册本地 Imvia Layer 插件。任一阶段失败都不会继续注册。Python 依赖来自提交的 universal `requirements-rmbg.lock`，pip 以 `--only-binary=:all:` 和 `--require-hashes` 校验完整 wheel 依赖树。只有 Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留并继续使用上一个有效 runtime；模型预热发生在 runtime 发布之后，预热失败会停止插件注册，但不会回滚已经验证的 runtime。修复报错后重新运行该命令即可。
 
 ### 使用 ZIP（macOS / Windows）
 
@@ -44,7 +44,7 @@ npm run setup
 如果 Codex 已在运行但工作台没有出现，先新建任务或重启 Codex Desktop，再次发送上述命令。更新此仓库的代码后，在应用目录运行：
 
 ```sh
-npm run install:codex-plugin
+npm run update
 ```
 
 随后重启 Codex Desktop 或新建任务以加载更新后的插件。
@@ -63,7 +63,7 @@ npm run uninstall:codex-plugin
 
 - **找不到 Python 或版本过低：** 安装 Python 3.10+，确认 `python3 --version`（macOS）或 `python --version`（Windows）可用后重新运行 `npm run setup`。
 - **首次安装下载失败：** 检查网络连接和磁盘空间；依赖或模型下载成功前安装不会完整完成，网络恢复后重试即可。
-- **找不到 `npm`：** 安装 Node.js 20+，关闭并重新打开 Terminal 或 PowerShell，再运行安装命令。
+- **找不到 `npm` 或 Node 版本不支持：** 安装符合 `^20.19.0 || >=22.12.0` 的 Node.js（推荐 Node.js 22 LTS），关闭并重新打开 Terminal 或 PowerShell，再运行安装命令。
 - **插件命令无响应：** 确认在 `imvia-ui-layer-review-canvas` 中完成了 `npm run setup`，然后重启 Codex Desktop 或新建任务。
 
 ## 许可证与商业授权

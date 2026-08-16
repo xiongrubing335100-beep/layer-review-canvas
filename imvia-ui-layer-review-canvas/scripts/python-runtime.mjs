@@ -239,7 +239,7 @@ async function recoverManagedRuntime({ pluginRoot, runtimeRoot, fileSystem, path
   }
 }
 
-async function ensurePersistentPythonRuntimeUnlocked({
+export async function ensurePersistentPythonRuntimeLocked({
   repositoryRoot,
   pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
   env = process.env,
@@ -347,10 +347,9 @@ async function ensurePersistentPythonRuntimeUnlocked({
 }
 
 export async function ensurePersistentPythonRuntime(options = {}) {
-  if (options.lockAlreadyHeld) return ensurePersistentPythonRuntimeUnlocked(options);
   return withRuntimeInstallLock({
     pluginRoot: options.pluginRoot ?? path.join(os.homedir(), 'plugins', 'imvia-layer'),
     lockOptions: options.runtimeLockOptions,
-    task: () => ensurePersistentPythonRuntimeUnlocked(options),
+    task: () => ensurePersistentPythonRuntimeLocked(options),
   });
 }

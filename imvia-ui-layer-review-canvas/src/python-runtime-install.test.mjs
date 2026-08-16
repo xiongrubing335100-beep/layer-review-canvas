@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import * as realFileSystem from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { access, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -368,9 +369,8 @@ test('Win32 injected filesystem and spawn publish, rollback, lock, and uninstall
     pid: 123,
     now: () => 456,
     token: 'aabbccddeeff',
-    lockAlreadyHeld: true,
   };
-  const installed = await pythonRuntime.ensurePersistentPythonRuntime(options);
+  const installed = await pythonRuntime.ensurePersistentPythonRuntimeLocked(options);
   assert.equal(installed.command, runtimePython);
   assert.deepEqual(calls.find(({ command, args }) => command === 'py' && args[1] === '-m'), {
     command: 'py',
@@ -385,11 +385,11 @@ test('Win32 injected filesystem and spawn publish, rollback, lock, and uninstall
     '',
   ].join('\n'));
   fileSystem.failPublishTo = runtimeRoot;
-  await assert.rejects(pythonRuntime.ensurePersistentPythonRuntime({ ...options, token: '112233445566' }), /simulated Windows publish rename failure/);
+  await assert.rejects(pythonRuntime.ensurePersistentPythonRuntimeLocked({ ...options, token: '112233445566' }), /simulated Windows publish rename failure/);
   assert.equal(await fileSystem.readFile(path.win32.join(runtimeRoot, 'old-runtime.txt'), 'utf8'), 'keep');
   assert.equal((await fileSystem.readdir(pluginRoot)).some((name) => name.startsWith('.python-runtime.staging-')), false);
 
-  await uninstallModule.uninstallLocalPlugin({ pluginRoot, fileSystem, lockAlreadyHeld: true });
+  await uninstallModule.uninstallLocalPluginLocked({ pluginRoot, fileSystem });
   await assert.rejects(fileSystem.access(runtimeRoot), { code: 'ENOENT' });
   await fileSystem.access(outsideUnknown);
 });
@@ -543,6 +543,18 @@ test('setup installs dependencies and warms the model with the same durable runt
   const warmCalls = calls.filter(({ args }) => args[0].endsWith('scripts/warm-rmbg.py'));
   assert.equal(warmCalls.length, 1);
   assert.equal(warmCalls[0].command, runtime.python.command);
+
+  const hash = (contents) => createHash('sha256').update(contents).digest('hex');
+  for (const relativePath of ['LICENSE', 'NOTICE.md', path.join('.codex-plugin', 'plugin.json')]) {
+    const template = await readFile(path.join(root, 'plugin-template', 'imvia-layer', relativePath));
+    const installed = await readFile(path.join(temporaryRoot, 'plugins', 'imvia-layer', relativePath));
+    assert.equal(hash(installed), hash(template), `${relativePath} must install byte-for-byte`);
+  }
+  assert.equal(
+    hash(await readFile(path.resolve(root, '..', 'LICENSE'))),
+    hash(await readFile(path.join(temporaryRoot, 'plugins', 'imvia-layer', 'LICENSE'))),
+    'installed plugin LICENSE must match the canonical root license',
+  );
 });
 
 test('concurrent runtime ensures publish exactly one managed environment', async (t) => {
