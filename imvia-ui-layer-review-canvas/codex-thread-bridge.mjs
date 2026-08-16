@@ -1,3 +1,4 @@
+// Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
 import { spawn } from 'node:child_process';
 import { access, readdir, stat } from 'node:fs/promises';
 import net from 'node:net';

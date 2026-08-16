@@ -2,6 +2,16 @@
   "name": "imvia-ui-layer-review-canvas",
   "private": true,
   "version": "0.1.0",
+  "author": {
+    "name": "青木",
+    "url": "https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b"
+  },
+  "homepage": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git"
+  },
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start-workbench.mjs",

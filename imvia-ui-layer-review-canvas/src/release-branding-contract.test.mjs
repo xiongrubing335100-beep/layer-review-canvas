@@ -23,6 +23,42 @@ test('the application uses its final Imvia package identity', () => {
   assert.doesNotMatch(bridge, /name: 'ui-layer-review-canvas'/);
 });
 
+test('package and plugin metadata credit Qingmu', async () => {
+  const plugin = JSON.parse(await readFile(new URL('../plugin-template/imvia-layer/.codex-plugin/plugin.json', import.meta.url), 'utf8'));
+  assert.deepEqual(packageJson.author, {
+    name: '青木',
+    url: authorUrl,
+  });
+  assert.equal(packageJson.license, 'SEE LICENSE IN LICENSE');
+  assert.equal(packageJson.repository.url, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git');
+  assert.equal(plugin.author.name, '青木');
+  assert.equal(plugin.author.url, authorUrl);
+  assert.equal(plugin.interface.developerName, '青木');
+});
+
+const copyrightLine = 'Imvia Layer © 2026 青木';
+
+test('critical source entries and the build preserve attribution', async () => {
+  const paths = [
+    './main.jsx',
+    '../codex-thread-bridge.mjs',
+    '../layer-review-mcp-server.mjs',
+    '../scripts/start-workbench.mjs',
+    '../scripts/install-codex-plugin.mjs',
+    '../scripts/finalize-targeted-job.py',
+    '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
+  ];
+  for (const relativePath of paths) {
+    const contents = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+    assert.match(contents, new RegExp(copyrightLine));
+    assert.match(contents, /LICENSE/);
+    assert.match(contents, /NOTICE\.md/);
+  }
+  const vite = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
+  assert.match(vite, /const IMVIA_COPYRIGHT_BANNER/);
+  assert.match(vite, /rollupOptions:[\s\S]*output:[\s\S]*banner:\s*IMVIA_COPYRIGHT_BANNER/);
+});
+
 test('public docs expose the final install path and author license', () => {
   assert.match(rootReadme, /git clone https:\/\/github\.com\/xiongrubing335100-beep\/imvia-layer-review-canvas\.git/);
   assert.match(rootReadme, /cd imvia-layer-review-canvas\/imvia-ui-layer-review-canvas/);

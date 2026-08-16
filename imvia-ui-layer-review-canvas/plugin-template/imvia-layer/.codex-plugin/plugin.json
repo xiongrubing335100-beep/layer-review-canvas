@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "description": "Open the Imvia Layer workbench in Codex's right-side browser panel and send layer-splitting requests into the current conversation.",
   "author": {
-    "name": "Imvia Layer"
+    "name": "青木",
+    "url": "https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b"
   },
+  "homepage": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas",
+  "repository": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas",
   "skills": "./skills/",
   "interface": {
     "displayName": "Imvia Layer",
     "shortDescription": "Split UI images in a right-side review workbench.",
     "longDescription": "Imvia Layer opens the interactive workbench in Codex's right-side browser panel. Every split request is posted visibly to the current conversation before Codex executes it and returns the selected PNG layers.",
-    "developerName": "Imvia Layer",
+    "developerName": "青木",
+    "websiteURL": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
