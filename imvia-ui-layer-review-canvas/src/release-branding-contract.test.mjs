@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const packageLock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
@@ -14,6 +19,9 @@ const appReadme = await readFile(new URL('../README.md', import.meta.url), 'utf8
 const releaseGuide = await readFile(new URL('../docs/GITHUB_RELEASE.md', import.meta.url), 'utf8');
 const authorUrl = 'https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b';
 const attributionModule = new URL('./attribution.js', import.meta.url);
+const applicationDirectory = fileURLToPath(new URL('..', import.meta.url));
+const viteCli = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url));
+const execFileAsync = promisify(execFile);
 
 test('the application uses its final Imvia package identity', () => {
   assert.equal(packageJson.name, 'imvia-ui-layer-review-canvas');
@@ -30,10 +38,16 @@ test('package and plugin metadata credit Qingmu', async () => {
     url: authorUrl,
   });
   assert.equal(packageJson.license, 'SEE LICENSE IN LICENSE');
+  assert.equal(packageLock.packages[''].license, packageJson.license);
+  assert.equal(packageJson.repository.type, 'git');
   assert.equal(packageJson.repository.url, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git');
+  assert.equal(packageJson.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas#readme');
   assert.equal(plugin.author.name, '青木');
   assert.equal(plugin.author.url, authorUrl);
   assert.equal(plugin.interface.developerName, '青木');
+  assert.equal(plugin.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
+  assert.equal(plugin.repository, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
+  assert.equal(plugin.interface.websiteURL, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
 });
 
 const copyrightLine = 'Imvia Layer © 2026 青木';
@@ -57,6 +71,41 @@ test('critical source entries and the build preserve attribution', async () => {
   const vite = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
   assert.match(vite, /const IMVIA_COPYRIGHT_BANNER/);
   assert.match(vite, /rollupOptions:[\s\S]*output:[\s\S]*banner:\s*IMVIA_COPYRIGHT_BANNER/);
+});
+
+test('a temporary sourcemapped production build preserves one legal banner per JavaScript bundle', async () => {
+  const outputDirectory = await mkdtemp(path.join(os.tmpdir(), 'imvia-release-banner-'));
+  try {
+    await execFileAsync(process.execPath, [viteCli, 'build', '--outDir', outputDirectory, '--sourcemap'], {
+      cwd: applicationDirectory,
+    });
+    const assetDirectory = path.join(outputDirectory, 'assets');
+    const bundleNames = (await readdir(assetDirectory)).filter((name) => name.endsWith('.js'));
+    assert.ok(bundleNames.length > 0, 'production build should emit JavaScript bundles');
+    for (const bundleName of bundleNames) {
+      const bundlePath = path.join(assetDirectory, bundleName);
+      const bundle = await readFile(bundlePath, 'utf8');
+      assert.equal(bundle.split(copyrightLine).length - 1, 1, `${bundleName} should contain one legal banner`);
+      const sourceMapName = `${bundleName}.map`;
+      assert.match(bundle, new RegExp(`sourceMappingURL=${sourceMapName.replace('.', '\\.')}`));
+      const sourceMap = JSON.parse(await readFile(path.join(assetDirectory, sourceMapName), 'utf8'));
+      assert.equal(sourceMap.file, bundleName);
+      assert.ok(Array.isArray(sourceMap.sources) && sourceMap.sources.length > 0, `${sourceMapName} should describe its bundle sources`);
+    }
+  } finally {
+    await rm(outputDirectory, { recursive: true, force: true });
+  }
+});
+
+test('attribution metadata remains passive and contains no tracking or hidden license networking controls', async () => {
+  const plugin = JSON.parse(await readFile(new URL('../plugin-template/imvia-layer/.codex-plugin/plugin.json', import.meta.url), 'utf8'));
+  for (const manifest of [packageJson, plugin]) {
+    for (const property of ['telemetry', 'analytics', 'fingerprinting', 'licenseCheck', 'licenseEndpoint']) {
+      assert.equal(Object.hasOwn(manifest, property), false, `${property} must not be declared in attribution metadata`);
+    }
+  }
+  const vite = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(vite, /(?:fetch|https?:\/\/)[\s\S]{0,120}(?:telemetry|fingerprint|license)/i);
 });
 
 test('public docs expose the final install path and author license', () => {

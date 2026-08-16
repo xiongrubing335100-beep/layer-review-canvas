@@ -598,6 +598,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         banner: IMVIA_COPYRIGHT_BANNER,
+        comments: {
+          legal: true,
+        },
       },
     },
   },
