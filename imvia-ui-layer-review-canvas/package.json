@@ -21,6 +21,7 @@
     "test": "node --test src/*.test.mjs",
     "benchmark:splits": "node scripts/report-split-performance.mjs",
     "install:codex-plugin": "node scripts/install-codex-plugin.mjs",
+    "uninstall:codex-plugin": "node scripts/uninstall-codex-plugin.mjs",
     "setup": "npm install && node scripts/setup-imvia-layer.mjs"
   },
   "dependencies": {

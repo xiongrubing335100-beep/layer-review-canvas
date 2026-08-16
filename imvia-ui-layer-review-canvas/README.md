@@ -47,7 +47,7 @@ npm run setup
 
 如使用 ZIP，请解压仓库后进入其中的 `imvia-ui-layer-review-canvas` 目录，再运行同一条 `npm run setup` 命令。
 
-`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。该命令必须完整成功才会注册插件：若 Python、RMBG 依赖或模型下载失败，安装会停止并给出原因，不会留下半安装插件。完成后重启 Codex Desktop（或新建任务），在对话中发送：
+`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`），安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--require-hashes` 校验所有安装包；lock、Python ABI、系统与架构变化会触发安全重建。该命令必须完整成功才会注册插件：若 Python、RMBG 依赖或模型下载失败，安装会停止并给出原因，不会覆盖上一个有效 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
 
 ```text
 [@imvia-layer](plugin://imvia-layer@personal) 打开工作台
@@ -65,13 +65,22 @@ npm run install:codex-plugin
 
 然后重启 Codex Desktop 以重新加载插件清单。
 
+如需卸载插件及其托管 `.python-runtime`，在应用目录运行：
+
+```sh
+npm run uninstall:codex-plugin
+```
+
+重新运行 `npm run setup` 可完整重建插件与 runtime；模型缓存不属于插件目录，不会由此命令删除。
+
 ## 项目内容
 
 - `src/`：React 工作台界面与状态逻辑。
 - `layer-review-mcp-server.mjs`：MCP 服务，负责从 Codex 打开右侧工作台。
 - `plugin-template/`：可移植插件模板；安装时会自动写入本机路径，不含作者个人目录。
 - `scripts/`：工作台启动、PNG 最终处理、插件安装和初始化脚本。
-- `requirements-rmbg.txt`：UI 组件去背景使用的 RMBG Python 依赖。
+- `requirements-rmbg.txt`：UI 组件去背景使用的 RMBG 顶层 Python 依赖。
+- `requirements-rmbg.lock`：跨 macOS/Windows 的完整 hashed 依赖锁，安装时配合 `--require-hashes` 验证供应链。
 
 运行时输出会写入 `output/`，该目录被 Git 忽略，不会随仓库发布。
 

@@ -1,20 +1,11 @@
 // Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveVerifiedRuntimeConfig } from './runtime-config.mjs';
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const runtimeConfigPath = path.join(pluginRoot, 'imvia-layer-runtime.json');
-
-async function resolveRuntimeConfig() {
-  if (process.env.IMVIA_LAYER_WORKBENCH_ROOT) {
-    return { workbenchRoot: process.env.IMVIA_LAYER_WORKBENCH_ROOT };
-  }
-  return JSON.parse(await readFile(runtimeConfigPath, 'utf8'));
-}
-
-const runtimeConfig = await resolveRuntimeConfig();
-if (!runtimeConfig.workbenchRoot) throw new Error('Imvia Layer 缺少工作台路径，请在下载目录运行 npm run setup');
+const runtimeConfig = await resolveVerifiedRuntimeConfig({ pluginRoot });
 const workbenchRoot = path.resolve(runtimeConfig.workbenchRoot);
 if (typeof runtimeConfig.python?.command === 'string' && runtimeConfig.python.command) {
   process.env.IMVIA_LAYER_PYTHON_COMMAND = runtimeConfig.python.command;

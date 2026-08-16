@@ -37,7 +37,7 @@ ZIP 用户解压后进入其中的 `imvia-ui-layer-review-canvas`，运行同一
 
 初始化会完成三件事：
 
-1. 探测 Python 3.10+，安装 `rembg[cpu]` 并下载、校验 BRIA RMBG 2.0（`bria-rmbg`）模型；
+1. 探测 Python 3.10+，在插件目录创建或复用 `.python-runtime`，用 universal `requirements-rmbg.lock` 与 pip `--require-hashes` 安装并验证 `rembg[cpu]`，再下载、校验 BRIA RMBG 2.0（`bria-rmbg`）模型；
 2. 在用户目录注册 Imvia Layer 本地插件；
 3. 写入该用户下载目录、插件启动 Node.js 命令和 Python 调用方式对应的运行配置。
 
@@ -48,3 +48,11 @@ ZIP 用户解压后进入其中的 `imvia-ui-layer-review-canvas`，运行同一
 ```
 
 插件不会使用发布者机器上的固定目录；每个用户的安装脚本都会写入自己的下载位置。Windows 与 macOS 都使用同一条 `npm run setup` 命令；发布前请至少在两种系统各完成一次“克隆、安装、打开插件、RMBG 拆分”的干净环境验证。
+
+托管解释器位于 macOS 的 `~/plugins/imvia-layer/.python-runtime/bin/python` 或 Windows 的 `%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`。安装 marker 同时绑定 lock SHA-256、Python ABI/major.minor、platform 与 architecture；任一变化都会在原子锁保护下重建，失败时保留上一个有效 runtime。卸载插件及其托管 runtime 使用：
+
+```sh
+npm run uninstall:codex-plugin
+```
+
+该命令不会清理模型缓存；之后可用 `npm run setup` 重建。

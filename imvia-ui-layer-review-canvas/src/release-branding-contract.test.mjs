@@ -117,6 +117,7 @@ test('critical source entries and the build preserve attribution', async () => {
     '../layer-review-mcp-server.mjs',
     '../scripts/start-workbench.mjs',
     '../scripts/install-codex-plugin.mjs',
+    '../scripts/uninstall-codex-plugin.mjs',
     '../scripts/finalize-targeted-job.py',
     '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
   ];
@@ -188,10 +189,20 @@ test('package scripts retain only their declared workflow and no lifecycle hooks
     test: 'node --test src/*.test.mjs',
     'benchmark:splits': 'node scripts/report-split-performance.mjs',
     'install:codex-plugin': 'node scripts/install-codex-plugin.mjs',
+    'uninstall:codex-plugin': 'node scripts/uninstall-codex-plugin.mjs',
     setup: 'npm install && node scripts/setup-imvia-layer.mjs',
   });
   for (const lifecycleScript of ['preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare', 'prepublish', 'prepublishOnly', 'prepack', 'postpack']) {
     assert.equal(Object.hasOwn(packageJson.scripts, lifecycleScript), false, `${lifecycleScript} must not be a package lifecycle hook`);
+  }
+});
+
+test('public install docs explain the managed hashed Python runtime and its uninstall lifecycle', () => {
+  for (const document of [rootReadme, appReadme, releaseGuide]) {
+    assert.match(document, /\.python-runtime/);
+    assert.match(document, /requirements-rmbg\.lock/);
+    assert.match(document, /--require-hashes/);
+    assert.match(document, /npm run uninstall:codex-plugin/);
   }
 });
 
@@ -217,6 +228,7 @@ test('the attribution-only surfaces contain no tracking, remote-disable, or lice
     '../layer-review-mcp-server.mjs',
     '../scripts/start-workbench.mjs',
     '../scripts/install-codex-plugin.mjs',
+    '../scripts/uninstall-codex-plugin.mjs',
     '../scripts/finalize-targeted-job.py',
     '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
   ]) {

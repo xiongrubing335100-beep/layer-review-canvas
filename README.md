@@ -23,7 +23,7 @@ cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
 
-`npm run setup` 是唯一安装命令：它安装前端依赖、准备 RMBG Python 依赖和模型，并注册本地 Imvia Layer 插件。若 Python、依赖或模型下载失败，修复报错后重新运行该命令。
+`npm run setup` 是唯一安装命令：它安装前端依赖，在插件目录创建可持久复用的 `.python-runtime`，再准备 RMBG 模型并注册本地 Imvia Layer 插件。Python 依赖来自提交的 universal `requirements-rmbg.lock`，pip 以 `--require-hashes` 校验完整依赖树；若 Python、依赖或模型下载失败，上一个有效 runtime 不会被覆盖，修复报错后重新运行该命令即可。
 
 ### 使用 ZIP（macOS / Windows）
 
@@ -51,7 +51,13 @@ npm run install:codex-plugin
 
 ## 卸载
 
-退出 Codex Desktop 后，删除本机插件目录：macOS 为 `~/plugins/imvia-layer`，Windows 为 `%USERPROFILE%\plugins\imvia-layer`。同时从 `~/.agents/plugins/marketplace.json`（Windows：`%USERPROFILE%\.agents\plugins\marketplace.json`）的 `plugins` 列表中移除名称为 `imvia-layer` 的条目。保留或删除下载的仓库目录由你决定；删除它不会影响其他 Codex 插件。
+退出 Codex Desktop 后，在应用目录运行：
+
+```sh
+npm run uninstall:codex-plugin
+```
+
+该命令会删除本机插件目录及其托管 `.python-runtime`（macOS：`~/plugins/imvia-layer`；Windows：`%USERPROFILE%\plugins\imvia-layer`），并只移除 marketplace 中的 `imvia-layer` 条目；不会删除 RMBG 模型缓存或其他插件。重新运行 `npm run setup` 可完整重建。
 
 ## 常见问题
 

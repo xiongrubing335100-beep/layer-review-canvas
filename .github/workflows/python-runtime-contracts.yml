@@ -1,0 +1,28 @@
+name: Python runtime contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  runtime-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: imvia-ui-layer-review-canvas
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run managed runtime contracts on macOS
+        if: runner.os == 'macOS'
+        run: node --test src/python-runtime-install.test.mjs src/plugin-runtime-repair.test.mjs
+      - name: Run injected Win32 contracts on Windows
+        if: runner.os == 'Windows'
+        run: node --test --test-name-pattern="Windows|Win32" src/python-runtime-install.test.mjs
