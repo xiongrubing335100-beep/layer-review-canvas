@@ -572,3 +572,21 @@ test('primary workbench chrome uses monochrome emphasis while live status stays 
   );
   assert.match(styles, /\.conversation-bridge-indicator--online \.conversation-bridge-indicator__dot\s*\{[\s\S]*background:\s*#62d99b/);
 });
+
+test('the left sidebar credits developer Qingmu without tracking users', () => {
+  const attributionStart = source.indexOf('<a\n            className="developer-attribution"');
+  const attributionMarkup = source.slice(attributionStart, source.indexOf('</a>', attributionStart) + '</a>'.length);
+
+  assert.match(source, /className="developer-attribution"/);
+  assert.match(source, /href=\{IMVIA_AUTHOR_URL\}/);
+  assert.match(source, /target="_blank"/);
+  assert.match(source, /rel="noopener noreferrer"/);
+  assert.match(source, /aria-label="访问开发者青木的小红书主页"/);
+  assert.match(source, /<span>开发者<\/span>/);
+  assert.match(source, /<strong>\{IMVIA_AUTHOR_NAME\}<\/strong>/);
+  assert.match(styles, /\.developer-attribution\s*\{[\s\S]*position:\s*sticky;[\s\S]*bottom:\s*0;/);
+  assert.match(styles, /\.developer-attribution:focus-visible/);
+  assert.match(styles, /:root\[data-theme='light'\] \.developer-attribution\s*\{[\s\S]*color:/);
+  assert.match(styles, /@media \(max-width: 860px\)\s*\{[\s\S]*\.developer-attribution\s*\{[\s\S]*position:\s*static;/);
+  assert.doesNotMatch(attributionMarkup, /sendBeacon|fingerprint|trackingPixel/);
+});

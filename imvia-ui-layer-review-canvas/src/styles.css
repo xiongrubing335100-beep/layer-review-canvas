@@ -4868,3 +4868,45 @@ body,
 :root[data-theme='light'] .refinement-prompt__field {
   border-color: #cbd7d0;
 }
+
+.developer-attribution {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  margin-top: 24px;
+  color: #718076;
+  background: linear-gradient(180deg, rgba(18, 23, 20, 0), var(--surface-rail) 38%);
+  font-size: 10px;
+  text-decoration: none;
+}
+
+.developer-attribution strong { font-weight: 700; }
+
+.developer-attribution:hover,
+.developer-attribution:focus-visible {
+  color: #59d99b;
+}
+
+.developer-attribution:focus-visible {
+  outline: 2px solid #59d99b;
+  outline-offset: 3px;
+}
+
+:root[data-theme='light'] .developer-attribution {
+  color: #617168;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), var(--surface-rail) 38%);
+}
+
+:root[data-theme='light'] .developer-attribution:hover,
+:root[data-theme='light'] .developer-attribution:focus-visible {
+  color: #176f4e;
+}
+
+@media (max-width: 860px) {
+  .developer-attribution { position: static; }
+}

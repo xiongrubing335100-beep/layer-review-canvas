@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -12,6 +13,7 @@ const notice = await readFile(new URL('../../NOTICE.md', import.meta.url), 'utf8
 const appReadme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 const releaseGuide = await readFile(new URL('../docs/GITHUB_RELEASE.md', import.meta.url), 'utf8');
 const authorUrl = 'https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b';
+const attributionModule = new URL('./attribution.js', import.meta.url);
 
 test('the application uses its final Imvia package identity', () => {
   assert.equal(packageJson.name, 'imvia-ui-layer-review-canvas');
@@ -57,4 +59,11 @@ test('application documentation preserves the final Imvia distribution terms', (
 test('the release guide renames the repository only after the release PR merges', () => {
   assert.match(releaseGuide, /合并发布 PR 后[\s\S]*仓库名称切换为 `imvia-layer-review-canvas`/);
   assert.doesNotMatch(releaseGuide, /创建或重命名为空仓库/);
+});
+
+test('the workbench owns UI author identity in a dedicated attribution module', async () => {
+  assert.equal(existsSync(attributionModule), true, 'src/attribution.js should own UI author identity');
+  const attribution = await readFile(attributionModule, 'utf8');
+  assert.match(attribution, /export const IMVIA_AUTHOR_NAME = '青木';/);
+  assert.match(attribution, new RegExp(`export const IMVIA_AUTHOR_URL = '${authorUrl}';`));
 });
