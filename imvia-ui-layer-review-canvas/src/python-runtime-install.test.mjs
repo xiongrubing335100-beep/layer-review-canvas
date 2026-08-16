@@ -389,7 +389,7 @@ test('Win32 injected filesystem and spawn publish, rollback, lock, and uninstall
   assert.equal(await fileSystem.readFile(path.win32.join(runtimeRoot, 'old-runtime.txt'), 'utf8'), 'keep');
   assert.equal((await fileSystem.readdir(pluginRoot)).some((name) => name.startsWith('.python-runtime.staging-')), false);
 
-  await uninstallModule.uninstallLocalPlugin({ pluginRoot, fileSystem });
+  await uninstallModule.uninstallLocalPlugin({ pluginRoot, fileSystem, lockAlreadyHeld: true });
   await assert.rejects(fileSystem.access(runtimeRoot), { code: 'ENOENT' });
   await fileSystem.access(outsideUnknown);
 });
@@ -602,7 +602,7 @@ test('startup restores the only Imvia backup after a crash and removes only owne
   await rename(runtimeRoot, backupRoot);
   await mkdir(staleStage, { recursive: true });
   await mkdir(unknownDirectory, { recursive: true });
-  const lockTarget = path.join(pluginRoot, '.imvia-runtime-install');
+  const lockTarget = path.join(path.dirname(pluginRoot), '.imvia-layer-install.lock-target');
   const orphanedLock = `${lockTarget}.lock`;
   await writeFile(lockTarget, '');
   await mkdir(orphanedLock);

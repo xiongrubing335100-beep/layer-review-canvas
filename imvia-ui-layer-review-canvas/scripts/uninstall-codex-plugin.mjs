@@ -3,8 +3,9 @@ import * as realFileSystem from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
-export async function uninstallLocalPlugin({
+async function uninstallLocalPluginUnlocked({
   pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
   marketplacePath = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json'),
   fileSystem = realFileSystem,
@@ -20,6 +21,16 @@ export async function uninstallLocalPlugin({
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+}
+
+export async function uninstallLocalPlugin(options = {}) {
+  if (options.lockAlreadyHeld) return uninstallLocalPluginUnlocked(options);
+  const pluginRoot = options.pluginRoot ?? path.join(os.homedir(), 'plugins', 'imvia-layer');
+  return withRuntimeInstallLock({
+    pluginRoot,
+    lockOptions: options.runtimeLockOptions,
+    task: () => uninstallLocalPluginUnlocked({ ...options, pluginRoot }),
+  });
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;

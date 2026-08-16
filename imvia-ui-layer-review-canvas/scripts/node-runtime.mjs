@@ -329,8 +329,20 @@ async function ensurePersistentNodeLauncherUnlocked({
   try {
     await fileSystem.rename(stagingRoot, runtimeRoot);
   } catch (publishError) {
-    if (movedCurrent) await fileSystem.rename(backupRoot, runtimeRoot);
-    await fileSystem.rm(stagingRoot, { recursive: true, force: true });
+    let restoreError = null;
+    try {
+      if (movedCurrent) await fileSystem.rename(backupRoot, runtimeRoot);
+    } catch (error) {
+      restoreError = error;
+    } finally {
+      await fileSystem.rm(stagingRoot, { recursive: true, force: true });
+    }
+    if (restoreError) {
+      throw new AggregateError(
+        [publishError, restoreError],
+        `Imvia Layer Node launcher publish and restore failed; the previous launcher remains at ${backupRoot} for automatic or manual recovery`,
+      );
+    }
     throw publishError;
   }
   if (movedCurrent) await fileSystem.rm(backupRoot, { recursive: true, force: true });

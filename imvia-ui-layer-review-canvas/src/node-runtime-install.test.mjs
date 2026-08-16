@@ -319,3 +319,69 @@ test('a failed concurrent Node upgrade releases the lock for a succeeding publis
   assert.equal(marker.nodeVersion, 'v25.0.0');
   assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
 });
+
+test('dual Node publish and restore rename failures preserve a recoverable backup for next startup', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node dual rename-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const runtimeRoot = path.join(pluginRoot, '.node-runtime');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  let version = 'v24.4.1';
+  const common = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: `${version}\n`, stderr: '' }),
+  };
+  await nodeRuntime.ensurePersistentNodeLauncher({ ...common, fetchImpl: officialLicenseFetch() });
+  await writeFile(path.join(runtimeRoot, 'previous-runtime.txt'), 'recover me');
+  await writeFile(sourceNode, 'node-v25');
+  version = 'v25.0.0';
+
+  const suffix = '707-808-aabbccddeeff';
+  const stagingRoot = `${runtimeRoot}.staging-${suffix}`;
+  const backupRoot = `${runtimeRoot}.backup-${suffix}`;
+  const faultingFileSystem = {
+    ...realFileSystem,
+    async rename(from, to) {
+      if (from === stagingRoot && to === runtimeRoot) {
+        throw Object.assign(new Error('simulated Node publish rename failure'), { code: 'EACCES' });
+      }
+      if (from === backupRoot && to === runtimeRoot) {
+        throw Object.assign(new Error('simulated Node restore rename failure'), { code: 'EIO' });
+      }
+      return realFileSystem.rename(from, to);
+    },
+  };
+  await assert.rejects(
+    nodeRuntime.ensurePersistentNodeLauncher({
+      ...common,
+      fileSystem: faultingFileSystem,
+      fetchImpl: officialLicenseFetch(),
+      pid: 707,
+      now: () => 808,
+      token: 'aabbccddeeff',
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors.map(({ message }) => message), [
+        'simulated Node publish rename failure',
+        'simulated Node restore rename failure',
+      ]);
+      assert.match(error.message, new RegExp(backupRoot.replaceAll('\\', '\\\\').replaceAll('.', '\\.')));
+      return true;
+    },
+  );
+  await assert.rejects(access(runtimeRoot), { code: 'ENOENT' });
+  assert.equal(await readFile(path.join(backupRoot, 'previous-runtime.txt'), 'utf8'), 'recover me');
+  await assert.rejects(access(stagingRoot), { code: 'ENOENT' });
+
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...common,
+    fetchImpl: async () => licenseResponse('not found', { status: 404 }),
+  }), /LICENSE.*404|404.*LICENSE/i);
+  assert.equal(await readFile(path.join(runtimeRoot, 'previous-runtime.txt'), 'utf8'), 'recover me');
+  await assert.rejects(access(backupRoot), { code: 'ENOENT' });
+  assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
+});

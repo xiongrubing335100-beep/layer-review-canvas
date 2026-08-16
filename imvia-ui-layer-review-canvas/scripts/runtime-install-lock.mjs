@@ -3,7 +3,7 @@ import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 
-export const RUNTIME_INSTALL_LOCK_TARGET = '.imvia-runtime-install';
+export const RUNTIME_INSTALL_LOCK_TARGET = '.imvia-layer-install.lock-target';
 
 const DEFAULT_LOCK_OPTIONS = Object.freeze({
   stale: 30_000,
@@ -25,8 +25,9 @@ export async function withRuntimeInstallLock({
   if (!pluginRoot) throw new Error('Imvia Layer runtime installer lock requires pluginRoot');
   if (typeof task !== 'function') throw new Error('Imvia Layer runtime installer lock requires a task');
 
-  await mkdir(pluginRoot, { recursive: true });
-  const target = path.join(pluginRoot, RUNTIME_INSTALL_LOCK_TARGET);
+  const pluginsRoot = path.dirname(pluginRoot);
+  await mkdir(pluginsRoot, { recursive: true });
+  const target = path.join(pluginsRoot, RUNTIME_INSTALL_LOCK_TARGET);
   const targetHandle = await open(target, 'a');
   await targetHandle.close();
 

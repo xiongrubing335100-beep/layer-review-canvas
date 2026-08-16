@@ -25,6 +25,12 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: imvia-ui-layer-review-canvas/requirements-rmbg.lock
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Build the production workbench
+        run: npm run build
+      - name: Run shared installer lock contracts
+        run: node --test src/runtime-install-lock.test.mjs
       - name: Run managed runtime contracts on macOS
         if: runner.os == 'macOS'
         run: node --test src/python-runtime-install.test.mjs src/node-runtime-install.test.mjs src/plugin-runtime-repair.test.mjs
