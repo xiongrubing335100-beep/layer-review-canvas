@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as realFileSystem from 'node:fs/promises';
-import { access, chmod, mkdtemp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -62,8 +62,15 @@ if (args[0] === '-c' && args[1].includes('pythonCacheTag')) {
   process.stderr.write('unexpected fake Python arguments: ' + JSON.stringify(args));
   process.exitCode = 2;
 }
+
 `);
   await chmod(filePath, 0o755);
+}
+
+async function linkOrCopyExecutable(sourcePath, destinationPath) {
+  await mkdir(path.dirname(destinationPath), { recursive: true });
+  await link(sourcePath, destinationPath).catch(() => copyFile(sourcePath, destinationPath));
+  await chmod(destinationPath, 0o755);
 }
 
 async function writeTestRequirements(repositoryRoot, version = '2.0.69') {
@@ -191,19 +198,22 @@ class FakeWindowsFileSystem {
   }
 }
 
-test('standalone plugin install records a durable verified runtime even when paths contain spaces', async (t) => {
+test('standalone plugin install records durable Python and Node runtimes when paths contain spaces', async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia runtime path with spaces-'));
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const cachePython = path.join(temporaryRoot, 'Codex Cache', 'python', 'bin', 'python3');
+  const replacementPython = path.join(temporaryRoot, 'Replacement Python', 'python3');
+  const cacheNode = path.join(temporaryRoot, 'Codex Cache', 'node', 'bin', 'node');
   const logPath = path.join(temporaryRoot, 'python-calls.log');
-  await writeFakePython(fakePython);
+  await writeFakePython(cachePython);
+  await linkOrCopyExecutable(process.execPath, cacheNode);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
-  const result = run(process.execPath, ['scripts/install-codex-plugin.mjs'], {
+  const result = run(cacheNode, ['scripts/install-codex-plugin.mjs'], {
     env: {
       ...process.env,
       HOME: temporaryRoot,
       USERPROFILE: temporaryRoot,
-      PYTHON: fakePython,
+      PYTHON: cachePython,
       FAKE_PYTHON_LOG: logPath,
     },
   });
@@ -211,11 +221,23 @@ test('standalone plugin install records a durable verified runtime even when pat
 
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
   const runtime = JSON.parse(await readFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), 'utf8'));
+  const mcpConfig = JSON.parse(await readFile(path.join(pluginRoot, '.mcp.json'), 'utf8'));
   const expectedPython = path.join(pluginRoot, '.python-runtime', 'bin', 'python');
+  const expectedNode = path.join(pluginRoot, '.node-runtime', 'bin', 'node');
   assert.deepEqual(runtime.python, { command: expectedPython, args: [] });
+  assert.equal(mcpConfig.mcpServers['imvia-layer'].command, expectedNode);
+  await rm(cacheNode);
+  await rm(cachePython);
+  const nodeResult = run(expectedNode, ['--version']);
+  assert.equal(nodeResult.status, 0, nodeResult.stderr || nodeResult.stdout);
 
   const importResult = run(runtime.python.command, [...runtime.python.args, '-c', 'import rembg']);
   assert.equal(importResult.status, 0, importResult.stderr || importResult.stdout);
+  const verificationResult = run(process.execPath, ['scripts/verify-installed-runtime.mjs'], {
+    env: { ...process.env, HOME: temporaryRoot, USERPROFILE: temporaryRoot },
+  });
+  assert.equal(verificationResult.status, 0, verificationResult.stderr || verificationResult.stdout);
+  assert.match(verificationResult.stdout, /managed runtime verified/);
 
   const marker = JSON.parse(await readFile(path.join(pluginRoot, '.python-runtime', '.imvia-layer-runtime.json'), 'utf8'));
   assert.match(marker.lockSha256, /^[a-f0-9]{64}$/);
@@ -223,13 +245,32 @@ test('standalone plugin install records a durable verified runtime even when pat
   assert.equal(marker.pythonCacheTag, 'cpython-312');
   assert.equal(marker.platform, 'darwin');
   assert.equal(marker.architecture, 'arm64');
+  assert.equal(marker.installPolicy, 'wheel-only-require-hashes-v1');
   assert.equal('requirementsSha256' in marker, false);
   const calls = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   const pipInstall = calls.find(({ args }) => args[0] === '-m' && args[1] === 'pip' && args[2] === 'install');
   assert.ok(pipInstall);
   assert.equal(pipInstall.args.includes('--require-hashes'), true);
+  assert.equal(pipInstall.args.includes('--only-binary=:all:'), true);
   assert.equal(pipInstall.args.at(-1), path.join(root, 'requirements-rmbg.lock'));
   assert.equal(calls.some(({ args }) => args[0] === '-c' && args[1].includes('importlib.metadata.distribution')), true);
+
+  await rm(expectedPython);
+  await writeFakePython(replacementPython);
+  const bootstrapResult = run(expectedNode, [path.join(pluginRoot, 'scripts', 'start-mcp.mjs')], {
+    env: {
+      ...process.env,
+      HOME: temporaryRoot,
+      USERPROFILE: temporaryRoot,
+      PYTHON: replacementPython,
+      FAKE_PYTHON_LOG: logPath,
+    },
+    timeout: 20_000,
+  });
+  assert.equal(bootstrapResult.status, 0, bootstrapResult.stderr || bootstrapResult.stdout);
+  assert.equal(bootstrapResult.stdout, '');
+  assert.match(bootstrapResult.stderr, /Imvia Layer 插件已安装/);
+  await access(expectedPython);
 });
 
 test('the managed runtime installs from a committed universal hashed lock', async () => {
@@ -515,6 +556,83 @@ test('concurrent runtime ensures publish exactly one managed environment', async
   const calls = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(calls.filter(({ args }) => args[0] === '-m' && args[1] === 'venv').length, 1);
   assert.equal(calls.filter(({ args }) => args[0] === '-m' && args[1] === 'pip' && args[2] === 'install').length, 1);
+});
+
+test('two stale-lock waiters cannot ABA-delete a newly acquired runtime lock', async (t) => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia stale reaper ABA-'));
+  const repositoryRoot = path.join(temporaryRoot, 'repository');
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const lockRoot = path.join(pluginRoot, '.python-runtime.lock');
+  const reaperRoot = `${lockRoot}.reaper`;
+  const ownerPath = path.join(lockRoot, 'owner.json');
+  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const logPath = path.join(temporaryRoot, 'python-calls.log');
+  await writeTestRequirements(repositoryRoot);
+  await writeFakePython(fakePython);
+  await mkdir(lockRoot, { recursive: true });
+  await writeFile(ownerPath, JSON.stringify({ pid: 999_999, createdAtMs: 1, token: 'dead-owner' }));
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+
+  let deadOwnerReads = 0;
+  let releaseDeadOwnerReads;
+  const bothReadDeadOwner = new Promise((resolve) => { releaseDeadOwnerReads = resolve; });
+  let releaseUnprotectedSecondRemove;
+  const newOwnerWritten = new Promise((resolve) => { releaseUnprotectedSecondRemove = resolve; });
+  let unprotectedRemovals = 0;
+  let reaperProtectedRemovals = 0;
+  const adversarialFileSystem = {
+    ...realFileSystem,
+    async readFile(targetPath, ...args) {
+      const contents = await realFileSystem.readFile(targetPath, ...args);
+      if (targetPath === ownerPath && contents.toString().includes('dead-owner')) {
+        deadOwnerReads += 1;
+        if (deadOwnerReads === 2) releaseDeadOwnerReads();
+        if (deadOwnerReads <= 2) await bothReadDeadOwner;
+      }
+      return contents;
+    },
+    async writeFile(targetPath, contents, ...args) {
+      const result = await realFileSystem.writeFile(targetPath, contents, ...args);
+      if (targetPath === ownerPath && !contents.toString().includes('dead-owner')) {
+        releaseUnprotectedSecondRemove();
+      }
+      return result;
+    },
+    async rm(targetPath, options) {
+      if (targetPath !== lockRoot) return realFileSystem.rm(targetPath, options);
+      const hasReaper = await realFileSystem.access(reaperRoot).then(() => true, () => false);
+      if (hasReaper) {
+        reaperProtectedRemovals += 1;
+        return realFileSystem.rm(targetPath, options);
+      }
+      unprotectedRemovals += 1;
+      if (unprotectedRemovals === 2) await newOwnerWritten;
+      return realFileSystem.rm(targetPath, options);
+    },
+  };
+  const options = {
+    repositoryRoot,
+    pluginRoot,
+    fileSystem: adversarialFileSystem,
+    env: { ...process.env, PYTHON: fakePython, FAKE_PYTHON_LOG: logPath, FAKE_PIP_DELAY_MS: '100' },
+    platform: 'darwin',
+    nodeExecutable: process.execPath,
+    now: () => 1_000_000,
+    isProcessAlive: () => false,
+    lockStaleMs: 100,
+    lockTimeoutMs: 3_000,
+    lockPollMs: 5,
+  };
+
+  const results = await Promise.allSettled([
+    pythonRuntime.ensurePersistentPythonRuntime({ ...options, pid: 101, token: 'aaaaaaaaaaaa' }),
+    pythonRuntime.ensurePersistentPythonRuntime({ ...options, pid: 202, token: 'bbbbbbbbbbbb' }),
+  ]);
+  assert.equal(results.every(({ status }) => status === 'fulfilled'), true, JSON.stringify(results));
+  const calls = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(calls.filter(({ args }) => args[0] === '-m' && args[1] === 'venv').length, 1);
+  assert.equal(reaperProtectedRemovals, 1);
+  await assert.rejects(access(reaperRoot), { code: 'ENOENT' });
 });
 
 test('startup restores the only Imvia backup after a crash and removes only owned stale paths', async (t) => {

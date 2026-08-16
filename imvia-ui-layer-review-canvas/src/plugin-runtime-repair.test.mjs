@@ -37,6 +37,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
   const calls = [];
+  let forwardedDiagnostics = '';
   const runCommandImpl = async (command, args, options) => {
     calls.push({ command, args, options });
     if (command === brokenConfig.python.command) {
@@ -46,7 +47,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
     }
     if (command === '/Applications/Codex App/node') {
       await writeFile(runtimePath, `${JSON.stringify(repairedConfig)}\n`);
-      return { stdout: '', stderr: '' };
+      return { stdout: 'installer status on stdout\n', stderr: 'installer detail on stderr\n' };
     }
     if (command === repairedConfig.python.command) return { stdout: '2.0.69\n', stderr: '' };
     throw new Error(`unexpected command: ${command}`);
@@ -56,6 +57,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
     pluginRoot,
     processExecPath: '/Applications/Codex App/node',
     runCommandImpl,
+    writeStderr: (chunk) => { forwardedDiagnostics += chunk; },
   });
   assert.deepEqual(resolved, repairedConfig);
   assert.deepEqual(calls.map(({ command }) => command), [
@@ -65,7 +67,8 @@ test('broken installed Python triggers repo installer repair and reloads verifie
   ]);
   assert.deepEqual(calls[1].args, [path.join(repositoryRoot, 'scripts', 'install-codex-plugin.mjs')]);
   assert.equal(calls[1].options.cwd, repositoryRoot);
-  assert.equal(calls[1].options.stdio, 'inherit');
+  assert.equal(calls[1].options.stdio, 'pipe');
+  assert.equal(forwardedDiagnostics, 'installer status on stdout\ninstaller detail on stderr\n');
 });
 
 test('failed automatic repair reports an actionable setup command without rewriting runtime JSON', async (t) => {

@@ -14,3 +14,9 @@ Third-party components, dependencies, models, and assets remain subject to
 their own licenses. This includes BRIA RMBG 2.0, whose terms are not replaced
 or expanded by this project's license or any commercial authorization for
 Imvia Layer.
+
+The local installer copies the host's existing Node.js executable into the
+user-owned Imvia Layer plugin directory as `.node-runtime`; it does not bundle
+or commit a private Node.js distribution in this repository. That local copy
+remains subject to the Node.js license and third-party notices:
+https://github.com/nodejs/node/blob/main/LICENSE

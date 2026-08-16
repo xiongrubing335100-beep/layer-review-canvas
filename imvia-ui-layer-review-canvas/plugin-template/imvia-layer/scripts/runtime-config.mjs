@@ -42,6 +42,7 @@ export async function resolveVerifiedRuntimeConfig({
   processExecPath = process.execPath,
   environment = process.env,
   runCommandImpl = runCommand,
+  writeStderr = (chunk) => process.stderr.write(chunk),
 } = {}) {
   if (!pluginRoot) throw new Error('Imvia Layer 缺少 pluginRoot');
 
@@ -59,10 +60,12 @@ export async function resolveVerifiedRuntimeConfig({
   } catch (probeError) {
     const installerPath = path.join(config.workbenchRoot, 'scripts', 'install-codex-plugin.mjs');
     try {
-      await runCommandImpl(processExecPath, [installerPath], {
+      const repairResult = await runCommandImpl(processExecPath, [installerPath], {
         cwd: config.workbenchRoot,
-        stdio: 'inherit',
+        stdio: 'pipe',
       });
+      if (repairResult.stdout) writeStderr(repairResult.stdout);
+      if (repairResult.stderr) writeStderr(repairResult.stderr);
       const repaired = await readRuntimeConfig(pluginRoot, environment);
       if (!repaired.workbenchRoot) throw new Error('修复后的 runtime JSON 缺少工作台路径');
       await probePython(repaired, runCommandImpl);

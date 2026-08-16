@@ -23,7 +23,7 @@ cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
 
-`npm run setup` 是唯一安装命令：它安装前端依赖，在插件目录创建可持久复用的 `.python-runtime`，再准备 RMBG 模型并注册本地 Imvia Layer 插件。Python 依赖来自提交的 universal `requirements-rmbg.lock`，pip 以 `--require-hashes` 校验完整依赖树；若 Python、依赖或模型下载失败，上一个有效 runtime 不会被覆盖，修复报错后重新运行该命令即可。
+`npm run setup` 是唯一安装命令：它安装前端依赖，在插件目录创建可持久复用的 `.python-runtime` 与 `.node-runtime`，再准备 RMBG 模型并注册本地 Imvia Layer 插件。Python 依赖来自提交的 universal `requirements-rmbg.lock`，pip 以 `--only-binary=:all:` 和 `--require-hashes` 校验完整 wheel 依赖树。只有 Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留并继续使用上一个有效 runtime；模型预热发生在 runtime 发布之后，预热失败会停止插件注册，但不会回滚已经验证的 runtime。修复报错后重新运行该命令即可。
 
 ### 使用 ZIP（macOS / Windows）
 
@@ -57,7 +57,7 @@ npm run install:codex-plugin
 npm run uninstall:codex-plugin
 ```
 
-该命令会删除本机插件目录及其托管 `.python-runtime`（macOS：`~/plugins/imvia-layer`；Windows：`%USERPROFILE%\plugins\imvia-layer`），并只移除 marketplace 中的 `imvia-layer` 条目；不会删除 RMBG 模型缓存或其他插件。重新运行 `npm run setup` 可完整重建。
+该命令会删除本机插件目录及其托管 `.python-runtime`、`.node-runtime`（macOS：`~/plugins/imvia-layer`；Windows：`%USERPROFILE%\plugins\imvia-layer`），并只移除 marketplace 中的 `imvia-layer` 条目；不会删除 RMBG 模型缓存或其他插件。重新运行 `npm run setup` 可完整重建。
 
 ## 常见问题
 

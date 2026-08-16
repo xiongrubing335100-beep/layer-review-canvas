@@ -47,7 +47,7 @@ npm run setup
 
 如使用 ZIP，请解压仓库后进入其中的 `imvia-ui-layer-review-canvas` 目录，再运行同一条 `npm run setup` 命令。
 
-`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`），安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--require-hashes` 校验所有安装包；lock、Python ABI、系统与架构变化会触发安全重建。该命令必须完整成功才会注册插件：若 Python、RMBG 依赖或模型下载失败，安装会停止并给出原因，不会覆盖上一个有效 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
+`npm run setup` 是唯一的安装命令：它会先安装前端依赖，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`）和插件自有 Node launcher `.node-runtime`，安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--only-binary=:all:` 与 `--require-hashes` 校验所有 wheel；lock、Python ABI、系统与架构变化会触发安全重建。Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留上一个有效 runtime；模型预热发生在 runtime 发布之后，因此预热失败会停止注册但不会回滚已验证 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
 
 ```text
 [@imvia-layer](plugin://imvia-layer@personal) 打开工作台
@@ -65,7 +65,7 @@ npm run install:codex-plugin
 
 然后重启 Codex Desktop 以重新加载插件清单。
 
-如需卸载插件及其托管 `.python-runtime`，在应用目录运行：
+如需卸载插件及其托管 `.python-runtime`、`.node-runtime`，在应用目录运行：
 
 ```sh
 npm run uninstall:codex-plugin

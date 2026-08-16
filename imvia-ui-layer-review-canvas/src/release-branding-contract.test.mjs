@@ -117,7 +117,9 @@ test('critical source entries and the build preserve attribution', async () => {
     '../layer-review-mcp-server.mjs',
     '../scripts/start-workbench.mjs',
     '../scripts/install-codex-plugin.mjs',
+    '../scripts/node-runtime.mjs',
     '../scripts/uninstall-codex-plugin.mjs',
+    '../scripts/verify-installed-runtime.mjs',
     '../scripts/finalize-targeted-job.py',
     '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
   ];
@@ -228,7 +230,9 @@ test('the attribution-only surfaces contain no tracking, remote-disable, or lice
     '../layer-review-mcp-server.mjs',
     '../scripts/start-workbench.mjs',
     '../scripts/install-codex-plugin.mjs',
+    '../scripts/node-runtime.mjs',
     '../scripts/uninstall-codex-plugin.mjs',
+    '../scripts/verify-installed-runtime.mjs',
     '../scripts/finalize-targeted-job.py',
     '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
   ]) {
@@ -257,6 +261,7 @@ test('critical entry bodies retain no attribution beyond their allowed first-lin
     '../layer-review-mcp-server.mjs',
     '../scripts/start-workbench.mjs',
     '../scripts/install-codex-plugin.mjs',
+    '../scripts/node-runtime.mjs',
     '../scripts/finalize-targeted-job.py',
     '../plugin-template/imvia-layer/scripts/start-mcp.mjs',
   ]) {

@@ -7,6 +7,7 @@ import path from 'node:path';
 
 const VERSION_PROBE = 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")';
 const REMBG_PROBE = 'import importlib.metadata; import rembg; print(importlib.metadata.version("rembg"))';
+const INSTALL_POLICY = 'wheel-only-require-hashes-v1';
 const ENVIRONMENT_PROBE = `
 import json
 import platform
@@ -190,6 +191,7 @@ async function verifyLockedDistributions(pythonCommand, lockPath, { cwd, env, ru
 
 function markerMatches(marker, lockSha256, fingerprint) {
   return marker?.lockSha256 === lockSha256
+    && marker.installPolicy === INSTALL_POLICY
     && marker.pythonVersion === fingerprint.pythonVersion
     && marker.pythonCacheTag === fingerprint.pythonCacheTag
     && marker.platform === fingerprint.platform
@@ -214,6 +216,80 @@ async function pathExists(targetPath, fileSystem) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readLockSnapshot(lockRoot, ownerPath, fileSystem) {
+  let metadata;
+  try {
+    metadata = await fileSystem.stat(lockRoot);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  return {
+    owner: await readMarker(ownerPath, fileSystem),
+    mtimeMs: metadata.mtimeMs,
+  };
+}
+
+function sameLockSnapshot(left, right) {
+  return Boolean(left && right)
+    && left.mtimeMs === right.mtimeMs
+    && left.owner?.token === right.owner?.token
+    && left.owner?.pid === right.owner?.pid
+    && left.owner?.createdAtMs === right.owner?.createdAtMs;
+}
+
+function staleLockSnapshot(snapshot, { now, lockStaleMs, isProcessAlive }) {
+  if (!snapshot) return false;
+  if (snapshot.owner && Number.isFinite(snapshot.owner.createdAtMs)) {
+    return now() - snapshot.owner.createdAtMs > lockStaleMs && !isProcessAlive(snapshot.owner.pid);
+  }
+  return now() - snapshot.mtimeMs > lockStaleMs;
+}
+
+async function releaseOwnedDirectory(directoryRoot, ownerPath, token, fileSystem) {
+  const owner = await readMarker(ownerPath, fileSystem);
+  if (owner?.token === token) await fileSystem.rm(directoryRoot, { recursive: true, force: true });
+}
+
+async function tryReapStaleLock({
+  lockRoot,
+  ownerPath,
+  observed,
+  reaperRoot,
+  reaperOwnerPath,
+  fileSystem,
+  now,
+  pid,
+  token,
+  lockStaleMs,
+  isProcessAlive,
+}) {
+  try {
+    await fileSystem.mkdir(reaperRoot);
+  } catch (error) {
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  }
+
+  try {
+    await fileSystem.writeFile(reaperOwnerPath, `${JSON.stringify({ pid, createdAtMs: now(), token }, null, 2)}\n`);
+  } catch (error) {
+    await fileSystem.rm(reaperRoot, { recursive: true, force: true });
+    throw error;
+  }
+
+  try {
+    const verified = await readLockSnapshot(lockRoot, ownerPath, fileSystem);
+    if (sameLockSnapshot(observed, verified)
+      && staleLockSnapshot(verified, { now, lockStaleMs, isProcessAlive })) {
+      await fileSystem.rm(lockRoot, { recursive: true, force: true });
+    }
+    return true;
+  } finally {
+    await releaseOwnedDirectory(reaperRoot, reaperOwnerPath, token, fileSystem);
   }
 }
 
@@ -265,40 +341,45 @@ async function acquireManagedRuntimeLock({
 }) {
   const lockRoot = pathApi.join(pluginRoot, '.python-runtime.lock');
   const ownerPath = pathApi.join(lockRoot, 'owner.json');
+  const reaperRoot = `${lockRoot}.reaper`;
+  const reaperOwnerPath = pathApi.join(reaperRoot, 'owner.json');
   const deadline = now() + lockTimeoutMs;
   await fileSystem.mkdir(pluginRoot, { recursive: true });
 
   while (true) {
+    if (await pathExists(reaperRoot, fileSystem)) {
+      if (now() >= deadline) throw new Error('等待 Imvia Layer Python runtime stale-lock reaper 超时');
+      await sleep(lockPollMs);
+      continue;
+    }
     try {
       await fileSystem.mkdir(lockRoot);
       await fileSystem.writeFile(ownerPath, `${JSON.stringify({ pid, createdAtMs: now(), token }, null, 2)}\n`);
-      return async () => {
-        const owner = await readMarker(ownerPath, fileSystem);
-        if (owner?.token === token) await fileSystem.rm(lockRoot, { recursive: true, force: true });
-      };
+      return () => releaseOwnedDirectory(lockRoot, ownerPath, token, fileSystem);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
 
-    const owner = await readMarker(ownerPath, fileSystem);
-    let stale = false;
-    if (owner && Number.isFinite(owner.createdAtMs)) {
-      stale = now() - owner.createdAtMs > lockStaleMs && !isProcessAlive(owner.pid);
-    } else {
-      try {
-        const metadata = await fileSystem.stat(lockRoot);
-        stale = now() - metadata.mtimeMs > lockStaleMs;
-      } catch (error) {
-        if (error.code === 'ENOENT') continue;
-        throw error;
-      }
-    }
-    if (stale) {
-      await fileSystem.rm(lockRoot, { recursive: true, force: true });
+    const observed = await readLockSnapshot(lockRoot, ownerPath, fileSystem);
+    if (!observed) continue;
+    if (staleLockSnapshot(observed, { now, lockStaleMs, isProcessAlive })) {
+      await tryReapStaleLock({
+        lockRoot,
+        ownerPath,
+        observed,
+        reaperRoot,
+        reaperOwnerPath,
+        fileSystem,
+        now,
+        pid,
+        token,
+        lockStaleMs,
+        isProcessAlive,
+      });
       continue;
     }
     if (now() >= deadline) {
-      throw new Error(`等待 Imvia Layer Python runtime lock 超时（owner pid=${owner?.pid ?? 'unknown'}）`);
+      throw new Error(`等待 Imvia Layer Python runtime lock 超时（owner pid=${observed.owner?.pid ?? 'unknown'}）`);
     }
     await sleep(lockPollMs);
   }
@@ -368,7 +449,15 @@ export async function ensurePersistentPythonRuntime({
     try {
       await runCommandImpl(base.command, [...base.args, '-m', 'venv', stagingRoot], { cwd: repositoryRoot, env, stdio: 'inherit' });
       try {
-        const installResult = await runCommandImpl(stagingPython, ['-m', 'pip', 'install', '--require-hashes', '-r', lockPath], { cwd: repositoryRoot, env });
+        const installResult = await runCommandImpl(stagingPython, [
+          '-m',
+          'pip',
+          'install',
+          '--only-binary=:all:',
+          '--require-hashes',
+          '-r',
+          lockPath,
+        ], { cwd: repositoryRoot, env });
         if (installResult.stdout) process.stdout.write(installResult.stdout);
         if (installResult.stderr) process.stderr.write(installResult.stderr);
       } catch (error) {
@@ -379,6 +468,7 @@ export async function ensurePersistentPythonRuntime({
       await verifyLockedDistributions(stagingPython, lockPath, { cwd: repositoryRoot, env, runCommandImpl });
       await fileSystem.writeFile(pathApi.join(stagingRoot, '.imvia-layer-runtime.json'), `${JSON.stringify({
         lockSha256,
+        installPolicy: INSTALL_POLICY,
         ...fingerprint,
       }, null, 2)}\n`);
     } catch (error) {

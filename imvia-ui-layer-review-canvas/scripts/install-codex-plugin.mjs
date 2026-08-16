@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensurePersistentNodeLauncher } from './node-runtime.mjs';
 import { ensurePersistentPythonRuntime } from './python-runtime.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +27,7 @@ async function readMarketplace() {
 
 async function install() {
   const python = await ensurePersistentPythonRuntime({ repositoryRoot, pluginRoot });
+  const node = await ensurePersistentNodeLauncher({ pluginRoot });
   await mkdir(path.dirname(pluginRoot), { recursive: true });
   await cp(pluginTemplateRoot, pluginRoot, { recursive: true, force: true });
 
@@ -43,7 +45,7 @@ async function install() {
   await writeFile(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify({
     mcpServers: {
       'imvia-layer': {
-        command: process.execPath,
+        command: node.command,
         args: [path.join(pluginRoot, 'scripts', 'start-mcp.mjs')],
         cwd: pluginRoot,
       },
