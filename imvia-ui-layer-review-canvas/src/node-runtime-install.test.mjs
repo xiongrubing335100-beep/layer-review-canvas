@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as realFileSystem from 'node:fs/promises';
-import { access, appendFile, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, appendFile, chmod, copyFile, mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -36,10 +36,10 @@ function fixtureNodePath(runtimeRoot, platform = process.platform) {
     : pathApi.join(runtimeRoot, 'bin', 'node');
 }
 
-async function linkNodeFixture(runtimeRoot) {
+async function copyNodeFixture(runtimeRoot) {
   const executable = fixtureNodePath(runtimeRoot);
   await mkdir(path.dirname(executable), { recursive: true });
-  await link(process.execPath, executable).catch(() => copyFile(process.execPath, executable));
+  await copyFile(process.execPath, executable);
   return executable;
 }
 
@@ -76,7 +76,7 @@ test('failed Node launcher replacement preserves the previous executable and rem
   assert.ok(nodeRuntime, 'managed Node runtime module must exist');
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node atomic-'));
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const cacheNode = await linkNodeFixture(path.join(temporaryRoot, 'Codex Cache', 'node'));
+  const cacheNode = await copyNodeFixture(path.join(temporaryRoot, 'Codex Cache', 'node'));
   const changedSource = await writeChangedNodeFixture(path.join(temporaryRoot, 'changed-node'));
   t.after(() => removeRuntimeTestTree(temporaryRoot));
 

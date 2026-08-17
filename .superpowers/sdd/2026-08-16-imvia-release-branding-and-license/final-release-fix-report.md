@@ -36,6 +36,9 @@ All authoritative final-review findings were implemented on
 - Uninstall output now names both managed Python and Node runtimes. Public
   update instructions use `npm run update`, whose dependency/build behavior is
   the same self-contained release path as setup.
+- Windows executable test fixtures are now always real copies. They can still
+  be launched and removed during the test, but never alias the live Node test
+  runner through a hard link.
 
 ## RED evidence
 
@@ -52,10 +55,32 @@ All authoritative final-review findings were implemented on
   behavior test fail on the missing Node runtime statement.
 - The CI contract failed on Node 24-only, filtered tests, absent complete
   Python discovery, and absent explicit banner/runtime parity verification.
+- GitHub Actions run `31985306490` passed its `release-contracts
+  (macos-latest)` matrix job. Its `release-contracts (windows-latest)` job had
+  only two failures left: test 139 (`node-runtime-install.test.mjs`) failed its
+  cleanup hook after 37 seconds, and test 187
+  (`python-runtime-install.test.mjs`) failed its cleanup hook after 48 seconds.
+  Both reported `EPERM` while unlinking a temporary `node.exe`.
+- Phase-1 tracing found that both failing fixtures tried
+  `link(process.execPath, temporaryNode)` before falling back to a copy. When
+  that hard link succeeds on Windows, the cleanup target is another name for
+  the still-running parent test runner image; no bounded teardown retry can
+  remove it before the suite exits. The test bodies had already completed
+  their synchronous child launches. A copied-executable probe returned status
+  0 with no signal and confirmed the child PID no longer existed after
+  `spawnSync`, ruling out an orphaned child as the persistent lock source.
+- The new file-identity regression failed before the fix because source and
+  fixture had the same device/inode pair, directly demonstrating the alias.
+  Its final cross-platform form mutates the fixture and requires the source
+  contents to remain unchanged, without relying on Windows inode reporting.
 
 ## GREEN evidence
 
-- Complete Node suite: **451 passed, 0 failed, 0 skipped**.
+- Complete Node suite: **459 passed, 0 failed, 0 skipped**.
+- Runtime-focused Node suite: **25 passed, 0 failed, 0 skipped**. The new
+  executable identity regression confirms cleanup targets are independent
+  copies while the existing tests continue to launch the copied managed Node
+  runtime and remove their complete temporary trees.
 - Clean tracked archive: **1 passed**; setup and update each ran real `npm ci`
   and production build, stale `dist/index.html` was removed, installed
   LICENSE/NOTICE/manifest hashes matched, and MCP initialize succeeded with no
@@ -78,9 +103,10 @@ All authoritative final-review findings were implemented on
 
 ## Concerns
 
-- Physical verification was performed on macOS with Node v24.19.0. The
-  committed workflow gives macOS and Windows real Node 20.19 coverage, but
-  remote GitHub Actions and a physical Windows host were not run in this task.
+- Physical verification was performed on macOS. GitHub Actions run
+  `31985306490` verified the macOS matrix job and exposed the Windows hard-link
+  cleanup root cause; a Windows rerun containing the independent-copy fix is
+  still required.
 - `npm ci` reported four dependency audit findings (two moderate, two high).
   No unreviewed `npm audit fix` was applied because it could change the locked
   dependency graph outside this focused release fix.

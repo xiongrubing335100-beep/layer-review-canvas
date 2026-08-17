@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as realFileSystem from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { access, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -109,11 +109,28 @@ function fakeNodePath(runtimeRoot, platform = process.platform) {
   return nodeRuntime.runtimeNodePath(runtimeRoot, platform);
 }
 
-async function linkOrCopyExecutable(sourcePath, destinationPath) {
+async function copyExecutableFixture(sourcePath, destinationPath) {
   await mkdir(path.dirname(destinationPath), { recursive: true });
-  await link(sourcePath, destinationPath).catch(() => copyFile(sourcePath, destinationPath));
+  await copyFile(sourcePath, destinationPath);
   await chmod(destinationPath, 0o755);
 }
+
+test('temporary executable fixtures never alias a live source file', async (t) => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia executable identity-'));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const sourcePath = path.join(temporaryRoot, 'live-node-source');
+  const destinationPath = path.join(temporaryRoot, 'fixture', 'node');
+  await writeFile(sourcePath, 'fixture executable');
+
+  await copyExecutableFixture(sourcePath, destinationPath);
+
+  await writeFile(destinationPath, 'mutated fixture');
+  assert.equal(
+    await readFile(sourcePath, 'utf8'),
+    'fixture executable',
+    'cleanup targets must be copies, not hard links to a still-running executable',
+  );
+});
 
 async function writeTestRequirements(repositoryRoot, version = '2.0.69') {
   await mkdir(repositoryRoot, { recursive: true });
@@ -247,7 +264,7 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   const cacheNode = fakeNodePath(path.join(temporaryRoot, 'Codex Cache', 'node'));
   const logPath = path.join(temporaryRoot, 'python-calls.log');
   const cachePythonEnvironment = await writeFakePython(cachePython);
-  await linkOrCopyExecutable(process.execPath, cacheNode);
+  await copyExecutableFixture(process.execPath, cacheNode);
   t.after(() => removeRuntimeTestTree(temporaryRoot));
 
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
