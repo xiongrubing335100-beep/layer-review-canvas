@@ -1,0 +1,76 @@
+Imvia Layer Personal & Commercial License 1.0
+Copyright (c) 2026 青木. All rights reserved.
+
+1. Personal Non-Commercial License
+
+Subject to this License, an individual may use, copy, and modify this
+software and its documentation without charge for personal, non-commercial
+learning, research, evaluation, and projects that do not generate direct or
+indirect revenue. This personal non-commercial use permission does not extend
+to organizations, commercial teams, or uses made for commercial operations.
+
+2. Commercial Use Requires a Paid License
+
+Before any commercial use, you must obtain prior written paid authorization
+from the copyright holder. Commercial use includes internal use by a company,
+organization, or commercial team; client work, contracting, consulting, or
+paid delivery; paid products, SaaS, subscriptions, advertising, sales, or
+other revenue-generating activity; packaging, integrating, or distributing
+this software or a modified version in a commercial product; and any use for
+profit, financing, or commercial operations. A paid commercial license does
+not permit removal or replacement of attribution unless a separate written
+agreement expressly says so.
+
+3. Modification and Non-Commercial Redistribution
+
+Personal non-commercial users may modify the software. You may redistribute
+the original or a modified version only for non-commercial purposes and only
+if you retain this License, NOTICE.md, source copyright comments, and build
+copyright banner; clearly describe your modifications; do not imply that the
+copyright holder endorses your version; and do not relicense this software or
+a modified version under terms that permit commercial use.
+
+4. Attribution and Notices
+
+You must retain all copyright and attribution notices, including this License,
+NOTICE.md, applicable source notices, and applicable build notices, in every
+permitted copy, modification, and non-commercial redistribution. These notice
+requirements are attribution terms and do not create a technical enforcement,
+tracking, or network-check obligation.
+
+5. Third-Party Components
+
+Third-party components, dependencies, models, and assets are subject to their
+own licenses. In particular, BRIA RMBG 2.0 weights remain subject to their own
+non-commercial license. A license granted under this License does not replace,
+override, or grant any right under a third-party license, including commercial
+rights to BRIA RMBG 2.0 or other third-party components.
+
+6. No Trademark Grant
+
+This License does not grant permission to use the Imvia Layer name, logos, or
+other trademarks except as needed for accurate, non-misleading attribution and
+identification of the software.
+
+7. Termination
+
+The permissions in this License terminate automatically if you breach its
+terms. Upon termination, you must stop using and distributing the software
+unless you obtain separate written permission from the copyright holder.
+
+8. Disclaimer of Warranty
+
+THE SOFTWARE AND DOCUMENTATION ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR AVAILABILITY.
+
+9. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO
+THE SOFTWARE, DOCUMENTATION, OR USE OF THEM.
+
+10. Commercial Licensing Contact
+
+For a paid commercial license or a separate written legal arrangement, contact
+青木 through the author page identified in NOTICE.md.

@@ -1,0 +1,47 @@
+name: Imvia release contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  release-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: imvia-ui-layer-review-canvas
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: npm
+          cache-dependency-path: imvia-ui-layer-review-canvas/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: imvia-ui-layer-review-canvas/requirements-rmbg.lock
+      - name: Install locked Node dependencies from the fresh checkout
+        run: npm ci
+      - name: Build the production workbench
+        run: npm run build
+      - name: Verify every production bundle has exactly one legal banner
+        run: node scripts/verify-production-build.mjs
+      - name: Run the complete Node suite
+        run: npm test
+      - name: Install real managed runtimes without downloading the model
+        env:
+          PYTHON: python
+        run: node scripts/install-codex-plugin.mjs
+      - name: Verify runtime, lock, executable, LICENSE, NOTICE, and manifest hashes
+        env:
+          PYTHON: python
+        run: node scripts/verify-installed-runtime.mjs
+      - name: Run complete Python discovery with managed rembg
+        run: node scripts/run-managed-python-tests.mjs
