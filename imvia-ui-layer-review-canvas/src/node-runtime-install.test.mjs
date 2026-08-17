@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as realFileSystem from 'node:fs/promises';
-import { access, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, appendFile, chmod, copyFile, link, mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +28,33 @@ function officialLicenseFetch(requests = []) {
   };
 }
 
+function fixtureNodePath(runtimeRoot, platform = process.platform) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  return platform === 'win32'
+    ? pathApi.join(runtimeRoot, 'node.exe')
+    : pathApi.join(runtimeRoot, 'bin', 'node');
+}
+
+async function linkNodeFixture(runtimeRoot) {
+  const executable = fixtureNodePath(runtimeRoot);
+  await mkdir(path.dirname(executable), { recursive: true });
+  await link(process.execPath, executable).catch(() => copyFile(process.execPath, executable));
+  return executable;
+}
+
+async function writeChangedNodeFixture(runtimeRoot) {
+  const executable = fixtureNodePath(runtimeRoot);
+  await mkdir(path.dirname(executable), { recursive: true });
+  if (process.platform === 'win32') {
+    await copyFile(process.execPath, executable);
+    await appendFile(executable, 'imvia-test-overlay');
+  } else {
+    await writeFile(executable, '#!/bin/sh\necho v99.0.0\n');
+    await chmod(executable, 0o755);
+  }
+  return executable;
+}
+
 test('Windows and macOS plugin-owned Node paths are stable and platform native', async () => {
   const nodeRuntime = await loadNodeRuntime();
   assert.ok(nodeRuntime, 'managed Node runtime module must exist');
@@ -39,6 +66,8 @@ test('Windows and macOS plugin-owned Node paths are stable and platform native',
     nodeRuntime.runtimeNodePath('/Users/Qing Mu/plugins/imvia-layer/.node-runtime', 'darwin'),
     '/Users/Qing Mu/plugins/imvia-layer/.node-runtime/bin/node',
   );
+  assert.equal(fixtureNodePath('C:\\fixture', 'win32'), 'C:\\fixture\\node.exe');
+  assert.equal(fixtureNodePath('/fixture', 'darwin'), '/fixture/bin/node');
 });
 
 test('failed Node launcher replacement preserves the previous executable and removes staging', async (t) => {
@@ -46,12 +75,8 @@ test('failed Node launcher replacement preserves the previous executable and rem
   assert.ok(nodeRuntime, 'managed Node runtime module must exist');
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node atomic-'));
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const cacheNode = path.join(temporaryRoot, 'Codex Cache', 'node');
-  const changedSource = path.join(temporaryRoot, 'changed-node');
-  await mkdir(path.dirname(cacheNode), { recursive: true });
-  await link(process.execPath, cacheNode).catch(() => copyFile(process.execPath, cacheNode));
-  await writeFile(changedSource, '#!/bin/sh\necho v99.0.0\n');
-  await chmod(changedSource, 0o755);
+  const cacheNode = await linkNodeFixture(path.join(temporaryRoot, 'Codex Cache', 'node'));
+  const changedSource = await writeChangedNodeFixture(path.join(temporaryRoot, 'changed-node'));
   t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
 
   const first = await nodeRuntime.ensurePersistentNodeLauncher({

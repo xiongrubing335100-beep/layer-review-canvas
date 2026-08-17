@@ -11,6 +11,7 @@ import * as nodeRuntime from '../scripts/node-runtime.mjs';
 import * as pythonRuntime from '../scripts/python-runtime.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const fakePythonSupportPath = fileURLToPath(new URL('./fixtures/fake-python', import.meta.url));
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -21,6 +22,31 @@ function run(command, args, options = {}) {
 }
 
 async function writeFakePython(filePath) {
+  const fakeEnvironment = {
+    FAKE_PYTHON_PLATFORM: process.platform,
+    FAKE_PYTHON_ARCH: process.arch,
+    FAKE_PYTHON_CACHE_TAG: 'cpython-312',
+    PYTHONPATH: [fakePythonSupportPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+  };
+  if (process.platform === 'win32') {
+    const runtimeRoot = path.dirname(path.dirname(filePath));
+    assert.equal(path.normalize(filePath), path.normalize(pythonRuntime.runtimePythonPath(runtimeRoot, 'win32')));
+    const candidates = [
+      { command: process.env.PYTHON, args: [] },
+      { command: 'python', args: [] },
+      { command: 'py', args: ['-3'] },
+    ].filter(({ command }) => command);
+    let creation = null;
+    for (const candidate of candidates) {
+      creation = run(candidate.command, [...candidate.args, '-m', 'venv', '--without-pip', runtimeRoot], {
+        env: { ...process.env, PYTHONPATH: '' },
+      });
+      if (creation.status === 0) break;
+    }
+    assert.equal(creation?.status, 0, creation?.stderr || creation?.stdout || 'unable to create fake Windows Python venv');
+    return fakeEnvironment;
+  }
+
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `#!${process.execPath}
 const fs = require('node:fs');
@@ -58,7 +84,7 @@ if (args[0] === '-c' && args[1].includes('pythonCacheTag')) {
   } else {
     process.stdout.write('2.0.69\\n');
   }
-} else if (args[0].endsWith('scripts/warm-rmbg.py')) {
+} else if (path.basename(args[0]) === 'warm-rmbg.py') {
   process.exitCode = 0;
 } else {
   process.stderr.write('unexpected fake Python arguments: ' + JSON.stringify(args));
@@ -67,6 +93,15 @@ if (args[0] === '-c' && args[1].includes('pythonCacheTag')) {
 
 `);
   await chmod(filePath, 0o755);
+  return fakeEnvironment;
+}
+
+function fakePythonPath(runtimeRoot, platform = process.platform) {
+  return pythonRuntime.runtimePythonPath(runtimeRoot, platform);
+}
+
+function fakeNodePath(runtimeRoot, platform = process.platform) {
+  return nodeRuntime.runtimeNodePath(runtimeRoot, platform);
 }
 
 async function linkOrCopyExecutable(sourcePath, destinationPath) {
@@ -202,11 +237,11 @@ class FakeWindowsFileSystem {
 
 test('standalone plugin install records durable Python and Node runtimes when paths contain spaces', async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia runtime path with spaces-'));
-  const cachePython = path.join(temporaryRoot, 'Codex Cache', 'python', 'bin', 'python3');
-  const replacementPython = path.join(temporaryRoot, 'Replacement Python', 'python3');
-  const cacheNode = path.join(temporaryRoot, 'Codex Cache', 'node', 'bin', 'node');
+  const cachePython = fakePythonPath(path.join(temporaryRoot, 'Codex Cache', 'python'));
+  const replacementPython = fakePythonPath(path.join(temporaryRoot, 'Replacement Python'));
+  const cacheNode = fakeNodePath(path.join(temporaryRoot, 'Codex Cache', 'node'));
   const logPath = path.join(temporaryRoot, 'python-calls.log');
-  await writeFakePython(cachePython);
+  const cachePythonEnvironment = await writeFakePython(cachePython);
   await linkOrCopyExecutable(process.execPath, cacheNode);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
@@ -223,6 +258,7 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   const result = run(cacheNode, ['scripts/install-codex-plugin.mjs'], {
     env: {
       ...process.env,
+      ...cachePythonEnvironment,
       HOME: temporaryRoot,
       USERPROFILE: temporaryRoot,
       PYTHON: cachePython,
@@ -233,8 +269,8 @@ test('standalone plugin install records durable Python and Node runtimes when pa
 
   const runtime = JSON.parse(await readFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), 'utf8'));
   const mcpConfig = JSON.parse(await readFile(path.join(pluginRoot, '.mcp.json'), 'utf8'));
-  const expectedPython = path.join(pluginRoot, '.python-runtime', 'bin', 'python');
-  const expectedNode = path.join(pluginRoot, '.node-runtime', 'bin', 'node');
+  const expectedPython = pythonRuntime.runtimePythonPath(path.join(pluginRoot, '.python-runtime'), process.platform);
+  const expectedNode = nodeRuntime.runtimeNodePath(path.join(pluginRoot, '.node-runtime'), process.platform);
   assert.deepEqual(runtime.python, { command: expectedPython, args: [] });
   assert.equal(mcpConfig.mcpServers['imvia-layer'].command, expectedNode);
   await rm(cacheNode);
@@ -242,10 +278,12 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   const nodeResult = run(expectedNode, ['--version']);
   assert.equal(nodeResult.status, 0, nodeResult.stderr || nodeResult.stdout);
 
-  const importResult = run(runtime.python.command, [...runtime.python.args, '-c', 'import rembg']);
+  const importResult = run(runtime.python.command, [...runtime.python.args, '-c', 'import rembg'], {
+    env: { ...process.env, ...cachePythonEnvironment },
+  });
   assert.equal(importResult.status, 0, importResult.stderr || importResult.stdout);
   const verificationResult = run(process.execPath, ['scripts/verify-installed-runtime.mjs'], {
-    env: { ...process.env, HOME: temporaryRoot, USERPROFILE: temporaryRoot },
+    env: { ...process.env, ...cachePythonEnvironment, HOME: temporaryRoot, USERPROFILE: temporaryRoot },
   });
   assert.equal(verificationResult.status, 0, verificationResult.stderr || verificationResult.stdout);
   assert.match(verificationResult.stdout, /managed runtime verified/);
@@ -254,8 +292,8 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   assert.match(marker.lockSha256, /^[a-f0-9]{64}$/);
   assert.equal(marker.pythonVersion, '3.12');
   assert.equal(marker.pythonCacheTag, 'cpython-312');
-  assert.equal(marker.platform, 'darwin');
-  assert.equal(marker.architecture, 'arm64');
+  assert.equal(marker.platform, process.platform);
+  assert.equal(marker.architecture, process.arch);
   assert.equal(marker.installPolicy, 'wheel-only-require-hashes-v1');
   assert.equal('requirementsSha256' in marker, false);
   const calls = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
@@ -267,10 +305,11 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   assert.equal(calls.some(({ args }) => args[0] === '-c' && args[1].includes('importlib.metadata.distribution')), true);
 
   await rm(expectedPython);
-  await writeFakePython(replacementPython);
+  const replacementPythonEnvironment = await writeFakePython(replacementPython);
   const bootstrapResult = run(expectedNode, [path.join(pluginRoot, 'scripts', 'start-mcp.mjs')], {
     env: {
       ...process.env,
+      ...replacementPythonEnvironment,
       HOME: temporaryRoot,
       USERPROFILE: temporaryRoot,
       PYTHON: replacementPython,
@@ -421,18 +460,18 @@ test('requirements hash updates are idempotent and failed rebuilds preserve the 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia atomic runtime-'));
   const repositoryRoot = path.join(temporaryRoot, 'repository');
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   const logPath = path.join(temporaryRoot, 'python-calls.log');
   await writeTestRequirements(repositoryRoot);
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
-  const baseEnv = { ...process.env, PYTHON: fakePython, FAKE_PYTHON_LOG: logPath };
+  const baseEnv = { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython, FAKE_PYTHON_LOG: logPath };
   const first = await pythonRuntime.ensurePersistentPythonRuntime({
     repositoryRoot,
     pluginRoot,
     env: baseEnv,
-    platform: 'darwin',
+    platform: process.platform,
     nodeExecutable: process.execPath,
   });
   const sentinelPath = path.join(pluginRoot, '.python-runtime', 'keep-me.txt');
@@ -443,7 +482,7 @@ test('requirements hash updates are idempotent and failed rebuilds preserve the 
     repositoryRoot,
     pluginRoot,
     env: baseEnv,
-    platform: 'darwin',
+    platform: process.platform,
     nodeExecutable: process.execPath,
   });
   assert.deepEqual(reused, first);
@@ -457,7 +496,7 @@ test('requirements hash updates are idempotent and failed rebuilds preserve the 
       repositoryRoot,
       pluginRoot,
       env: { ...baseEnv, FAKE_PIP_FAIL: '1' },
-      platform: 'darwin',
+      platform: process.platform,
       nodeExecutable: process.execPath,
     }),
     /RMBG 依赖安装失败.*simulated pip failure/,
@@ -468,7 +507,7 @@ test('requirements hash updates are idempotent and failed rebuilds preserve the 
     repositoryRoot,
     pluginRoot,
     env: baseEnv,
-    platform: 'darwin',
+    platform: process.platform,
     nodeExecutable: process.execPath,
   });
   assert.equal(updated.command, first.command);
@@ -480,17 +519,17 @@ test('rembg verification and unsupported configured Python fail with actionable 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia runtime errors-'));
   const repositoryRoot = path.join(temporaryRoot, 'repository');
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   await writeTestRequirements(repositoryRoot);
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
   await assert.rejects(
     pythonRuntime.ensurePersistentPythonRuntime({
       repositoryRoot,
       pluginRoot,
-      env: { ...process.env, PYTHON: fakePython, FAKE_REMBG_FAIL: '1' },
-      platform: 'darwin',
+      env: { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython, FAKE_REMBG_FAIL: '1' },
+      platform: process.platform,
       nodeExecutable: process.execPath,
     }),
     /RMBG 依赖验证失败.*import rembg.*simulated rembg import failure/,
@@ -500,8 +539,8 @@ test('rembg verification and unsupported configured Python fail with actionable 
     pythonRuntime.ensurePersistentPythonRuntime({
       repositoryRoot,
       pluginRoot,
-      env: { ...process.env, PYTHON: fakePython, FAKE_PYTHON_VERSION: '3.9' },
-      platform: 'darwin',
+      env: { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython, FAKE_PYTHON_VERSION: '3.9' },
+      platform: process.platform,
       nodeExecutable: process.execPath,
     }),
     new RegExp(`PYTHON=${fakePython.replaceAll('\\', '\\\\').replaceAll('.', '\\.') } 不可用或版本低于 3\\.10`),
@@ -510,9 +549,9 @@ test('rembg verification and unsupported configured Python fail with actionable 
 
 test('setup installs dependencies and warms the model with the same durable runtime it registers', async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia setup path with spaces-'));
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   const logPath = path.join(temporaryRoot, 'python-calls.log');
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
   await nodeRuntime.ensurePersistentNodeLauncher({
     pluginRoot: path.join(temporaryRoot, 'plugins', 'imvia-layer'),
@@ -526,6 +565,7 @@ test('setup installs dependencies and warms the model with the same durable runt
   const result = run(process.execPath, ['scripts/setup-imvia-layer.mjs'], {
     env: {
       ...process.env,
+      ...fakePythonEnvironment,
       HOME: temporaryRoot,
       USERPROFILE: temporaryRoot,
       PYTHON: fakePython,
@@ -540,7 +580,7 @@ test('setup installs dependencies and warms the model with the same durable runt
   assert.ok(pipCalls.length >= 1);
   assert.equal(pipCalls.every(({ command }) => command !== fakePython), true);
   assert.equal(pipCalls.every(({ command }) => command.includes(`${path.sep}.python-runtime.staging-`)), true);
-  const warmCalls = calls.filter(({ args }) => args[0].endsWith('scripts/warm-rmbg.py'));
+  const warmCalls = calls.filter(({ args }) => path.basename(args[0]) === 'warm-rmbg.py');
   assert.equal(warmCalls.length, 1);
   assert.equal(warmCalls[0].command, runtime.python.command);
 
@@ -561,17 +601,17 @@ test('concurrent runtime ensures publish exactly one managed environment', async
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia concurrent runtime-'));
   const repositoryRoot = path.join(temporaryRoot, 'repository');
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   const logPath = path.join(temporaryRoot, 'python-calls.log');
   await writeTestRequirements(repositoryRoot);
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
 
   const options = {
     repositoryRoot,
     pluginRoot,
-    env: { ...process.env, PYTHON: fakePython, FAKE_PYTHON_LOG: logPath, FAKE_PIP_DELAY_MS: '200' },
-    platform: 'darwin',
+    env: { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython, FAKE_PYTHON_LOG: logPath, FAKE_PIP_DELAY_MS: '200' },
+    platform: process.platform,
     nodeExecutable: process.execPath,
     lockTimeoutMs: 3_000,
     lockPollMs: 10,
@@ -593,15 +633,15 @@ test('startup restores the only Imvia backup after a crash and removes only owne
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia crash recovery-'));
   const repositoryRoot = path.join(temporaryRoot, 'repository');
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   await writeTestRequirements(repositoryRoot);
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
   const options = {
     repositoryRoot,
     pluginRoot,
-    env: { ...process.env, PYTHON: fakePython },
-    platform: 'darwin',
+    env: { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython },
+    platform: process.platform,
     nodeExecutable: process.execPath,
   };
   await pythonRuntime.ensurePersistentPythonRuntime(options);
@@ -637,15 +677,15 @@ test('publish rename failure restores the previous runtime and removes staging',
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia rename rollback-'));
   const repositoryRoot = path.join(temporaryRoot, 'repository');
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
-  const fakePython = path.join(temporaryRoot, 'Python Base', 'python3');
+  const fakePython = fakePythonPath(path.join(temporaryRoot, 'Python Base'));
   await writeTestRequirements(repositoryRoot);
-  await writeFakePython(fakePython);
+  const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
   const options = {
     repositoryRoot,
     pluginRoot,
-    env: { ...process.env, PYTHON: fakePython },
-    platform: 'darwin',
+    env: { ...process.env, ...fakePythonEnvironment, PYTHON: fakePython },
+    platform: process.platform,
     nodeExecutable: process.execPath,
   };
   await pythonRuntime.ensurePersistentPythonRuntime(options);

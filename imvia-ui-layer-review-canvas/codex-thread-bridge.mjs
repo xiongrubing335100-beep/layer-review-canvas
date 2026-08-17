@@ -303,26 +303,29 @@ export function buildWorkbenchPrompt({
   outputDirectory,
   plan,
   requireForegroundConfirmation = true,
+  platform = process.platform,
+  environment = process.env,
 }) {
-  const pythonInvocation = resolvePythonInvocation();
-  const projectRoot = path.resolve(
-    path.dirname(jobPath),
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const pythonInvocation = resolvePythonInvocation(environment, platform);
+  const projectRoot = pathApi.resolve(
+    pathApi.dirname(jobPath),
     '..',
     '..',
     '..',
   );
-  const confirmScriptPath = path.resolve(
+  const confirmScriptPath = pathApi.resolve(
     projectRoot,
     'scripts',
     'confirm-layer-review-dispatch.mjs',
   );
-  const rmbgScriptPath = path.resolve(projectRoot, 'scripts', 'finalize-rmbg.py');
-  const imagegenCanvasScriptPath = path.resolve(projectRoot, 'scripts', 'prepare-targeted-imagegen-canvas.py');
-  const targetedFinalizerPath = path.resolve(projectRoot, 'scripts', 'finalize-targeted-job.py');
-  const quotedConfirmScriptPath = quoteShellArgument(confirmScriptPath, process.platform, true);
-  const quotedRmbgScriptPath = quoteShellArgument(rmbgScriptPath, process.platform, true);
-  const quotedImagegenCanvasScriptPath = quoteShellArgument(imagegenCanvasScriptPath, process.platform, true);
-  const quotedTargetedFinalizerPath = quoteShellArgument(targetedFinalizerPath, process.platform, true);
+  const rmbgScriptPath = pathApi.resolve(projectRoot, 'scripts', 'finalize-rmbg.py');
+  const imagegenCanvasScriptPath = pathApi.resolve(projectRoot, 'scripts', 'prepare-targeted-imagegen-canvas.py');
+  const targetedFinalizerPath = pathApi.resolve(projectRoot, 'scripts', 'finalize-targeted-job.py');
+  const quotedConfirmScriptPath = quoteShellArgument(confirmScriptPath, platform, true);
+  const quotedRmbgScriptPath = quoteShellArgument(rmbgScriptPath, platform, true);
+  const quotedImagegenCanvasScriptPath = quoteShellArgument(imagegenCanvasScriptPath, platform, true);
+  const quotedTargetedFinalizerPath = quoteShellArgument(targetedFinalizerPath, platform, true);
   const removeBackgroundLayers = (plan?.layers || [])
     .filter((layer) => layer.remove_background)
     .map((layer) => layer.name || layer.id)
@@ -348,8 +351,8 @@ export function buildWorkbenchPrompt({
     .filter((layer) => layer.execution_route_hint === 'result_refinement');
   const resultRefinementLines = resultRefinementLayers.flatMap((layer) => {
     const layerId = layer.id || '<layerId>';
-    const quotedJobId = quoteShellArgument(jobId, process.platform);
-    const quotedLayerId = quoteShellArgument(layerId, process.platform);
+    const quotedJobId = quoteShellArgument(jobId, platform);
+    const quotedLayerId = quoteShellArgument(layerId, platform);
     const canvas = plan?.source?.canvas || layer.expected_output || {};
     const dimensions = Number.isInteger(canvas.width) && Number.isInteger(canvas.height)
       ? `${canvas.width}×${canvas.height}`
@@ -377,10 +380,10 @@ export function buildWorkbenchPrompt({
     const normalizedRequirement = String(
       layer.normalized_user_requirement ?? layer.requirement ?? '',
     ).trim().replace(/\s+/g, ' ');
-    const candidateBinding = quoteShellArgument('roi-id=/absolute/path.png', process.platform, true);
+    const candidateBinding = quoteShellArgument('roi-id=/absolute/path.png', platform, true);
     const manifestPath = quoteShellArgument(
       '/absolute/path/to/result_refinement_roi_manifest.json',
-      process.platform,
+      platform,
       true,
     );
     const finalizerCommand = roiCount === 0
@@ -429,7 +432,7 @@ export function buildWorkbenchPrompt({
       ? `收到后先调用 confirm_layer_review_foreground_dispatch，参数 jobId=${jobId}；确认成功后再执行拆分。`
       : '',
     requireForegroundConfirmation
-      ? `若确认工具尚未出现在工具目录，改为运行：node ${quotedConfirmScriptPath} ${quoteShellArgument(jobId, process.platform, true)}。`
+      ? `若确认工具尚未出现在工具目录，改为运行：node ${quotedConfirmScriptPath} ${quoteShellArgument(jobId, platform, true)}。`
       : '',
     '只处理计划 layers[]；在同一 turn 内规范化简短需求并执行。',
     '遵守 execution_mode、execution_route_hint 与 execution_policy；不要全页诊断或增加图层。',

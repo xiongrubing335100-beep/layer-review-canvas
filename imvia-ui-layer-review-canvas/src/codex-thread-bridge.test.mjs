@@ -336,67 +336,61 @@ test('refinement still attaches only the source when route-aware context is disa
 });
 
 test('result refinement prompt compiles the trusted local ROI policy into an executable message', () => {
-  const previousCommand = process.env.IMVIA_LAYER_PYTHON_COMMAND;
-  const previousArgs = process.env.IMVIA_LAYER_PYTHON_ARGS;
-  process.env.IMVIA_LAYER_PYTHON_COMMAND = 'py';
-  process.env.IMVIA_LAYER_PYTHON_ARGS = '["-3"]';
   const annotation = (id, operationRole) => ({
     id,
     shape: 'bezier_path',
     closed: true,
     operation_role: operationRole,
   });
-  try {
-    const prompt = buildWorkbenchPrompt({
-      ...base,
-      jobPath: '/workspace/Imvia Layer/output/jobs/job-1/layer-review-plan.json',
-      plan: {
-        task: 'refine_split_result',
-        source: { canvas: { width: 1024, height: 1243 } },
-        layers: [{
-          id: 'button',
-          name: '按钮',
-          requirement: '  补全两个金币，保持原位置、大小、材质和光影。  ',
-          normalized_user_requirement: '补全两个金币，保持原位置、大小、材质和光影。',
-          execution_route_hint: 'result_refinement',
-          transparency_strategy: 'preserve_existing_alpha',
-          refinement_operation: {
-            mode: 'path_scoped',
-            subject_path_ids: [],
-            alpha_include_path_ids: [],
-          },
-          mask_annotations: [
-            annotation('coin-left', 'repair'),
-            annotation('coin-right', 'repair'),
-            annotation('old-copy', 'erase'),
-          ],
-          maximum_imagegen_calls: 4,
-        }],
-      },
-    });
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    jobPath: '/workspace/Imvia Layer/output/jobs/job-1/layer-review-plan.json',
+    platform: 'darwin',
+    environment: {
+      IMVIA_LAYER_PYTHON_COMMAND: 'py',
+      IMVIA_LAYER_PYTHON_ARGS: '["-3"]',
+    },
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 1024, height: 1243 } },
+      layers: [{
+        id: 'button',
+        name: '按钮',
+        requirement: '  补全两个金币，保持原位置、大小、材质和光影。  ',
+        normalized_user_requirement: '补全两个金币，保持原位置、大小、材质和光影。',
+        execution_route_hint: 'result_refinement',
+        transparency_strategy: 'preserve_existing_alpha',
+        refinement_operation: {
+          mode: 'path_scoped',
+          subject_path_ids: [],
+          alpha_include_path_ids: [],
+        },
+        mask_annotations: [
+          annotation('coin-left', 'repair'),
+          annotation('coin-right', 'repair'),
+          annotation('old-copy', 'erase'),
+        ],
+        maximum_imagegen_calls: 4,
+      }],
+    },
+  });
 
-    assert.match(prompt, /PNG 结果局部精修层：按钮/);
-    assert.match(prompt, /当前成功 PNG 是唯一权威 base；最终尺寸锁定为 1024×1243，禁止缩放或改变画布/);
-    assert.match(prompt, /系统理解：2 个修复路径、1 个删除路径、0 个保护路径；路径外保持；非整图编辑/);
-    assert.match(prompt, /用户目标：补全两个金币，保持原位置、大小、材质和光影。/);
-    assert.match(prompt, /精确修复 ROI 数：2；ImageGen 调用预算：4/);
-    assert.match(prompt, /每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选/);
-    assert.match(prompt, /每个 ROI 一次初始候选，失败时最多一次重试/);
-    assert.match(prompt, /候选可为 RGB 或 RGBA/);
-    assert.match(prompt, /候选 Alpha 不具有最终决定权/);
-    assert.match(prompt, /禁止.*RMBG/);
-    assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
-    assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input "roi-id=\/absolute\/path\.png"/);
-    assert.match(prompt, /每个 roi_job 重复 --generated-input/);
-    assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
-    assert.doesNotMatch(prompt, /--generated-input roi-id=|--imagegen-mapping \/absolute/);
-    assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
-  } finally {
-    if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
-    else process.env.IMVIA_LAYER_PYTHON_COMMAND = previousCommand;
-    if (previousArgs === undefined) delete process.env.IMVIA_LAYER_PYTHON_ARGS;
-    else process.env.IMVIA_LAYER_PYTHON_ARGS = previousArgs;
-  }
+  assert.match(prompt, /PNG 结果局部精修层：按钮/);
+  assert.match(prompt, /当前成功 PNG 是唯一权威 base；最终尺寸锁定为 1024×1243，禁止缩放或改变画布/);
+  assert.match(prompt, /系统理解：2 个修复路径、1 个删除路径、0 个保护路径；路径外保持；非整图编辑/);
+  assert.match(prompt, /用户目标：补全两个金币，保持原位置、大小、材质和光影。/);
+  assert.match(prompt, /精确修复 ROI 数：2；ImageGen 调用预算：4/);
+  assert.match(prompt, /每个 roi_job 只使用自己的 reference_path，原生 1:1 生成候选/);
+  assert.match(prompt, /每个 ROI 一次初始候选，失败时最多一次重试/);
+  assert.match(prompt, /候选可为 RGB 或 RGBA/);
+  assert.match(prompt, /候选 Alpha 不具有最终决定权/);
+  assert.match(prompt, /禁止.*RMBG/);
+  assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/prepare-targeted-imagegen-canvas\.py" --job-id job-1 --layer-id button/);
+  assert.match(prompt, /py -3 "\/workspace\/Imvia Layer\/scripts\/finalize-targeted-job\.py" --job-id job-1 --layer-id button --generated-input "roi-id=\/absolute\/path\.png"/);
+  assert.match(prompt, /每个 roi_job 重复 --generated-input/);
+  assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
+  assert.doesNotMatch(prompt, /--generated-input roi-id=|--imagegen-mapping \/absolute/);
+  assert.match(prompt, /最终处理器.*最后一个工具调用|finalizer.*last tool call/i);
 });
 
 test('deterministic-only result refinement forbids ImageGen and finalizes with zero candidate bindings', () => {
@@ -436,39 +430,62 @@ test('deterministic-only result refinement forbids ImageGen and finalizes with z
 });
 
 test('Unix refinement commands quote spaces, candidate bindings, manifests, and shell expansion characters', () => {
-  const previousCommand = process.env.IMVIA_LAYER_PYTHON_COMMAND;
-  const previousArgs = process.env.IMVIA_LAYER_PYTHON_ARGS;
-  process.env.IMVIA_LAYER_PYTHON_COMMAND = '/opt/Imvia Python/bin/python3';
-  process.env.IMVIA_LAYER_PYTHON_ARGS = '[]';
-  try {
-    const prompt = buildWorkbenchPrompt({
-      ...base,
-      jobPath: '/workspace/Imvia $(unsafe)/output/jobs/job-1/layer-review-plan.json',
-      plan: {
-        task: 'refine_split_result',
-        source: { canvas: { width: 64, height: 64 } },
-        layers: [{
-          id: 'button',
-          name: '按钮',
-          normalized_user_requirement: '修复按钮',
-          execution_route_hint: 'result_refinement',
-          refinement_operation: { mode: 'path_scoped' },
-          mask_annotations: [{ id: 'repair', kind: 'boundary', operation_role: 'repair' }],
-          maximum_imagegen_calls: 2,
-        }],
-      },
-    });
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    jobPath: '/workspace/Imvia $(unsafe)/output/jobs/job-1/layer-review-plan.json',
+    platform: 'darwin',
+    environment: {
+      IMVIA_LAYER_PYTHON_COMMAND: '/opt/Imvia Python/bin/python3',
+      IMVIA_LAYER_PYTHON_ARGS: '[]',
+    },
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 64, height: 64 } },
+      layers: [{
+        id: 'button',
+        name: '按钮',
+        normalized_user_requirement: '修复按钮',
+        execution_route_hint: 'result_refinement',
+        refinement_operation: { mode: 'path_scoped' },
+        mask_annotations: [{ id: 'repair', kind: 'boundary', operation_role: 'repair' }],
+        maximum_imagegen_calls: 2,
+      }],
+    },
+  });
 
-    assert.match(prompt, /"\/opt\/Imvia Python\/bin\/python3" "\/workspace\/Imvia \\\$\(unsafe\)\/scripts\/prepare-targeted-imagegen-canvas\.py"/);
-    assert.match(prompt, /--generated-input "roi-id=\/absolute\/path\.png"/);
-    assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
-    assert.doesNotMatch(prompt, /"\/workspace\/Imvia \$\(unsafe\)\/scripts/);
-  } finally {
-    if (previousCommand === undefined) delete process.env.IMVIA_LAYER_PYTHON_COMMAND;
-    else process.env.IMVIA_LAYER_PYTHON_COMMAND = previousCommand;
-    if (previousArgs === undefined) delete process.env.IMVIA_LAYER_PYTHON_ARGS;
-    else process.env.IMVIA_LAYER_PYTHON_ARGS = previousArgs;
-  }
+  assert.match(prompt, /"\/opt\/Imvia Python\/bin\/python3" "\/workspace\/Imvia \\\$\(unsafe\)\/scripts\/prepare-targeted-imagegen-canvas\.py"/);
+  assert.match(prompt, /--generated-input "roi-id=\/absolute\/path\.png"/);
+  assert.match(prompt, /--imagegen-mapping "\/absolute\/path\/to\/result_refinement_roi_manifest\.json"/);
+  assert.doesNotMatch(prompt, /"\/workspace\/Imvia \$\(unsafe\)\/scripts/);
+});
+
+test('Windows refinement commands use win32 paths and shell quoting independently of the host', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    jobPath: 'C:\\workspace\\Imvia Layer\\output\\jobs\\job-1\\layer-review-plan.json',
+    platform: 'win32',
+    environment: {
+      IMVIA_LAYER_PYTHON_COMMAND: 'C:\\Program Files\\Python\\python.exe',
+      IMVIA_LAYER_PYTHON_ARGS: '[]',
+    },
+    plan: {
+      task: 'refine_split_result',
+      source: { canvas: { width: 64, height: 64 } },
+      layers: [{
+        id: 'button',
+        name: '按钮',
+        normalized_user_requirement: '修复按钮',
+        execution_route_hint: 'result_refinement',
+        refinement_operation: { mode: 'path_scoped' },
+        mask_annotations: [{ id: 'repair', kind: 'boundary', operation_role: 'repair' }],
+        maximum_imagegen_calls: 2,
+      }],
+    },
+  });
+
+  assert.match(prompt, /"C:\\Program Files\\Python\\python\.exe" "C:\\workspace\\Imvia Layer\\scripts\\prepare-targeted-imagegen-canvas\.py"/);
+  assert.match(prompt, /"C:\\workspace\\Imvia Layer\\scripts\\finalize-targeted-job\.py"/);
+  assert.doesNotMatch(prompt, /\/workspace\/Imvia Layer\/scripts/);
 });
 
 test('the system spec separates persisted plan, trusted preflight-derived, and final report fields', () => {
