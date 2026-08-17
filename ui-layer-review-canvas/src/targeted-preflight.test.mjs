@@ -335,6 +335,34 @@ test('preflight preserves the Codex RGBA contract for title layers', async () =>
   }
 });
 
+test('preflight requires an explicit non-empty repair scope for Codex RGBA repair', async () => {
+  const context = await fixture();
+  try {
+    const layer = {
+      ...context.plan.layers[0],
+      category: 'kvTitle',
+      execution_route_hint: 'codex_rgba_repair',
+      repair_engine: 'imagegen',
+      maximum_imagegen_calls: 3,
+      remove_background: true,
+      transparency_strategy: 'codex_rgba',
+      rmbg_required: false,
+      structure_validation_required: true,
+      repair_regions: [],
+      repair_region_source: 'submitted_annotation',
+    };
+    await assert.rejects(
+      buildTargetedExecutionSpec({
+        ...context,
+        plan: { ...context.plan, layers: [layer] },
+      }),
+      /codex_rgba_repair.*补全范围/,
+    );
+  } finally {
+    await rm(context.root, { recursive: true, force: true });
+  }
+});
+
 test('preflight rejects the unsupported targeted repair plus Codex RGBA combination', async () => {
   const context = await fixture();
   try {

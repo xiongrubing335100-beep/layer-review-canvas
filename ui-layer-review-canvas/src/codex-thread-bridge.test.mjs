@@ -160,6 +160,36 @@ test('title background removal is routed to visible Codex RGBA without RMBG', ()
   assert.doesNotMatch(prompt, /--model bria-rmbg/);
 });
 
+test('transparent title occlusion repair completes RGB before generating the alpha cutout', () => {
+  const prompt = buildWorkbenchPrompt({
+    ...base,
+    plan: {
+      layers: [{
+        id: 'title',
+        name: 'SHIQI 标题',
+        category: 'kvTitle',
+        remove_background: true,
+        transparency_strategy: 'codex_rgba',
+        execution_route_hint: 'codex_rgba_repair',
+        execution_mode: 'fast',
+      }],
+    },
+  });
+
+  assert.match(prompt, /透明层遮挡补全：SHIQI 标题/);
+  assert.match(prompt, /先补全隐藏 RGB/);
+  assert.match(prompt, /补全结果通过结构验收后/);
+  assert.match(prompt, /一张.*完整主体 alpha matte/);
+  assert.match(prompt, /快速模式最多 3 次 ImageGen 调用/);
+  assert.match(prompt, /高质量最多 4 次/);
+  assert.doesNotMatch(prompt, /repair matte/);
+  assert.doesNotMatch(prompt, /--repair-matte-input/);
+  assert.match(prompt, /--alpha-matte-input/);
+  assert.match(prompt, /完整主体 alpha matte 与已提交补全区域的交集/);
+  assert.doesNotMatch(prompt, /文字\/标志透明层：SHIQI 标题/);
+  assert.doesNotMatch(prompt, /--model bria-rmbg/);
+});
+
 test('fast ImageGen routes accept a clean first candidate and retry only after failure', () => {
   const prompt = buildWorkbenchPrompt({
     ...base,
@@ -349,6 +379,7 @@ test('result refinement prompt compiles the trusted local ROI policy into an exe
   try {
     const prompt = buildWorkbenchPrompt({
       ...base,
+      platform: 'darwin',
       jobPath: '/workspace/Imvia Layer/output/jobs/job-1/layer-review-plan.json',
       plan: {
         task: 'refine_split_result',
@@ -443,6 +474,7 @@ test('Unix refinement commands quote spaces, candidate bindings, manifests, and 
   try {
     const prompt = buildWorkbenchPrompt({
       ...base,
+      platform: 'darwin',
       jobPath: '/workspace/Imvia $(unsafe)/output/jobs/job-1/layer-review-plan.json',
       plan: {
         task: 'refine_split_result',

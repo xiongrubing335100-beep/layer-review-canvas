@@ -505,8 +505,8 @@ class FinalizeTargetedJobTests(unittest.TestCase):
     def test_result_refinement_rejects_duplicate_cli_bindings(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             MODULE.parse_result_refinement_bindings([
-                "repair-tile-001=/tmp/one.png",
-                "repair-tile-001=/tmp/two.png",
+                f"repair-tile-001={self.root / 'one.png'}",
+                f"repair-tile-001={self.root / 'two.png'}",
             ])
 
     def test_versioned_outputs_reject_cross_platform_unsafe_layer_ids(self):
@@ -522,7 +522,10 @@ class FinalizeTargetedJobTests(unittest.TestCase):
         final_directory.rmdir()
         escaped_directory = self.root / "escaped-final"
         escaped_directory.mkdir()
-        final_directory.symlink_to(escaped_directory, target_is_directory=True)
+        try:
+            final_directory.symlink_to(escaped_directory, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"directory symlinks are unavailable: {error}")
 
         with self.assertRaisesRegex(ValueError, "escapes"):
             MODULE.finalize_job(
@@ -1057,6 +1060,321 @@ class FinalizeTargetedJobTests(unittest.TestCase):
                 jobs_root=self.root,
                 rmbg_script=self.root / "missing-rmbg.py",
             )
+
+    def test_codex_rgba_repair_completes_rgb_before_alpha_cutout(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        repair_rgb = Image.new("RGBA", (1024, 1024), (10, 20, 30, 255))
+        repair_rgb.paste(Image.new("RGBA", (256, 256), (200, 100, 50, 255)), (0, 0))
+        repair_rgb.save(self.generated)
+
+        alpha_matte = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        alpha_matte.paste(Image.new("RGB", (128, 128), (240, 240, 240)), (0, 0))
+        alpha_matte.paste(Image.new("RGB", (32, 32), (0, 0, 0)), (48, 48))
+        alpha_matte.paste(Image.new("RGB", (128, 128), (255, 255, 255)), (300, 0))
+        alpha_matte.putpixel((500, 500), (16, 16, 16))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            alpha_matte_input=alpha_matte_path,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["transparency"]["generated_input_kind"], "codex_rgba_repair_canvas")
+        self.assertTrue(report["validation_results"]["source_pixel_lock"])
+        self.assertTrue(report["validation_results"]["repair_bundle_consistency"])
+        with Image.open(self.job / "final" / "layer-one.png") as image:
+            output = image.convert("RGBA")
+            self.assertEqual(output.size, (1024, 1024))
+            self.assertEqual(output.getpixel((0, 0)), (200, 100, 50, 255))
+            self.assertEqual(output.getpixel((300, 0)), (10, 20, 30, 255))
+            self.assertEqual(output.getpixel((0, 300)), (10, 20, 30, 0))
+            self.assertEqual(output.getpixel((500, 500)), (10, 20, 30, 0))
+
+    def test_codex_rgba_repair_bundle_rejects_repair_matte_outside_submitted_region(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+        Image.new("RGBA", (1024, 1024), (200, 100, 50, 255)).save(self.generated)
+        repair_matte = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        repair_matte.paste(Image.new("RGB", (768, 768), (255, 255, 255)), (256, 0))
+        repair_matte_path = self.job / "generated" / "repair-matte.png"
+        repair_matte.save(repair_matte_path)
+        alpha_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        alpha_matte.paste(Image.new("RGB", (256, 256), (0, 0, 0)), (768, 768))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "no approved hidden-region repair"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+                repair_matte_input=repair_matte_path,
+                alpha_matte_input=alpha_matte_path,
+            )
+        self.assertFalse((self.job / "final" / "layer-one.png").exists())
+
+    def test_codex_rgba_repair_bundle_rejects_a_non_material_repair(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        # The matte overlaps the submitted region, but the RGB candidate is effectively
+        # unchanged there. This must not be accepted as a successful repair.
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.generated)
+        repair_matte = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        repair_matte.paste(Image.new("RGB", (128, 128), (255, 255, 255)), (0, 0))
+        repair_matte.paste(Image.new("RGB", (32, 32), (0, 0, 0)), (48, 48))
+        repair_matte_path = self.job / "generated" / "repair-matte.png"
+        repair_matte.save(repair_matte_path)
+        alpha_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        alpha_matte.paste(Image.new("RGB", (256, 256), (0, 0, 0)), (768, 768))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "does not materially change"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+                repair_matte_input=repair_matte_path,
+                alpha_matte_input=alpha_matte_path,
+            )
+        self.assertFalse((self.job / "final" / "layer-one.png").exists())
+
+    def test_codex_rgba_repair_bundle_rejects_a_solid_repair_rectangle(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        repair_rgb = Image.new("RGBA", (1024, 1024), (10, 20, 30, 255))
+        repair_rgb.paste(Image.new("RGBA", (256, 256), (200, 100, 50, 255)), (0, 0))
+        repair_rgb.save(self.generated)
+        repair_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        repair_matte.putpixel((1023, 1023), (0, 0, 0))
+        repair_matte_path = self.job / "generated" / "repair-matte.png"
+        repair_matte.save(repair_matte_path)
+        alpha_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        alpha_matte.putpixel((1023, 1023), (0, 0, 0))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "solid rectangle"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+                repair_matte_input=repair_matte_path,
+                alpha_matte_input=alpha_matte_path,
+            )
+        self.assertFalse((self.job / "final" / "layer-one.png").exists())
+
+    def test_codex_rgba_repair_bundle_rejects_repair_pixels_missing_from_alpha(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        repair_rgb = Image.new("RGBA", (1024, 1024), (10, 20, 30, 255))
+        repair_rgb.paste(Image.new("RGBA", (128, 128), (200, 100, 50, 255)), (0, 0))
+        repair_rgb.save(self.generated)
+        repair_matte = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        repair_matte.paste(Image.new("RGB", (128, 128), (255, 255, 255)), (0, 0))
+        repair_matte.paste(Image.new("RGB", (32, 32), (0, 0, 0)), (48, 48))
+        repair_matte_path = self.job / "generated" / "repair-matte.png"
+        repair_matte.save(repair_matte_path)
+        alpha_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        alpha_matte.paste(Image.new("RGB", (128, 128), (0, 0, 0)), (0, 0))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "overlap is too low"):
+            MODULE.finalize_job(
+                self.job_id,
+                "layer-one",
+                self.generated,
+                jobs_root=self.root,
+                rmbg_script=self.root / "missing-rmbg.py",
+                imagegen_mapping=mapping_path,
+                repair_matte_input=repair_matte_path,
+                alpha_matte_input=alpha_matte_path,
+            )
+        self.assertFalse((self.job / "final" / "layer-one.png").exists())
+
+    def test_codex_rgba_repair_bundle_extends_alpha_for_minor_matte_disagreement(self):
+        Image.new("RGBA", (1024, 1024), (10, 20, 30, 255)).save(self.source)
+        self.plan["layers"][0].update({
+            "category": "kvTitle",
+            "execution_route_hint": "codex_rgba_repair",
+            "remove_background": True,
+            "transparency_strategy": "codex_rgba",
+            "rmbg_required": False,
+            "expected_output": {"width": 1024, "height": 1024, "original_source_x": 0, "original_source_y": 0},
+            "repair_regions": [{"shape": "rect", "x": 0, "y": 0, "width": 256, "height": 256}],
+            "repair_region_source": "submitted_annotation",
+        })
+        (self.job / "layer-review-plan.json").write_text(json.dumps(self.plan), encoding="utf-8")
+
+        repair_rgb = Image.new("RGBA", (1024, 1024), (10, 20, 30, 255))
+        repair_rgb.paste(Image.new("RGBA", (128, 128), (200, 100, 50, 255)), (0, 0))
+        repair_rgb.save(self.generated)
+        repair_matte = Image.new("RGB", (1024, 1024), (0, 0, 0))
+        repair_matte.paste(Image.new("RGB", (128, 128), (255, 255, 255)), (0, 0))
+        repair_matte.paste(Image.new("RGB", (32, 32), (0, 0, 0)), (48, 48))
+        repair_matte_path = self.job / "generated" / "repair-matte.png"
+        repair_matte.save(repair_matte_path)
+        alpha_matte = Image.new("RGB", (1024, 1024), (255, 255, 255))
+        alpha_matte.paste(Image.new("RGB", (16, 128), (0, 0, 0)), (112, 0))
+        alpha_matte.paste(Image.new("RGB", (256, 256), (0, 0, 0)), (768, 768))
+        alpha_matte_path = self.job / "generated" / "alpha-matte.png"
+        alpha_matte.save(alpha_matte_path)
+        mapping_path = self.job / "generated" / "repair-mapping.json"
+        mapping_path.write_text(json.dumps({
+            "version": 1,
+            "job_id": self.job_id,
+            "layer_id": "layer-one",
+            "generated_input_kind": "codex_rgba_repair_canvas",
+            "execution_route": "codex_rgba_repair",
+            "canvas": {"width": 1024, "height": 1024},
+            "content_region": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+            "expected_output": {"width": 1024, "height": 1024},
+        }), encoding="utf-8")
+
+        report = MODULE.finalize_job(
+            self.job_id,
+            "layer-one",
+            self.generated,
+            jobs_root=self.root,
+            rmbg_script=self.root / "missing-rmbg.py",
+            imagegen_mapping=mapping_path,
+            repair_matte_input=repair_matte_path,
+            alpha_matte_input=alpha_matte_path,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        with Image.open(self.job / "final" / "layer-one.png") as image:
+            output = image.convert("RGBA")
+            self.assertEqual(output.getpixel((120, 0)), (200, 100, 50, 255))
+            self.assertEqual(output.getpixel((900, 900)), (10, 20, 30, 0))
 
 
 if __name__ == "__main__":

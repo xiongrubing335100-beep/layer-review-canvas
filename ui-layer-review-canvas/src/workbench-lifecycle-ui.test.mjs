@@ -54,9 +54,17 @@ test('a workbench restart reuses its persisted conversation session id', async (
   assert.match(source, /await writeFile\(sessionPath/);
 });
 
-test('the workbench presents finalizing jobs as validation and polls at one second', async () => {
+test('the workbench presents transparent repair stages and polls at one second', async () => {
   const source = await readFile(path.join(rootDirectory, 'src', 'main.jsx'), 'utf8');
+  assert.match(source, /repair_rgb: \{ label: '正在补全隐藏结构'/);
+  assert.match(source, /alpha_matte: \{ label: '正在生成透明蒙版'/);
   assert.match(source, /finalizing: \{ label: '正在验收'/);
-  assert.match(source, /结果已生成，正在验收/);
+  assert.match(source, /正在校验补全结果与透明蒙版/);
   assert.match(source, /const interval = window\.setInterval\(refresh, 1000\);/);
+});
+
+test('transparent repair stages remain active lifecycle states', async () => {
+  const source = await readFile(path.join(rootDirectory, 'src', 'workbench-lifecycle.js'), 'utf8');
+  assert.match(source, /'repair_rgb'/);
+  assert.match(source, /'alpha_matte'/);
 });

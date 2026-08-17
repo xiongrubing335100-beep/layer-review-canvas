@@ -9,6 +9,7 @@ import {
   Brush,
   Check,
   CheckCircle2,
+  CircleX,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -45,7 +46,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { zipSync } from 'fflate';
-import { elapsedEnd, jobMatchesSource, shouldPollJob } from './job-state.js';
+import { elapsedEnd, jobMatchesSource, jobsForPolling } from './job-state.js';
 import {
   createImageDocument,
   createImageId,
@@ -179,6 +180,9 @@ const jobStatusMeta = {
   submitted_to_conversation: { label: '旧版宿主已接收，等待当前任务确认', tone: 'pending' },
   sent_to_codex: { label: 'Codex 已接收', tone: 'pending' },
   processing: { label: 'Codex 处理中', tone: 'pending' },
+  repair_rgb: { label: '正在补全隐藏结构', tone: 'pending' },
+  repair_matte: { label: '正在生成补全蒙版', tone: 'pending' },
+  alpha_matte: { label: '正在生成透明蒙版', tone: 'pending' },
   partial: { label: '结果生成中', tone: 'pending' },
   finalizing: { label: '正在验收', tone: 'pending' },
   needs_confirmation: { label: '需要确认', tone: 'confirmation' },
@@ -228,8 +232,17 @@ function splitProgress(status) {
   if (status === 'partial') {
     return { stage: '3 / 3', label: '正在回传拆分 PNG', detail: '已有部分结果生成，页面会继续自动更新。' };
   }
+  if (status === 'repair_rgb') {
+    return { stage: '2 / 4', label: '正在补全隐藏结构', detail: '先完成并验收隐藏 RGB 结构，区域外原图像素保持锁定。' };
+  }
+  if (status === 'repair_matte') {
+    return { stage: '3 / 5', label: '正在生成补全蒙版', detail: '使用已验收的补全图定位本次新增像素，防止蒙版与修复内容错位。' };
+  }
+  if (status === 'alpha_matte') {
+    return { stage: '3 / 4', label: '正在生成透明蒙版', detail: '只使用已验收的完整补全图生成主体透明范围。' };
+  }
   if (status === 'finalizing') {
-    return { stage: '3 / 3', label: '结果已生成，正在验收', detail: 'PNG 已回流，正在完成尺寸、透明度和终态报告验收。' };
+    return { stage: '4 / 4', label: '正在校验修复结果', detail: '正在校验补全结果与透明蒙版，并完成尺寸、透明度和原像素锁定验收。' };
   }
   return { stage: '2 / 3', label: 'Codex 正在拆分', detail: '已在当前任务中执行，完成后结果会自动回流。' };
 }
@@ -621,6 +634,7 @@ function App() {
   const reviewPenOverlayRef = useRef(null);
   const resultPenOverlayRef = useRef(null);
   const bridgeRefreshSequenceRef = useRef(0);
+  const initialJobReconciliationRef = useRef(true);
   const reviewPenPathsRef = useRef(new Map());
   const topbarMenuRef = useRef(null);
   const gestureRef = useRef(null);
@@ -1345,7 +1359,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const pendingJobs = jobs.filter(shouldPollJob);
+    const reconcileAll = initialJobReconciliationRef.current;
+    initialJobReconciliationRef.current = false;
+    const pendingJobs = jobsForPolling(jobs, { reconcileAll });
     if (!pendingJobs.length) return undefined;
 
     let cancelled = false;
@@ -2351,7 +2367,11 @@ function App() {
     setMaskTool(tool);
     setShowOriginalOnly(false);
     setBoundaryOpen(true);
-    const label = tool === 'foreground' ? '保留钢笔' : tool === 'background' ? '排除钢笔' : '边界钢笔';
+    const label = tool === 'foreground'
+      ? '保留钢笔'
+      : tool === 'background'
+        ? '排除钢笔'
+        : tool === 'repair' ? '补全钢笔' : '边界钢笔';
     setToast(`${label}已开启，请在右侧大预览中操作`);
   };
 
@@ -2403,12 +2423,23 @@ function App() {
           removeBackground: Boolean(node.removeBackground),
         });
         const executionMode = node.executionMode || 'fast';
-        const executionRoute = classifyExecutionRoute({
+        const sourceRegionPixels = pixelBounds(node.bounds, sourceSize);
+        const layerMarks = marks.filter((mark) => mark.layer_id === node.id);
+        const layerAnnotations = layerMarks.map((mark, annotationIndex) => (
+          annotationForPlan(mark, node.bounds, sourceSize, annotationIndex)
+        ));
+        const transparency = transparencyStrategy({
+          category: node.category,
+          removeBackground: Boolean(node.removeBackground),
+        });
+        let executionRoute = classifyExecutionRoute({
           category: node.category,
           requirement: normalizedRequirement,
           removeBackground: Boolean(node.removeBackground),
         });
-        const sourceRegionPixels = pixelBounds(node.bounds, sourceSize);
+        if (transparency === 'codex_rgba' && layerAnnotations.some((annotation) => annotation.kind === 'repair')) {
+          executionRoute = 'codex_rgba_repair';
+        }
         const routeMetadata = buildRouteMetadata({
           category: node.category,
           requirement: normalizedRequirement,
@@ -2417,9 +2448,28 @@ function App() {
           removeBackground: Boolean(node.removeBackground),
           sourceRegionPixels,
         });
-        const transparency = transparencyStrategy({
-          category: node.category,
-          removeBackground: Boolean(node.removeBackground),
+        const repairRegions = layerAnnotations.flatMap((annotation) => {
+          if (annotation.kind !== 'repair') return [];
+          if (annotation.shape === 'rect') {
+            const rect = annotation.source_rect_pixels;
+            return [{
+              shape: 'rect',
+              x: rect.x - sourceRegionPixels.x,
+              y: rect.y - sourceRegionPixels.y,
+              width: rect.width,
+              height: rect.height,
+            }];
+          }
+          if (annotation.shape === 'bezier_path') {
+            return [{
+              shape: 'polygon',
+              points: annotation.source_polygon_pixels.map((point) => ({
+                x: point.x - sourceRegionPixels.x,
+                y: point.y - sourceRegionPixels.y,
+              })),
+            }];
+          }
+          return [];
         });
         return {
           layer_index: index + 1,
@@ -2432,17 +2482,18 @@ function App() {
           execution_route_hint: executionRoute,
           source_region_percent: node.bounds,
           source_region_pixels: sourceRegionPixels,
-          mask_annotations: marks
-            .filter((mark) => mark.layer_id === node.id)
-            .map((mark, annotationIndex) => annotationForPlan(mark, node.bounds, sourceSize, annotationIndex)),
+          mask_annotations: layerAnnotations,
           mask_policy: {
             selected_region: 'candidate_scope_only',
             keep_region: 'force_include',
             exclude_region: 'force_remove',
             overlapping_keep_exclude: 'later_annotation_wins',
             manual_boundary: 'highest_priority_edge_override',
+            repair_region: 'model_authored_hidden_content_intersected_with_submitted_repair_regions',
             remove_background: 'post_mask_alpha_output_only',
           },
+          repair_regions: repairRegions.length ? repairRegions : null,
+          repair_region_source: repairRegions.length ? 'submitted_annotation' : null,
           execution_mode: executionMode,
           execution_policy: buildExecutionPolicy({
             executionMode,
@@ -2450,7 +2501,13 @@ function App() {
           }),
           ...routeMetadata,
           remove_background: Boolean(node.removeBackground),
-          remove_background_processor: transparency === 'codex_rgba' ? {
+          remove_background_processor: executionRoute === 'codex_rgba_repair' ? {
+            engine: 'codex_rgba_repair',
+            model: 'imagegen_repair_rgb_then_alpha_matte',
+            stage: 'codex_repair_then_cutout',
+            input: 'prepared_source_locked_canvas',
+            output: 'source_rgb_with_model_authored_repair_and_alpha',
+          } : transparency === 'codex_rgba' ? {
             engine: 'codex_rgba',
             model: 'imagegen_alpha_matte',
             stage: 'codex_final_split',
@@ -3376,6 +3433,7 @@ function App() {
                 <button type="button" aria-pressed={maskTool === 'foreground' && !showOriginalOnly} className={maskTool === 'foreground' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--foreground' : 'boundary-tool'} onClick={() => selectMaskTool('foreground')}><PenTool size={16} /> 保留钢笔</button>
                 <button type="button" aria-pressed={maskTool === 'background' && !showOriginalOnly} className={maskTool === 'background' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--background' : 'boundary-tool'} onClick={() => selectMaskTool('background')}><PenTool size={16} /> 排除钢笔</button>
                 <button type="button" aria-pressed={maskTool === 'boundary' && !showOriginalOnly} className={maskTool === 'boundary' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--boundary' : 'boundary-tool'} onClick={() => selectMaskTool('boundary')}><PenTool size={16} /> 边界钢笔</button>
+                <button type="button" aria-pressed={maskTool === 'repair' && !showOriginalOnly} className={maskTool === 'repair' && !showOriginalOnly ? 'boundary-tool boundary-tool--active boundary-tool--repair' : 'boundary-tool'} onClick={() => selectMaskTool('repair')}><WandSparkles size={16} /> 补全钢笔</button>
                 <button type="button" aria-pressed={showOriginalOnly} className={showOriginalOnly ? 'boundary-tool boundary-tool--active' : 'boundary-tool'} onClick={toggleOriginalOnly}><Hand size={16} /> {showOriginalOnly ? '显示标注' : '隐藏标注'}</button>
               </div>
               <p className="boundary-help">
@@ -3387,6 +3445,8 @@ function App() {
                       ? '点击添加锚点，拖动可建立曲线手柄；闭合区域内的内容需要排除。'
                       : maskTool === 'boundary'
                         ? '沿目标边缘添加锚点，点击起点闭合路径；Alt 拖动可断开手柄联动。'
+                        : maskTool === 'repair'
+                          ? '圈出被遮挡或被移除后需要补全的区域；最终只允许在该区域内写入模型修复内容。'
                         : '请选择一种钢笔。选中后可再次点击同一按钮退出。'}
               </p>
               <div className="refinement-prompt">
@@ -3422,7 +3482,7 @@ function App() {
                       }}
                     >
                       {mark.shape === 'bezier_path' ? <PenTool size={12} /> : mark.shape === 'stroke' ? <Brush size={12} /> : <Square size={12} />}
-                      {mark.kind === 'foreground' ? '保留' : mark.kind === 'background' ? '排除' : '边界'}{mark.shape === 'bezier_path' ? '路径' : '笔划'} {index + 1}
+                      {mark.kind === 'foreground' ? '保留' : mark.kind === 'background' ? '排除' : mark.kind === 'repair' ? '补全' : '边界'}{mark.shape === 'bezier_path' ? '路径' : '笔划'} {index + 1}
                     </button>
                   ))}
                 </div>
@@ -4220,6 +4280,12 @@ function App() {
                       <span>{splitProgress(activeSelectedJob.status).stage}</span>
                       <span>已用时 {formatElapsed(activeSelectedJob.submittedAt, clockNow)}</span>
                     </div>
+                  </div>
+                ) : activeSelectedJob && jobStatus(activeSelectedJob.status).tone === 'failed' ? (
+                  <div className="guided-result-panel__failure">
+                    <CircleX size={30} />
+                    <strong>终态校验未通过</strong>
+                    <small>{activeSelectedJob.statusDetail || '终态校验未通过，请调整遮挡标注后重试'}</small>
                   </div>
                 ) : (
                   <div className="guided-result-panel__empty">

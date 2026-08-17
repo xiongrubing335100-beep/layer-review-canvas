@@ -55,6 +55,15 @@ plans are conservatively inferred by the executor; never infer a new layer or a 
   region back to the exact crop and apply it to the untouched source RGB. Never ask ImageGen to
   redraw the final glyph RGB, because its native output canvas is not the requested crop size.
   Never call RMBG for this route.
+- `codex_rgba_repair`: use when a text/title/logo layer requires true transparency and also needs
+  an occluded or removed portion completed. Prepare both `reference_path` and the mapped
+  `repair_scope_path`. First generate and accept repair RGB from those two references. You must
+  complete the hidden RGB structure before generating the alpha matte. Only after that candidate
+  passes structural inspection may ImageGen generate one full-subject alpha matte from the accepted
+  repair RGB. The finalizer intersects that alpha with submitted `repair_regions` for repair writes,
+  keeps visible source RGB outside that scope, and uses the same cleaned alpha for the final cutout.
+  Never use RMBG or accept a black plate/full-opaque result. Fast mode budgets three calls (two
+  required stages plus one retry for one failed stage); quality budgets four (one retry per stage).
 - `targeted_repair`: prepare the standard ImageGen reference canvas and mapping, then repair only
   approved holes inside its declared `content_region`. With `transparency_strategy: rembg` and
   `output_resolution_policy: native_imagegen_content`, accept an ImageGen result at a different
@@ -69,13 +78,15 @@ plans are conservatively inferred by the executor; never infer a new layer or a 
   scope or Alpha authority. This route must never call RMBG.
 
 Honor a submitted `execution_route_hint`. When it is absent, select the narrowest route that
-satisfies the normalized record requirement: `direct_crop`; `codex_rgba` for text, title, and logo
-transparency; `alpha_extract` for other subject transparency; then `targeted_repair`. A route must
+satisfies the normalized record requirement: `direct_crop`; `codex_rgba_repair` when text, title,
+or logo transparency also requests occlusion/hidden-area completion; `codex_rgba` for text, title,
+and logo transparency without repair; `alpha_extract` for other subject transparency; then
+`targeted_repair`. A route must
 preserve crop-relative coordinates, the mask-priority result, and final RGBA output. Preserve exact
 crop pixel dimensions except when `output_resolution_policy: native_imagegen_content` applies to a
 `targeted_repair` RMBG record.
 
-For `fast`, do not create candidates speculatively or perform full-page analysis. Call ImageGen only for `targeted_repair`, `codex_rgba`, or `result_refinement`, and never exceed
+For `fast`, do not create candidates speculatively or perform full-page analysis. Call ImageGen only for `targeted_repair`, `codex_rgba`, `codex_rgba_repair`, or `result_refinement`, and never exceed
 `maximum_imagegen_calls`. Create each first required working result and immediately run the
 first-candidate gate below. Accept a passing result without another call. Only when that result
 fails may one targeted ImageGen retry address the failed checks; for `result_refinement`, this
@@ -205,7 +216,7 @@ For every submitted record:
 1. Use the preflight specification for `source_region_pixels`, `mask_annotations`, `requirement`, `remove_background`, `execution_mode`, context attachments, logical placement dimensions, and output resolution policy.
 2. Build the working crop from the exact selected rectangle. Do not broaden it to nearby controls or visually similar repeated items.
 3. Apply submitted annotations and complete the requested split structure.
-4. Follow the selected execution mode and route. In fast `direct_crop` and `alpha_extract`, execute directly. In fast `targeted_repair`, `codex_rgba`, and `result_refinement`, run the first-candidate gate and short-circuit accepted work before any retry.
+4. Follow the selected execution mode and route. In fast `direct_crop` and `alpha_extract`, execute directly. In fast `targeted_repair`, `codex_rgba`, `codex_rgba_repair`, and `result_refinement`, run the first-candidate gate and short-circuit accepted work before any retry.
    For `targeted_repair`, first run `scripts/prepare-targeted-imagegen-canvas.py` with the current
    `jobId` and `layerId`. Give ImageGen only the returned standard reference canvas, require the
    aspect ratio, composition, and approved repair scope to remain unchanged, and edit only approved
@@ -220,6 +231,28 @@ For every submitted record:
    and dark preview backgrounds after the source RGB has been composed with the matte.
    Reject missing strokes, fragmented glyphs, altered wording, changed proportions, opaque
    backplates, or modified source material. Retry once only for failed checks. Do not fall back to RMBG.
+   For `codex_rgba_repair`, obey the returned `stage_reference_policy`. Generate repair RGB from
+   `reference_path` plus `repair_scope_path`, inspect it immediately, and save the accepted repair
+   RGB path. Reject it before cutout when hidden structure is incomplete, retains the original
+   occluder, breaks a junction, changes reliable visible pixels, or mismatches the visible stroke
+   width, outline, gradient, texture, material, or lighting. Inspect the repaired junction enlarged
+   on both light and dark backgrounds. Then generate one full-subject alpha matte using only the
+   accepted repair RGB; do not use the original occluded reference or the repair-scope overlay for
+   this cutout stage. The finalizer must receive `--generated-input` and `--alpha-matte-input`
+   together with `--imagegen-mapping`; it cleans model matte haze, writes repaired RGB only where
+   the cleaned alpha intersects submitted `repair_regions`, and locks visible source RGB everywhere
+   else. Fast mode allows the two required calls plus one retry for exactly one failed stage;
+   quality allows one retry per stage. Stop immediately and write a failed terminal report
+   if a stage cannot pass within that budget; never continue to later stages after a failed repair
+   RGB.
+   Keep the workbench synchronized by running
+   `node scripts/update-targeted-job-stage.mjs --job-id <jobId> --layer-id <layerId> --status <status>`
+   before each repair stage: use `repair_rgb` before the repair RGB call, `alpha_matte` before the full-alpha
+   call, and `finalizing` immediately before the finalizer.
+   These are non-terminal reports: preserve the current job and layer metadata, omit
+   `timing.completed_at`, and never claim a later stage before the preceding candidate has passed.
+   A rejected stage must write `failed` with its concrete validation reason instead of leaving the
+   workbench spinning on `finalizing`.
    For `result_refinement`, follow **PNG Result Refinement** above: run the workbench-supplied
    preparation command, then process the returned version-2 manifest one `roi_job` at a time. Attach
    only the current job's `reference_path`, enforce its closed-path mask, and never call RMBG.
@@ -236,10 +269,16 @@ For every submitted record:
    `scripts/finalize-targeted-job.py --imagegen-mapping`; the finalizer extracts only the declared
    content region, maps its alpha to the exact crop, and keeps the original source RGB. Treat the crop
    top-left as output coordinate `0,0`.
+   For `codex_rgba_repair`, pass the accepted repair RGB candidate, full alpha matte, and
+   returned mapping JSON to `scripts/finalize-targeted-job.py` with
+   `--generated-input` and `--alpha-matte-input`. The finalizer extracts the exact content region,
+   intersects the cleaned alpha with submitted repair regions for RGB writes, locks source RGB
+   everywhere else, and applies that same alpha to the completed subject without RMBG.
 6. Save the accepted Codex split result inside the job's `generated/` directory, outside `final/`.
 7. Run the repository's mechanical finalizer with the current `jobId`, `layerId`, and generated
    input. The finalizer enforces policy-selected asset dimensions, declared repair-region source
-   locking, atomic PNG delivery, true-alpha and source-RGB validation for `codex_rgba`, and the
+   locking, atomic PNG delivery, true-alpha and source-RGB validation for `codex_rgba` and
+   `codex_rgba_repair`, and the
    existing `scripts/finalize-rmbg.py` call only when `rmbg_required` is true.
    Do not create a custom mask or substitute chroma, contour, dilation, or blur extraction.
 8. Write only the finalizer-approved PNG into `output_directory`.

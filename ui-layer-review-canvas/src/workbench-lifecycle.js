@@ -15,6 +15,9 @@ const cancelablePlanStatuses = new Set([
 const startedPlanStatuses = new Set([
   'sent_to_codex',
   'processing',
+  'repair_rgb',
+  'repair_matte',
+  'alpha_matte',
   'partial',
   'finalizing',
 ]);

@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 try:
     from scripts.safe_layer_path import contained_child, safe_layer_id
@@ -52,6 +52,37 @@ def average_corner_color(image):
     return tuple(round(sum(pixel[channel] for pixel in corners) / len(corners)) for channel in range(3))
 
 
+def build_repair_scope_canvas(layer, canvas_size, content_region, output_size):
+    scope = Image.new("L", canvas_size, 0)
+    draw = ImageDraw.Draw(scope)
+    output_width, output_height = output_size
+    scale_x = content_region["width"] / output_width
+    scale_y = content_region["height"] / output_height
+
+    def mapped_point(x, y):
+        return (
+            content_region["x"] + round(x * scale_x),
+            content_region["y"] + round(y * scale_y),
+        )
+
+    for region in layer.get("repair_regions") or []:
+        shape = region.get("shape", "rect")
+        if shape == "rect":
+            left, top = mapped_point(int(region["x"]), int(region["y"]))
+            right, bottom = mapped_point(
+                int(region["x"]) + int(region["width"]),
+                int(region["y"]) + int(region["height"]),
+            )
+            draw.rectangle((left, top, max(left, right - 1), max(top, bottom - 1)), fill=255)
+        elif shape == "polygon":
+            draw.polygon([mapped_point(int(point["x"]), int(point["y"])) for point in region.get("points", [])], fill=255)
+        else:
+            raise ValueError("unsupported repair region shape")
+    if scope.getbbox() is None:
+        raise ValueError("codex_rgba_repair requires a non-empty submitted repair region")
+    return scope
+
+
 def prepare_canvas(job_id, layer_id, *, jobs_root):
     layer_id = safe_layer_id(layer_id)
     job_directory = (jobs_root / job_id).resolve()
@@ -59,9 +90,9 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
         raise ValueError("job directory does not match jobId")
     layer = load_layer(job_directory, layer_id)
     route = layer.get("execution_route_hint")
-    if route not in ("codex_rgba", "targeted_repair", "result_refinement"):
+    if route not in ("codex_rgba", "codex_rgba_repair", "targeted_repair", "result_refinement"):
         raise ValueError(
-            "ImageGen canvas is only valid for codex_rgba, targeted_repair, or result_refinement"
+            "ImageGen canvas is only valid for codex_rgba, codex_rgba_repair, targeted_repair, or result_refinement"
         )
 
     output = layer.get("expected_output") or {}
@@ -97,7 +128,7 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
     roi_x = (canvas_width - roi_width) // 2
     roi_y = (canvas_height - roi_height) // 2
 
-    background = (0, 0, 0) if route == "codex_rgba" else average_corner_color(crop)
+    background = (0, 0, 0) if route in ("codex_rgba", "codex_rgba_repair") else average_corner_color(crop)
     canvas = Image.new("RGBA", (canvas_width, canvas_height), (*background, 255))
     resized = crop.resize((roi_width, roi_height), Image.Resampling.LANCZOS)
     canvas.alpha_composite(resized, (roi_x, roi_y))
@@ -114,6 +145,7 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
         "layer_id": layer_id,
         "generated_input_kind": {
             "codex_rgba": "codex_alpha_matte",
+            "codex_rgba_repair": "codex_rgba_repair_canvas",
             "targeted_repair": "targeted_repair_canvas",
         }[route],
         "execution_route": route,
@@ -127,6 +159,19 @@ def prepare_canvas(job_id, layer_id, *, jobs_root):
         },
         "expected_output": {"width": width, "height": height},
     }
+    if route == "codex_rgba_repair":
+        scope_path = contained_child(generated_directory, f"{layer_id}-repair-scope.png")
+        build_repair_scope_canvas(
+            layer,
+            (canvas_width, canvas_height),
+            mapping["content_region"],
+            (width, height),
+        ).save(scope_path, format="PNG")
+        mapping["repair_scope_path"] = str(scope_path)
+        mapping["stage_reference_policy"] = {
+            "repair_rgb": ["reference_path", "repair_scope_path"],
+            "alpha_matte": ["accepted_repair_rgb_path"],
+        }
     atomic_json(mapping_path, mapping)
     return mapping_path, mapping
 

@@ -1,8 +1,17 @@
 const terminalFailureStatuses = new Set(['failed', 'send_failed']);
 const authoritativeReportStatuses = new Set(['completed', 'failed', 'needs_confirmation']);
+const activeRepairStatuses = new Set(['repair_rgb', 'repair_matte', 'alpha_matte']);
 
 const completedValidationKeys = {
   default: ['count', 'dimensions', 'alpha', 'annotation_conformance', 'obvious_exclusion'],
+  codex_rgba_repair: [
+    'dimensions',
+    'alpha',
+    'repair_scope_conformance',
+    'repair_bundle_consistency',
+    'source_pixel_lock',
+    'structure_integrity',
+  ],
   result_refinement: [
     'dimensions',
     'alpha',
@@ -67,13 +76,14 @@ export function jobMatchesSource(job, source) {
 export function reconcileTurnStatus({
   planStatus,
   reportStatus,
+  reportError,
   turnStatus,
   resultReady,
   imageCount,
 }) {
   if (authoritativeReportStatuses.has(reportStatus)) planStatus = reportStatus;
   if (terminalFailureStatuses.has(planStatus)) {
-    return { status: 'failed', detail: null };
+    return { status: 'failed', detail: reportError || null };
   }
   if (planStatus === 'cancelled') {
     return { status: 'cancelled', detail: null };
@@ -88,6 +98,9 @@ export function reconcileTurnStatus({
     return resultReady
       ? { status: 'completed', detail: null }
       : { status: 'failed', detail: '任务已结束，但拆分 PNG 数量不完整' };
+  }
+  if (activeRepairStatuses.has(reportStatus)) {
+    return { status: reportStatus, detail: null };
   }
   if (planStatus === 'queued') {
     return {
@@ -146,9 +159,20 @@ export function reconcileTurnStatus({
   };
 }
 
-export function shouldPollJob(job) {
-  return !['failed', 'send_failed', 'needs_confirmation', 'cancelled'].includes(job.status)
+const FAILED_JOB_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
+
+export function shouldPollJob(job, now = Date.now()) {
+  if (job.status === 'failed') {
+    const failedAt = Number(job.completedAt ?? job.submittedAt);
+    return Number.isFinite(failedAt)
+      && now - failedAt <= FAILED_JOB_RECOVERY_WINDOW_MS;
+  }
+  return !['send_failed', 'needs_confirmation', 'cancelled'].includes(job.status)
     && (job.status !== 'completed' || !job.completedAt || !job.snapshotVerified);
+}
+
+export function jobsForPolling(jobs, { reconcileAll = false, now = Date.now() } = {}) {
+  return reconcileAll ? jobs : jobs.filter((job) => shouldPollJob(job, now));
 }
 
 export function elapsedEnd(job, clockNow) {
