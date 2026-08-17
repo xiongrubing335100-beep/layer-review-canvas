@@ -144,7 +144,7 @@ async function verifyRmbg(pythonCommand, { cwd, env, runCommandImpl = runCommand
   try {
     await runCommandImpl(pythonCommand, ['-c', REMBG_PROBE], { cwd, env });
   } catch (error) {
-    throw new Error(`RMBG 依赖验证失败（${pythonCommand}无法 import rembg）：${error.message}`);
+    throw new Error(`RMBG 依赖验证失败（${pythonCommand} 无法 import rembg）：${error.message}`);
   }
 }
 

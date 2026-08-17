@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { removeRuntimeTestTree } from './fixtures/runtime-test-cleanup.mjs';
 
 const moduleUrl = new URL('../scripts/node-runtime.mjs', import.meta.url);
 
@@ -77,7 +78,7 @@ test('failed Node launcher replacement preserves the previous executable and rem
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
   const cacheNode = await linkNodeFixture(path.join(temporaryRoot, 'Codex Cache', 'node'));
   const changedSource = await writeChangedNodeFixture(path.join(temporaryRoot, 'changed-node'));
-  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  t.after(() => removeRuntimeTestTree(temporaryRoot));
 
   const first = await nodeRuntime.ensurePersistentNodeLauncher({
     pluginRoot,
@@ -167,13 +168,12 @@ test('Node launcher publishes the exact versioned official LICENSE and records i
     fetchImpl: officialLicenseFetch(requests),
   });
 
-  const expectedSource = 'https://api.github.com/repos/nodejs/node/contents/LICENSE?ref=v24.4.1';
+  const expectedSource = 'https://raw.githubusercontent.com/nodejs/node/v24.4.1/LICENSE';
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, expectedSource);
   assert.equal(requests[0].options.redirect, 'manual');
   assert.ok(requests[0].options.signal instanceof AbortSignal);
-  assert.equal(requests[0].options.headers.Accept, 'application/vnd.github.raw+json');
-  assert.equal(requests[0].options.headers['X-GitHub-Api-Version'], '2022-11-28');
+  assert.equal('headers' in requests[0].options, false, 'official raw downloads must not depend on GitHub API headers or authentication');
   const licensePath = path.join(pluginRoot, '.node-runtime', 'LICENSE');
   assert.equal(await readFile(licensePath, 'utf8'), testLicense);
   const marker = JSON.parse(await readFile(path.join(pluginRoot, '.node-runtime', '.imvia-layer-node.json'), 'utf8'));
@@ -232,7 +232,7 @@ test('LICENSE fetch rejects wrong-version and non-official redirects', async (t)
     ...baseOptions,
     fetchImpl: async () => licenseResponse('', {
       status: 302,
-      location: 'https://api.github.com/repos/nodejs/node/contents/LICENSE?ref=v23.0.0',
+      location: 'https://raw.githubusercontent.com/nodejs/node/v23.0.0/LICENSE',
     }),
   }), /LICENSE.*version|version.*LICENSE/i);
   await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
@@ -241,7 +241,7 @@ test('LICENSE fetch rejects wrong-version and non-official redirects', async (t)
       status: 302,
       location: 'https://example.com/LICENSE',
     }),
-  }), /official|api\.github\.com|host/i);
+  }), /official|raw\.githubusercontent\.com|host/i);
 });
 
 test('staged Node version mismatch and oversized LICENSE fail before publication', async (t) => {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { withRuntimeInstallLock } from './runtime-install-lock.mjs';
 
 const OWNED_TRANSIENT_PATTERN = /^\.node-runtime\.(?:staging|backup)-\d+-\d+-[a-f0-9]{12}$/;
-const NODE_LICENSE_ORIGIN = 'https://api.github.com';
+const NODE_LICENSE_ORIGIN = 'https://raw.githubusercontent.com';
 const NODE_LICENSE_MAX_BYTES = 2 * 1024 * 1024;
 const NODE_LICENSE_TIMEOUT_MS = 15_000;
 const NODE_LICENSE_MAX_REDIRECTS = 3;
@@ -87,20 +87,19 @@ async function verifyNode(nodePath, {
 }
 
 function officialLicenseUrl(nodeVersion) {
-  return `${NODE_LICENSE_ORIGIN}/repos/nodejs/node/contents/LICENSE?ref=${encodeURIComponent(nodeVersion)}`;
+  return `${NODE_LICENSE_ORIGIN}/nodejs/node/${encodeURIComponent(nodeVersion)}/LICENSE`;
 }
 
 function validateOfficialLicenseUrl(candidate, nodeVersion) {
   const url = new URL(candidate);
-  if (url.protocol !== 'https:' || url.hostname !== 'api.github.com' || url.port || url.username || url.password) {
-    throw new Error(`Node LICENSE redirect must stay on the official api.github.com HTTPS host: ${url.href}`);
+  if (url.protocol !== 'https:' || url.hostname !== 'raw.githubusercontent.com' || url.port || url.username || url.password) {
+    throw new Error(`Node LICENSE redirect must stay on the official raw.githubusercontent.com HTTPS host: ${url.href}`);
   }
-  const expectedPath = '/repos/nodejs/node/contents/LICENSE';
+  const expectedPath = `/nodejs/node/${encodeURIComponent(nodeVersion)}/LICENSE`;
   if (url.pathname !== expectedPath
-    || url.searchParams.size !== 1
-    || url.searchParams.get('ref') !== nodeVersion
+    || url.search
     || url.hash) {
-    throw new Error(`Node LICENSE redirect version mismatch: expected ref=${nodeVersion}, received ${url.pathname}${url.search}`);
+    throw new Error(`Node LICENSE redirect version mismatch: expected ${expectedPath}, received ${url.pathname}${url.search}`);
   }
   return url;
 }
@@ -152,10 +151,6 @@ async function fetchOfficialNodeLicense({
         response = await fetchImpl(currentUrl, {
           redirect: 'manual',
           signal: controller.signal,
-          headers: {
-            Accept: 'application/vnd.github.raw+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
         });
       } catch (error) {
         const reason = error.name === 'AbortError' ? `timed out after ${timeoutMs} ms` : error.message;

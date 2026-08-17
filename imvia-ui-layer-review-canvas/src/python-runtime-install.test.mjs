@@ -9,6 +9,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as nodeRuntime from '../scripts/node-runtime.mjs';
 import * as pythonRuntime from '../scripts/python-runtime.mjs';
+import { removeRuntimeTestTree } from './fixtures/runtime-test-cleanup.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fakePythonSupportPath = fileURLToPath(new URL('./fixtures/fake-python', import.meta.url));
@@ -243,7 +244,7 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   const logPath = path.join(temporaryRoot, 'python-calls.log');
   const cachePythonEnvironment = await writeFakePython(cachePython);
   await linkOrCopyExecutable(process.execPath, cacheNode);
-  t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
+  t.after(() => removeRuntimeTestTree(temporaryRoot));
 
   const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
   await nodeRuntime.ensurePersistentNodeLauncher({
@@ -532,7 +533,7 @@ test('rembg verification and unsupported configured Python fail with actionable 
       platform: process.platform,
       nodeExecutable: process.execPath,
     }),
-    /RMBG 依赖验证失败.*import rembg.*simulated rembg import failure/,
+    /RMBG 依赖验证失败（.*[\\/]python(?:\.exe)? 无法 import rembg）.*simulated rembg import failure/,
   );
 
   await assert.rejects(
@@ -545,6 +546,20 @@ test('rembg verification and unsupported configured Python fail with actionable 
     }),
     new RegExp(`PYTHON=${fakePython.replaceAll('\\', '\\\\').replaceAll('.', '\\.') } 不可用或版本低于 3\\.10`),
   );
+});
+
+test('model warmup output is safe on a Windows cp1252 console', () => {
+  const hostPython = process.platform === 'win32' ? 'python' : 'python3';
+  const result = run(hostPython, ['scripts/warm-rmbg.py'], {
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'cp1252',
+      PYTHONPATH: [fakePythonSupportPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), 'BRIA RMBG 2.0 (bria-rmbg) model ready');
 });
 
 test('setup installs dependencies and warms the model with the same durable runtime it registers', async (t) => {
