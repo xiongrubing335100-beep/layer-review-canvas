@@ -22,6 +22,10 @@ function run(command, args, options = {}) {
   });
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function writeFakePython(filePath) {
   const fakeEnvironment = {
     FAKE_PYTHON_PLATFORM: process.platform,
@@ -80,7 +84,7 @@ if (args[0] === '-c' && args[1].includes('pythonCacheTag')) {
   process.stdout.write('locked distributions verified\\n');
 } else if (args[0] === '-c' && args[1].includes('rembg')) {
   if (process.env.FAKE_REMBG_FAIL === '1') {
-    process.stderr.write('simulated rembg import failure');
+    process.stderr.write('Traceback (most recent call last):\\r\\n  File "fake-rembg.py", line 1\\r\\nImportError: simulated rembg import failure\\r\\n');
     process.exitCode = 8;
   } else {
     process.stdout.write('2.0.69\\n');
@@ -525,6 +529,10 @@ test('rembg verification and unsupported configured Python fail with actionable 
   const fakePythonEnvironment = await writeFakePython(fakePython);
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporaryRoot, { recursive: true, force: true })));
 
+  const stagingRootPattern = `${escapeRegExp(path.join(pluginRoot, '.python-runtime'))}\\.staging-\\d+-\\d+-[a-f0-9]{12}`;
+  const managedPythonPattern = process.platform === 'win32'
+    ? `${stagingRootPattern}\\\\Scripts\\\\python\\.exe`
+    : `${stagingRootPattern}/bin/python`;
   await assert.rejects(
     pythonRuntime.ensurePersistentPythonRuntime({
       repositoryRoot,
@@ -533,7 +541,14 @@ test('rembg verification and unsupported configured Python fail with actionable 
       platform: process.platform,
       nodeExecutable: process.execPath,
     }),
-    /RMBG 依赖验证失败（.*[\\/]python(?:\.exe)? 无法 import rembg）.*simulated rembg import failure/,
+    (error) => {
+      assert.match(
+        error.message,
+        new RegExp(`^RMBG 依赖验证失败（${managedPythonPattern} 无法 import rembg）：`),
+      );
+      assert.match(error.message, /ImportError: simulated rembg import failure$/);
+      return true;
+    },
   );
 
   await assert.rejects(
