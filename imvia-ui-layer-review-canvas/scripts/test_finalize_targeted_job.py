@@ -503,11 +503,15 @@ class FinalizeTargetedJobTests(unittest.TestCase):
             )
 
     def test_result_refinement_rejects_duplicate_cli_bindings(self):
-        with self.assertRaisesRegex(ValueError, "duplicate"):
-            MODULE.parse_result_refinement_bindings([
-                "repair-tile-001=/tmp/one.png",
-                "repair-tile-001=/tmp/two.png",
-            ])
+        candidate = (self.job / "generated" / "duplicate-binding.png").resolve()
+        Image.new("RGBA", (2, 2), (20, 40, 60, 255)).save(candidate)
+        binding = f"repair-tile-001={candidate}"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "^duplicate result_refinement candidate binding: repair-tile-001$",
+        ):
+            MODULE.parse_result_refinement_bindings([binding, binding])
 
     def test_versioned_outputs_reject_cross_platform_unsafe_layer_ids(self):
         for layer_id in ("../escape", r"..\escape", r"C:\escape", "/tmp/escape", r"\\server\share"):
