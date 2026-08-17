@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="imvia-ui-layer-review-canvas/public/imvia-logo.png" alt="Imvia Layer Logo" width="128" height="128">
+</p>
+
 # Imvia Layer
 
 Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆图工作台。它将拆分请求作为当前 Codex 对话中的可见消息提交，并把透明 PNG 结果回传到画布；不会为此添加水印、遥测、设备指纹、隐藏许可检查或联网停用机制。
