@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import test from 'node:test';
 
 const source = await readFile(new URL('./main.jsx', import.meta.url), 'utf8');
@@ -13,32 +11,6 @@ const bridgeWidget = await readFile(new URL('../public/layer-review-bridge-widge
 const bridgeServer = await readFile(new URL('../layer-review-mcp-server.mjs', import.meta.url), 'utf8');
 const viteConfig = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
 const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
-
-let DeveloperAttribution = null;
-try {
-  ({ DeveloperAttribution } = await import('./attribution.js'));
-} catch {
-  // RED state: the renderable attribution component does not exist yet.
-}
-
-function relativeLuminance(hex) {
-  const channels = hex.match(/[\da-f]{2}/gi).map((channel) => Number.parseInt(channel, 16) / 255);
-  const linear = channels.map((channel) => (
-    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
-  ));
-  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
-}
-
-function contrastRatio(foreground, background) {
-  const [light, dark] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
-  return (light + 0.05) / (dark + 0.05);
-}
-
-function cssCustomColor(name) {
-  const match = styles.match(new RegExp(`(?:^|\\n)\\s*${name}:\\s*(#[\\da-fA-F]{6});`));
-  assert.ok(match, `styles should define ${name} as a hex color token`);
-  return match[1];
-}
 
 test('the user-visible workbench brand is Imvia Layer', () => {
   assert.match(source, /<strong>Imvia Layer<\/strong>/);
@@ -602,25 +574,12 @@ test('primary workbench chrome uses monochrome emphasis while live status stays 
   assert.match(styles, /\.conversation-bridge-indicator--online \.conversation-bridge-indicator__dot\s*\{[\s\S]*background:\s*#62d99b/);
 });
 
-test('the left sidebar ends with a safe, accessible Qingmu attribution link', () => {
-  const Attribution = DeveloperAttribution || (() => null);
-  const markup = renderToStaticMarkup(createElement(Attribution));
+test('the left sidebar has no visible developer attribution block', () => {
   const leftSidebarStart = source.indexOf('<aside className={`sidebar sidebar--left');
   const leftSidebar = source.slice(leftSidebarStart, source.indexOf('</aside>', leftSidebarStart) + '</aside>'.length);
-  const anchor = markup.match(/^<a\s+([^>]+)>/);
-  const attributeNames = [...(anchor?.[1] ?? '').matchAll(/(?:^|\s)([^\s=]+)=/g)].map((match) => match[1]);
 
-  assert.match(leftSidebar, /<DeveloperAttribution\s*\/>\s*<\/aside>/);
-  assert.equal((source.match(/<DeveloperAttribution\b/g) || []).length, 1);
-  assert.match(markup, new RegExp(`^<a class="developer-attribution" href="https://www\\.xiaohongshu\\.com/user/profile/5cdb80ac000000001601466b" target="_blank" rel="noopener noreferrer" aria-label="访问开发者青木的小红书主页">`));
-  assert.deepEqual(attributeNames, ['class', 'href', 'target', 'rel', 'aria-label']);
-  assert.equal(markup.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(), '开发者 · 青木');
-  assert.match(attributionSource, /const ariaLabel = `访问开发者\$\{IMVIA_AUTHOR_NAME\}的小红书主页`;/);
-  assert.doesNotMatch(attributionSource, /\bon[A-Z][A-Za-z]*\s*:/);
-  assert.match(styles, /\.developer-attribution\s*\{[\s\S]*position:\s*sticky;[\s\S]*bottom:\s*0;/);
-  assert.match(styles, /\.developer-attribution:focus-visible/);
-  assert.match(styles, /:root\[data-theme='light'\] \.developer-attribution\s*\{[\s\S]*color:/);
-  assert.match(styles, /@media \(max-width: 860px\)\s*\{[\s\S]*\.developer-attribution\s*\{[\s\S]*position:\s*static;/);
-  assert.ok(contrastRatio(cssCustomColor('--developer-attribution-color'), '#202020') >= 4.5);
-  assert.ok(contrastRatio(cssCustomColor('--developer-attribution-focus-color'), '#202020') >= 4.5);
+  assert.doesNotMatch(leftSidebar, /DeveloperAttribution|developer-attribution|开发者\s*·\s*青木|xiaohongshu/i);
+  assert.doesNotMatch(source, /import\s*\{\s*DeveloperAttribution\s*\}|<DeveloperAttribution\b/);
+  assert.doesNotMatch(styles, /developer-attribution/);
+  assert.doesNotMatch(attributionSource, /createElement|function\s+DeveloperAttribution/);
 });

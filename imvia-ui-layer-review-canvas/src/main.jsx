@@ -112,7 +112,6 @@ import {
 } from './result-refinement-ui.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import { ResultVersionGallery } from './result-version-gallery.js';
-import { DeveloperAttribution } from './attribution.js';
 import './styles.css';
 
 const categoryMeta = {
@@ -3887,7 +3886,6 @@ function App() {
               </div>
             </>
           ) : null}
-          <DeveloperAttribution />
         </aside>
 
         {reviewMode === 'guided' ? (

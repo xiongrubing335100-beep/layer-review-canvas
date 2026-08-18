@@ -4,12 +4,10 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { DeveloperAttribution } from './attribution.js';
+import * as authorIdentity from './attribution.js';
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const packageLock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
@@ -36,7 +34,6 @@ const viteCli = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import
 const execFileAsync = promisify(execFile);
 const attributionTransportPattern = /\b(?:navigator\.sendBeacon|sendBeacon|WebSocket|fetch|XMLHttpRequest|axios|got|undici|https?\.(?:request|get|post))\b/i;
 const attributionResourcePattern = /(?:\b(?:new\s+Image|EventSource|sendBeacon|WebSocket|fetch|XMLHttpRequest)\b|createElement\(\s*['"](?:img|iframe|picture|source|video|audio|object|embed|script|link)['"])/i;
-const forbiddenAttributionElementPattern = /<\/?(?:img|iframe|picture|source|video|audio|object|embed|script|link)\b/i;
 const entryBodyAttributionPattern = /(?:青木|xiaohongshu\.com\/user\/profile\/5cdb80ac000000001601466b|Copyright\s*(?:\(c\)|©)\s*2026|开发者\s*·\s*青木|IMVIA_(?:AUTHOR|COPYRIGHT)_)/i;
 const pngAttributionPattern = /(?:青木|xiaohongshu\.com\/user\/profile\/5cdb80ac000000001601466b|Copyright\s*(?:\(c\)|©)\s*2026|开发者\s*·\s*青木|IMVIA_(?:AUTHOR|COPYRIGHT)_|DeveloperAttribution|watermark)/i;
 const authorTextDrawingPattern = /(?:\b(?:draw|ImageDraw\.Draw\([^\n]*\))\.(?:text|multiline_text)\s*\()/i;
@@ -249,15 +246,13 @@ test('the attribution-only surfaces contain no tracking, remote-disable, or lice
   }
 });
 
-test('developer attribution renders as one exact author link with text-only inline content', () => {
-  const markup = renderToStaticMarkup(createElement(DeveloperAttribution));
-  assert.equal([...markup.matchAll(/<a\b/gi)].length, 1);
-  assert.deepEqual([...markup.matchAll(/\bhref="([^"]+)"/g)].map((match) => match[1]), [authorUrl]);
-  assert.deepEqual([...markup.matchAll(/<([a-z][\w-]*)\b/gi)].map((match) => match[1].toLowerCase()), ['a', 'span', 'strong']);
-  assert.equal(markup.replace(/<[^>]+>/g, ''), '开发者 · 青木');
-  assert.doesNotMatch(markup, forbiddenAttributionElementPattern);
+test('author identity remains non-visual release metadata', () => {
+  assert.deepEqual(Object.keys(authorIdentity).sort(), ['IMVIA_AUTHOR_NAME', 'IMVIA_AUTHOR_URL']);
+  assert.equal(authorIdentity.IMVIA_AUTHOR_NAME, '青木');
+  assert.equal(authorIdentity.IMVIA_AUTHOR_URL, authorUrl);
+  assert.doesNotMatch(attributionSource, /createElement|DeveloperAttribution|className|aria-label/);
   assert.doesNotMatch(attributionSource, attributionResourcePattern);
-  assert.doesNotMatch(attributionSource, /\bon[A-Z][A-Za-z]*\s*:/);
+  assert.doesNotMatch(attributionSource, attributionTransportPattern);
 });
 
 test('critical entry bodies retain no attribution beyond their allowed first-line headers', async () => {
@@ -278,7 +273,7 @@ test('critical entry bodies retain no attribution beyond their allowed first-lin
 
 test('author attribution is structurally isolated from PNG finalizers and export composition', () => {
   assert.doesNotMatch(attributionSource, /\b(?:png|watermark|download|zipSync|canvas)\b/i);
-  assert.equal(mainSource.split('DeveloperAttribution').length - 1, 2, 'the attribution component may only be imported and rendered once');
+  assert.doesNotMatch(sourceWithoutAttributionHeader(mainSource), /DeveloperAttribution|IMVIA_AUTHOR|青木|xiaohongshu/i);
   const exportStart = mainSource.indexOf('  const exportAccepted = () => {');
   const exportEnd = mainSource.indexOf('  const submitLayers = async', exportStart);
   assert.ok(exportStart >= 0 && exportEnd > exportStart, 'export block should remain identifiable');
@@ -293,7 +288,7 @@ test('pixel generation, composition, and direct-download paths contain no author
   const cropCanvasSource = sourceSection(mainSource, 'async function cropRegionDataUrl', 'function defaultRemoveBackground', 'crop canvas path');
   const exportAndDownloadSource = sourceSection(mainSource, '  const exportAccepted = () => {', '  const submitLayers = async', 'export and download path');
   const mainBody = sourceWithoutAttributionHeader(mainSource);
-  assert.deepEqual(mainBody.match(/DeveloperAttribution|IMVIA_(?:AUTHOR|COPYRIGHT)_|青木|xiaohongshu/g) || [], ['DeveloperAttribution', 'DeveloperAttribution']);
+  assert.deepEqual(mainBody.match(/DeveloperAttribution|IMVIA_(?:AUTHOR|COPYRIGHT)_|青木|xiaohongshu/g) || [], []);
   for (const source of [
     cropCanvasSource,
     exportAndDownloadSource,
@@ -359,8 +354,8 @@ test('the release guide renames the repository only after the release PR merges'
   assert.doesNotMatch(releaseGuide, /创建或重命名为空仓库/);
 });
 
-test('the workbench owns UI author identity in a dedicated attribution module', async () => {
-  assert.equal(existsSync(attributionModule), true, 'src/attribution.js should own UI author identity');
+test('the workbench owns non-visual author identity in a dedicated attribution module', async () => {
+  assert.equal(existsSync(attributionModule), true, 'src/attribution.js should own non-visual author identity');
   const attribution = await readFile(attributionModule, 'utf8');
   assert.match(attribution, /export const IMVIA_AUTHOR_NAME = '青木';/);
   assert.match(attribution, new RegExp(`export const IMVIA_AUTHOR_URL = '${authorUrl}';`));
