@@ -1,4 +1,0 @@
-interface:
-  display_name: "UI 工作台定向拆分"
-  short_description: "按框选、标注和快速或高质量模式执行定向 UI 拆分"
-  default_prompt: "使用 $split-ui-design-layers-workbench-targeted 按工作台计划和所选模式输出定向透明 PNG。"

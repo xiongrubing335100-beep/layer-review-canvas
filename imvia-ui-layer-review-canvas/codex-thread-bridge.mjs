@@ -333,7 +333,15 @@ export function buildWorkbenchPrompt({
   const layerTransparencyStrategy = (layer) => layer.transparency_strategy
     || transparencyStrategy({ category: layer.category, removeBackground: Boolean(layer.remove_background) });
   const codexRgbaLayers = (plan?.layers || [])
-    .filter((layer) => layer.remove_background && layerTransparencyStrategy(layer) === 'codex_rgba')
+    .filter((layer) => layer.remove_background
+      && layerTransparencyStrategy(layer) === 'codex_rgba'
+      && layer.execution_route_hint !== 'codex_rgba_repair')
+    .map((layer) => layer.name || layer.id)
+    .filter(Boolean);
+  const codexRgbaRepairLayers = (plan?.layers || [])
+    .filter((layer) => layer.remove_background
+      && layerTransparencyStrategy(layer) === 'codex_rgba'
+      && layer.execution_route_hint === 'codex_rgba_repair')
     .map((layer) => layer.name || layer.id)
     .filter(Boolean);
   const rmbgLayers = (plan?.layers || [])
@@ -436,12 +444,15 @@ export function buildWorkbenchPrompt({
       : '',
     '只处理计划 layers[]；在同一 turn 内规范化简短需求并执行。',
     '遵守 execution_mode、execution_route_hint 与 execution_policy；不要全页诊断或增加图层。',
-    '快速 ImageGen 路由：首个工作结果通过尺寸、标注、明显排除和结构完整性验收就立即结束；仅在失败时允许一次定向 ImageGen 重试，第二次仍失败则停止，禁止绕过尺寸校验。',
+    '快速 ImageGen 路由：首个工作结果通过尺寸、标注、明显排除和结构完整性验收就立即结束；仅在失败时允许一次定向 ImageGen 重试（组合修复阶段按 execution_policy 分阶段计数），达到上限后立即停止；第二次仍失败则停止，禁止绕过尺寸校验。',
     removeBackgroundLayers.length
       ? `去背景已开启：${removeBackgroundLayers.join('、')}。这些图层必须输出真实透明 RGBA PNG。`
       : '',
     codexRgbaLayers.length
       ? `文字/标志透明层：${codexRgbaLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，再让 ImageGen 在返回的标准参考画布上输出黑底白主体语义 matte；禁止让 ImageGen 重绘最终文字 RGB。最后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <matte PNG> --imagegen-mapping <mapping JSON>。最终 RGB 必须锁定原框选像素且不得调用 RMBG；画布变化、全不透明底图、字形断裂或结构缺失均须失败，禁止写入 final。`
+      : '',
+    codexRgbaRepairLayers.length
+      ? `透明层遮挡补全：${codexRgbaRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>。严格按顺序执行两阶段：1）先补全隐藏 RGB，保留原图所有可见像素，只在已提交补全区域恢复被遮挡结构；补全结果必须通过字形连接、笔画宽度、轮廓、渐变、材质和光影一致性验收，原遮挡物残留或结构断裂必须重试。2）补全结果通过结构验收后，只把已验收的 repair RGB 作为参考，生成一张黑底白色的完整主体 alpha matte；不得生成其他独立蒙版。快速模式最多 3 次 ImageGen 调用，高质量最多 4 次（每阶段失败时最多重试一次）。最后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <repair RGB PNG> --alpha-matte-input <alpha matte PNG> --imagegen-mapping <mapping JSON>。最终处理器必须锁定原图可见 RGB，只在完整主体 alpha matte 与已提交补全区域的交集写入 repair RGB，并使用同一张 matte 完成透明抠图；禁止调用 RMBG、禁止重绘可见字形、禁止写入黑底或全不透明结果。`
       : '',
     targetedRepairLayers.length
       ? `定向修复层：${targetedRepairLayers.join('、')}。先运行 ${pythonInvocation} ${quotedImagegenCanvasScriptPath} --job-id ${jobId} --layer-id <layerId>，只让 ImageGen 在返回的标准参考画布 content_region 内完成已批准修复，并保持构图与宽高比一致。将原生结果保存到 generated/ 后运行 ${pythonInvocation} ${quotedTargetedFinalizerPath} --job-id ${jobId} --layer-id <layerId> --generated-input <修复画布 PNG> --imagegen-mapping <mapping JSON>。ImageGen 返回同比例的原生尺寸时直接接受，由最终处理器按比例换算 content_region；宽高比变化或构图偏移才失败。禁止把任意 ImageGen 输出强制缩放成最终尺寸。`
@@ -512,6 +523,7 @@ export function selectExecutionAttachments(layer = {}, {
     || (layer.requires_global_context === undefined && (
       layer.execution_mode === 'quality'
       || route === 'targeted_repair'
+      || route === 'codex_rgba_repair'
       || layer.category === 'kvBackground'
     ));
   return needsSource && sourcePath

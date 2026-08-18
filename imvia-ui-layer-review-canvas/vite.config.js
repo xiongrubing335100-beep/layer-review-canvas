@@ -377,6 +377,7 @@ function layerReviewQueue() {
           const reconciled = reconcileTurnStatus({
             planStatus,
             reportStatus,
+            reportError: executionReport?.error || null,
             turnStatus: codexTurn?.status || null,
             resultReady,
             imageCount: images.length,

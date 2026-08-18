@@ -1039,6 +1039,7 @@ button:disabled { cursor: default; opacity: .48; }
 }
 
 .guided-result-panel__pending,
+.guided-result-panel__failure,
 .guided-result-panel__empty {
   display: grid;
   place-items: center;
@@ -1048,9 +1049,12 @@ button:disabled { cursor: default; opacity: .48; }
 }
 
 .guided-result-panel__pending { color: #83e5af; }
+.guided-result-panel__failure { color: #ff9387; }
 .guided-result-panel__pending strong,
+.guided-result-panel__failure strong,
 .guided-result-panel__empty strong { color: #dbe5dd; font-size: 12px; }
 .guided-result-panel__pending small,
+.guided-result-panel__failure small,
 .guided-result-panel__empty small { max-width: 360px; color: #829087; font-size: 9px; line-height: 1.5; }
 
 .split-progress-track {

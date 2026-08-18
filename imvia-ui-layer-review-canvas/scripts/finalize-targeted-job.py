@@ -9,7 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 
 try:
     from scripts.safe_layer_path import contained_child, safe_layer_id
@@ -45,11 +45,23 @@ RESULT_REFINEMENT_VALIDATION_KEYS = (
     "structure_integrity",
 )
 
+CODEX_RGBA_REPAIR_VALIDATION_KEYS = (
+    "dimensions",
+    "alpha",
+    "repair_scope_conformance",
+    "repair_bundle_consistency",
+    "source_pixel_lock",
+    "structure_integrity",
+)
+
 CODEX_RGBA_CATEGORIES = {"kvTitle", "ordinaryText", "logo"}
 RMBG_MODEL = "bria-rmbg"
 LANDSCAPE_CANVAS = (1536, 1024)
 PORTRAIT_CANVAS = (1024, 1536)
 SQUARE_CANVAS = (1024, 1024)
+MIN_REPAIR_ALPHA_OVERLAP = 0.75
+ALPHA_BLACK_POINT = 32
+ALPHA_WHITE_POINT = 223
 
 
 def now_iso():
@@ -255,14 +267,43 @@ def validate_repair_regions(layer, width, height):
         return None
     if layer.get("repair_region_source") not in ("submitted_annotation", "codex_declared"):
         raise ValueError("repair_regions require an allowed repair_region_source")
+    normalized = []
     for region in regions:
-        rx = int(region.get("x", -1))
-        ry = int(region.get("y", -1))
-        rw = int(region.get("width", 0))
-        rh = int(region.get("height", 0))
-        if rx < 0 or ry < 0 or rw <= 0 or rh <= 0 or rx + rw > width or ry + rh > height:
-            raise ValueError("repair region is outside the selected output canvas")
-    return regions
+        if region.get("shape", "rect") == "rect":
+            rx = int(region.get("x", -1))
+            ry = int(region.get("y", -1))
+            rw = int(region.get("width", 0))
+            rh = int(region.get("height", 0))
+            if rx < 0 or ry < 0 or rw <= 0 or rh <= 0 or rx + rw > width or ry + rh > height:
+                raise ValueError("repair region is outside the selected output canvas")
+            normalized.append({"shape": "rect", "x": rx, "y": ry, "width": rw, "height": rh})
+            continue
+        if region.get("shape") == "polygon":
+            points = [(int(point.get("x", -1)), int(point.get("y", -1))) for point in region.get("points", [])]
+            if len(points) < 3 or any(x < 0 or y < 0 or x > width or y > height for x, y in points):
+                raise ValueError("repair polygon is outside the selected output canvas")
+            normalized.append({"shape": "polygon", "points": points})
+            continue
+        raise ValueError("unsupported repair region shape")
+    return normalized
+
+
+def build_repair_region_mask(regions, width, height):
+    if not regions:
+        return None
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    for region in regions:
+        if region["shape"] == "rect":
+            draw.rectangle((
+                region["x"],
+                region["y"],
+                region["x"] + region["width"] - 1,
+                region["y"] + region["height"] - 1,
+            ), fill=255)
+        else:
+            draw.polygon(region["points"], fill=255)
+    return mask
 
 
 def apply_source_pixel_lock(candidate, source, width, height, source_x, source_y, regions):
@@ -343,6 +384,42 @@ def validate_source_rgb_fidelity(candidate, source_crop):
         raise ValueError("Codex RGBA changed reliable source glyph colors or material")
 
 
+def validate_source_rgb_fidelity_outside(candidate, source_crop, repair_mask):
+    compared = 0
+    for candidate_pixel, source_pixel, mask_value in zip(
+        candidate.get_flattened_data(),
+        source_crop.get_flattened_data(),
+        repair_mask.get_flattened_data(),
+    ):
+        if mask_value > 8 or candidate_pixel[3] <= 8:
+            continue
+        compared += 1
+        if max(abs(candidate_pixel[index] - source_pixel[index]) for index in range(3)) > 16:
+            raise ValueError("Codex repair changed reliable source pixels outside the repair scope")
+    if compared == 0:
+        raise ValueError("Codex repair has no source-locked visible pixels to validate")
+
+
+def validate_repair_materiality(repair_content, source_crop, repair_mask):
+    """Reject a repair matte that technically overlaps the annotation but adds no repair."""
+    compared = 0
+    changed = 0
+    for repair_pixel, source_pixel, mask_value in zip(
+        repair_content.get_flattened_data(),
+        source_crop.get_flattened_data(),
+        repair_mask.get_flattened_data(),
+    ):
+        if mask_value <= 128:
+            continue
+        compared += 1
+        if max(abs(repair_pixel[index] - source_pixel[index]) for index in range(3)) > 16:
+            changed += 1
+    if compared < 32:
+        raise ValueError("ImageGen repair matte contains insufficient approved repair coverage")
+    if changed / compared < 0.2:
+        raise ValueError("ImageGen repair does not materially change the approved hidden region")
+
+
 def validate_result_refinement_structure(candidate, base, *, annotations, operation):
     expected_alpha = expected_result_refinement_alpha(base, annotations, operation)
     if candidate.getchannel("A").tobytes() != expected_alpha.tobytes():
@@ -383,6 +460,7 @@ def load_imagegen_mapping(mapping_path, generated_root, job_id, layer_id, width,
     mapping_kind = mapping.get("generated_input_kind")
     if mapping_kind not in (
         "codex_alpha_matte",
+        "codex_rgba_repair_canvas",
         "targeted_repair_canvas",
         "result_refinement_canvas",
     ):
@@ -390,9 +468,11 @@ def load_imagegen_mapping(mapping_path, generated_root, job_id, layer_id, width,
     expected = mapping.get("expected_output") or {}
     if (int(expected.get("width", 0)), int(expected.get("height", 0))) != (width, height):
         raise ValueError("ImageGen mapping expected output does not match the plan")
-    if mapping_kind in ("targeted_repair_canvas", "result_refinement_canvas"):
+    if mapping_kind in ("codex_rgba_repair_canvas", "targeted_repair_canvas", "result_refinement_canvas"):
         expected_route = (
-            "targeted_repair"
+            "codex_rgba_repair"
+            if mapping_kind == "codex_rgba_repair_canvas"
+            else "targeted_repair"
             if mapping_kind == "targeted_repair_canvas"
             else "result_refinement"
         )
@@ -477,6 +557,94 @@ def compose_source_locked_matte(candidate, source_crop, mapping, width, height):
     return source_locked
 
 
+def validate_binary_matte(matte, label):
+    grayscale = matte.convert("L")
+    minimum, maximum = grayscale.getextrema()
+    if minimum > 16 or maximum < 239:
+        raise ValueError(f"{label} must contain a black background and white subject")
+    return grayscale
+
+
+def normalize_semantic_alpha(alpha):
+    """Remove matte haze while preserving a narrow anti-aliased transition."""
+    span = ALPHA_WHITE_POINT - ALPHA_BLACK_POINT
+    return alpha.point(
+        lambda value: 0
+        if value <= ALPHA_BLACK_POINT
+        else 255
+        if value >= ALPHA_WHITE_POINT
+        else round((value - ALPHA_BLACK_POINT) * 255 / span)
+    )
+
+
+def validate_repair_matte_shape(repair_mask):
+    bbox = repair_mask.getbbox()
+    if bbox is None:
+        raise ValueError("ImageGen repair matte contains no approved hidden-region repair")
+    foreground = sum(repair_mask.crop(bbox).point(lambda value: 1 if value > 128 else 0).get_flattened_data())
+    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+    if bbox_area > 0 and foreground / bbox_area >= 0.98:
+        raise ValueError("ImageGen repair matte is a solid rectangle instead of repaired subject structure")
+
+
+def reconcile_repair_alpha(repair_mask, alpha):
+    repair_binary = repair_mask.point(lambda value: 255 if value > 128 else 0)
+    alpha_binary = alpha.point(lambda value: 255 if value > 128 else 0)
+    repair_pixels = sum(value > 128 for value in repair_binary.get_flattened_data())
+    overlap_pixels = sum(
+        repair_value > 128 and alpha_value > 128
+        for repair_value, alpha_value in zip(
+            repair_binary.get_flattened_data(),
+            alpha_binary.get_flattened_data(),
+        )
+    )
+    if repair_pixels == 0 or overlap_pixels / repair_pixels < MIN_REPAIR_ALPHA_OVERLAP:
+        raise ValueError("ImageGen repair and alpha matte overlap is too low")
+    return ImageChops.lighter(alpha, repair_mask)
+
+
+def compose_source_locked_repair(
+    repair_rgb,
+    alpha_matte,
+    source_crop,
+    mapping,
+    width,
+    height,
+    regions,
+    repair_matte=None,
+):
+    repair_content = crop_mapped_imagegen_canvas(
+        repair_rgb, mapping, width, height, "ImageGen repair RGB"
+    ).convert("RGBA")
+    alpha = normalize_semantic_alpha(validate_binary_matte(
+        crop_mapped_imagegen_canvas(alpha_matte, mapping, width, height, "ImageGen alpha matte"),
+        "ImageGen alpha matte",
+    ))
+    declared_mask = build_repair_region_mask(regions, width, height)
+    if declared_mask is None:
+        raise ValueError("codex_rgba_repair requires a submitted repair region")
+    if repair_matte is not None:
+        repair_mask = validate_binary_matte(
+            crop_mapped_imagegen_canvas(
+                repair_matte, mapping, width, height, "ImageGen repair matte"
+            ),
+            "ImageGen repair matte",
+        )
+        repair_mask = ImageChops.multiply(repair_mask, declared_mask)
+        validate_repair_matte_shape(repair_mask)
+        alpha = normalize_semantic_alpha(reconcile_repair_alpha(repair_mask, alpha))
+    else:
+        repair_mask = ImageChops.multiply(alpha, declared_mask)
+    validate_repair_matte_shape(repair_mask)
+    validate_repair_materiality(repair_content, source_crop, repair_mask)
+    source_locked = source_crop.copy()
+    source_locked.paste(repair_content, mask=repair_mask)
+    source_locked.putalpha(alpha)
+    validate_transparent_structure(source_locked, "Codex repair output")
+    validate_source_rgb_fidelity_outside(source_locked, source_crop, repair_mask)
+    return source_locked
+
+
 def validate_png(path, width, height, require_alpha):
     with Image.open(path) as image:
         rgba = image.convert("RGBA")
@@ -496,6 +664,8 @@ def finalize_job(
     jobs_root,
     rmbg_script,
     imagegen_mapping=None,
+    repair_matte_input=None,
+    alpha_matte_input=None,
     clock=now_iso,
     rmbg_runner=run_rmbg,
     asset_publisher=os.replace,
@@ -536,6 +706,26 @@ def finalize_job(
                 raise ValueError("ImageGen input must be inside the job generated directory")
             if not generated_path.is_file():
                 raise ValueError("ImageGen input does not exist")
+            repair_matte_path = None
+            alpha_matte_path = None
+            if route == "codex_rgba_repair":
+                if alpha_matte_input is None:
+                    raise ValueError("codex_rgba_repair requires --alpha-matte-input")
+                for value, label in (
+                    (alpha_matte_input, "--alpha-matte-input"),
+                    (repair_matte_input, "--repair-matte-input"),
+                ):
+                    if value is None:
+                        continue
+                    resolved = Path(value).resolve()
+                    if not contained(resolved, generated_root):
+                        raise ValueError(f"{label} must be inside the job generated directory")
+                    if not resolved.is_file():
+                        raise ValueError(f"{label} does not exist")
+                    if label == "--alpha-matte-input":
+                        alpha_matte_path = resolved
+                    else:
+                        repair_matte_path = resolved
 
         final_directory = contained_child(job_directory, "final")
         planned_output = Path(plan.get("output_directory", final_directory)).resolve()
@@ -578,9 +768,10 @@ def finalize_job(
                 raise ValueError("result_refinement requires preserve_existing_alpha")
             if layer.get("rmbg_required") is not False:
                 raise ValueError("result_refinement forbids RMBG")
-        if route in ("targeted_repair", "result_refinement") and imagegen_mapping is None:
+        if route in ("targeted_repair", "codex_rgba_repair", "result_refinement") and imagegen_mapping is None:
             raise ValueError(f"{route} requires --imagegen-mapping")
         annotations = layer.get("mask_annotations") or []
+        regions = None if route == "result_refinement" else validate_repair_regions(layer, width, height)
         mapping = None
         if route == "result_refinement":
             trusted_layer = load_trusted_preflight_layer(job_directory, layer_id)
@@ -628,7 +819,36 @@ def finalize_job(
                 image_height,
             )
             mapping_kind = mapping.get("generated_input_kind")
-            if transparency == "codex_rgba":
+            if route == "codex_rgba_repair":
+                if mapping_kind != "codex_rgba_repair_canvas":
+                    raise ValueError("codex_rgba_repair requires a codex_rgba_repair_canvas mapping")
+                source_path = Path(plan.get("source", {}).get("local_path", ""))
+                if not source_path.is_file():
+                    raise ValueError("source image is required for Codex repair validation")
+                with Image.open(source_path) as source:
+                    source_crop = source.convert("RGBA").crop((
+                        source_x,
+                        source_y,
+                        source_x + width,
+                        source_y + height,
+                    ))
+                repair_matte = None
+                if repair_matte_path is not None:
+                    with Image.open(repair_matte_path) as image:
+                        repair_matte = image.convert("RGBA")
+                with Image.open(alpha_matte_path) as image:
+                    alpha_matte = image.convert("RGBA")
+                candidate = compose_source_locked_repair(
+                    candidate,
+                    alpha_matte,
+                    source_crop,
+                    mapping,
+                    width,
+                    height,
+                    regions,
+                    repair_matte=repair_matte,
+                )
+            elif transparency == "codex_rgba":
                 if mapping_kind != "codex_alpha_matte":
                     raise ValueError("Codex RGBA requires a codex_alpha_matte mapping")
             elif route == "targeted_repair":
@@ -645,12 +865,10 @@ def finalize_job(
                     allow_uniformly_scaled_canvas=preserve_native_rmbg,
                 )
             else:
-                raise ValueError("ImageGen mapping is only valid for codex_rgba or targeted_repair")
+                raise ValueError("ImageGen mapping is only valid for codex_rgba, codex_rgba_repair, or targeted_repair")
         elif route != "result_refinement" and candidate.size != (width, height):
             raise ValueError(f"ImageGen input must already be {width}x{height}")
-        if route != "result_refinement":
-            regions = validate_repair_regions(layer, width, height)
-        if route != "result_refinement" and regions:
+        if route != "result_refinement" and regions and route != "codex_rgba_repair":
             source_path = Path(plan.get("source", {}).get("local_path", ""))
             if not source_path.is_file():
                 raise ValueError("source image is required for declared repair regions")
@@ -673,10 +891,11 @@ def finalize_job(
                     source_x + width,
                     source_y + height,
                 ))
-            if mapping is not None:
+            if mapping is not None and route != "codex_rgba_repair":
                 candidate = compose_source_locked_matte(candidate, source_crop, mapping, width, height)
             validate_transparent_structure(candidate, "Codex RGBA output")
-            validate_source_rgb_fidelity(candidate, source_crop)
+            if route != "codex_rgba_repair":
+                validate_source_rgb_fidelity(candidate, source_crop)
         candidate.save(temporary_candidate, format="PNG")
         asset_width, asset_height = candidate.size
 
@@ -754,6 +973,8 @@ def finalize_job(
                 for key in (
                     RESULT_REFINEMENT_VALIDATION_KEYS
                     if route == "result_refinement"
+                    else CODEX_RGBA_REPAIR_VALIDATION_KEYS
+                    if route == "codex_rgba_repair"
                     else VALIDATION_KEYS
                 )
             },
@@ -765,6 +986,8 @@ def finalize_job(
                 "strategy": transparency,
                 "structure_validation": (
                     "source_rgb_and_alpha"
+                    if route == "codex_rgba_repair"
+                    else "source_rgb_and_alpha"
                     if transparency == "codex_rgba"
                     else "base_rgba_pixel_lock"
                     if transparency == "preserve_existing_alpha"
@@ -813,6 +1036,8 @@ def finalize_job(
                 for key in (
                     RESULT_REFINEMENT_VALIDATION_KEYS
                     if route == "result_refinement"
+                    else CODEX_RGBA_REPAIR_VALIDATION_KEYS
+                    if route == "codex_rgba_repair"
                     else VALIDATION_KEYS
                 )
             },
@@ -830,6 +1055,8 @@ def parse_args():
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--layer-id", required=True)
     parser.add_argument("--generated-input", action="append", default=[])
+    parser.add_argument("--repair-matte-input", type=Path)
+    parser.add_argument("--alpha-matte-input", type=Path)
     parser.add_argument("--imagegen-mapping", type=Path)
     parser.add_argument("--jobs-root", type=Path, default=Path("output") / "jobs")
     parser.add_argument("--rmbg-script", type=Path, default=Path("scripts") / "finalize-rmbg.py")
@@ -846,6 +1073,8 @@ if __name__ == "__main__":
             jobs_root=args.jobs_root.resolve(),
             rmbg_script=args.rmbg_script.resolve(),
             imagegen_mapping=args.imagegen_mapping.resolve() if args.imagegen_mapping else None,
+            repair_matte_input=args.repair_matte_input.resolve() if args.repair_matte_input else None,
+            alpha_matte_input=args.alpha_matte_input.resolve() if args.alpha_matte_input else None,
         )
         print(json.dumps(result, ensure_ascii=False))
     except Exception as error:
