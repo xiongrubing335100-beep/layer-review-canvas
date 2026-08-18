@@ -311,9 +311,20 @@ test('standalone plugin install records durable Python and Node runtimes when pa
   assert.match(verificationResult.stdout, /managed runtime verified/);
 
   const marker = JSON.parse(await readFile(path.join(pluginRoot, '.python-runtime', '.imvia-layer-runtime.json'), 'utf8'));
+  const runtimeFingerprint = JSON.parse(run(runtime.python.command, ['-c', `
+import json
+import platform
+import sys
+print(json.dumps({
+    "pythonVersion": f"{sys.version_info.major}.{sys.version_info.minor}",
+    "pythonCacheTag": sys.implementation.cache_tag,
+    "platform": sys.platform,
+    "architecture": platform.machine(),
+}))
+`]).stdout.trim());
   assert.match(marker.lockSha256, /^[a-f0-9]{64}$/);
-  assert.equal(marker.pythonVersion, '3.12');
-  assert.equal(marker.pythonCacheTag, 'cpython-312');
+  assert.equal(marker.pythonVersion, runtimeFingerprint.pythonVersion);
+  assert.equal(marker.pythonCacheTag, cachePythonEnvironment.FAKE_PYTHON_CACHE_TAG);
   assert.equal(marker.platform, process.platform);
   assert.equal(marker.architecture, process.arch);
   assert.equal(marker.installPolicy, 'wheel-only-require-hashes-v1');

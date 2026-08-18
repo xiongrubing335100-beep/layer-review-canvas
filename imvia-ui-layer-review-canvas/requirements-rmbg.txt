@@ -1,1 +1,2 @@
 rembg[cpu]==2.0.69
+onnxruntime==1.23.2 ; python_version < '3.11'
