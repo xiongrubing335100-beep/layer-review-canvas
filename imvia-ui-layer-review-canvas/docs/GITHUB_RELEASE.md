@@ -1,0 +1,68 @@
+# GitHub 发布说明
+
+## 发布前检查
+
+发布和安装环境要求 Node.js `^20.19.0 || >=22.12.0`，推荐 Node.js 22 LTS。
+
+```sh
+npm install
+npm test
+npm run build
+```
+
+确认以下内容不会提交：
+
+- `output/` 中的原图、框选预览、任务计划和 PNG 结果；
+- `.env`、日志、本地 RMBG 模型缓存；
+- 任何用户路径、访问令牌或 Codex 对话内容。
+
+## 合并、发布与仓库改名
+
+1. 在当前 `layer-review-canvas` 仓库完成发布 PR 的审阅并合并到 `main`。
+2. 合并发布 PR 后，再在 GitHub 将仓库名称切换为 `imvia-layer-review-canvas`，最终地址为 `https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas`。
+3. 仓库改名后更新本地 `origin`，并确认根目录 [README.md](../../README.md) 的克隆地址和应用目录 `imvia-ui-layer-review-canvas` 都指向最终仓库。
+4. 在仓库 About 中说明：这是需要 Codex Desktop、Node.js 和 Python 的本地 UI 拆图工作台。
+5. 以根目录 [LICENSE](../../LICENSE) 的 Imvia Layer Personal & Commercial License 发布；本项目为 source-available，个人非商业使用免费，商业使用必须事先取得付费书面授权（prior written paid authorization）。不得以发布操作覆盖第三方组件或 BRIA RMBG 2.0 的 third-party license。
+6. 商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。
+
+## 用户安装方式
+
+用户克隆或下载 ZIP 后，进入应用目录运行：
+
+```sh
+git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
+cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
+npm run setup
+```
+
+ZIP 用户解压后进入其中的 `imvia-ui-layer-review-canvas`，运行同一条 `npm run setup`。该命令同时适用于 macOS Terminal 与 Windows PowerShell。
+
+初始化会完成三件事：
+
+1. 探测 Python 3.10+，在插件目录创建或复用 `.python-runtime`，用 universal `requirements-rmbg.lock` 与 pip `--only-binary=:all:`、`--require-hashes` 安装并验证 `rembg[cpu]`，再下载、校验 BRIA RMBG 2.0（`bria-rmbg`）模型；
+2. 在用户目录注册 Imvia Layer 本地插件；
+3. 原子复制并验证当前 Node.js 到插件自有 `.node-runtime`，写入该用户下载目录、稳定 Node launcher 和 Python 调用方式对应的运行配置。
+
+之后重启 Codex Desktop，并在新任务中发送：
+
+```text
+[@imvia-layer](plugin://imvia-layer@personal) 打开工作台
+```
+
+插件不会使用发布者机器上的固定目录；每个用户的安装脚本都会写入自己的下载位置。Windows 与 macOS 都使用同一条 `npm run setup` 命令；发布前请至少在两种系统各完成一次“克隆、安装、打开插件、RMBG 拆分”的干净环境验证。
+
+托管解释器位于 macOS 的 `~/plugins/imvia-layer/.python-runtime/bin/python` 或 Windows 的 `%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`；MCP 则由同一插件目录中的 `.node-runtime` 启动，不依赖安装时的 Codex cache 路径。安装 marker 同时绑定 lock SHA-256、Python ABI/major.minor、platform 与 architecture；Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留上一个有效 runtime。模型预热在 runtime 发布后执行，预热失败不会回滚已验证 runtime。卸载插件及其两个托管 runtime 使用：
+
+```sh
+npm run uninstall:codex-plugin
+```
+
+该命令不会清理模型缓存；之后可用 `npm run setup` 重建。
+
+已安装用户在更新源码后运行：
+
+```sh
+npm run update
+```
+
+该命令与 `npm run setup` 共享 fail-closed 顺序：先检查 Node 版本，再以 `npm ci` 同步锁定依赖、重新生成 production `dist/`，成功后才更新插件与托管 runtime，因此不会留下 stale bundle。

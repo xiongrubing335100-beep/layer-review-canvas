@@ -1,0 +1,412 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import * as realFileSystem from 'node:fs/promises';
+import { access, appendFile, chmod, copyFile, mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import test from 'node:test';
+import { removeRuntimeTestTree } from './fixtures/runtime-test-cleanup.mjs';
+
+const moduleUrl = new URL('../scripts/node-runtime.mjs', import.meta.url);
+
+async function loadNodeRuntime() {
+  return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random()}`).catch(() => null);
+}
+
+const testLicense = 'Node.js test distribution license\nCopyright Node.js contributors\n';
+
+function licenseResponse(body = testLicense, { status = 200, location } = {}) {
+  const headers = new Headers();
+  if (location) headers.set('location', location);
+  return new Response(body, { status, headers });
+}
+
+function officialLicenseFetch(requests = []) {
+  return async (url, options) => {
+    requests.push({ url: String(url), options });
+    return licenseResponse();
+  };
+}
+
+function fixtureNodePath(runtimeRoot, platform = process.platform) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  return platform === 'win32'
+    ? pathApi.join(runtimeRoot, 'node.exe')
+    : pathApi.join(runtimeRoot, 'bin', 'node');
+}
+
+async function copyNodeFixture(runtimeRoot) {
+  const executable = fixtureNodePath(runtimeRoot);
+  await mkdir(path.dirname(executable), { recursive: true });
+  await copyFile(process.execPath, executable);
+  return executable;
+}
+
+async function writeChangedNodeFixture(runtimeRoot) {
+  const executable = fixtureNodePath(runtimeRoot);
+  await mkdir(path.dirname(executable), { recursive: true });
+  if (process.platform === 'win32') {
+    await copyFile(process.execPath, executable);
+    await appendFile(executable, 'imvia-test-overlay');
+  } else {
+    await writeFile(executable, '#!/bin/sh\necho v99.0.0\n');
+    await chmod(executable, 0o755);
+  }
+  return executable;
+}
+
+test('Windows and macOS plugin-owned Node paths are stable and platform native', async () => {
+  const nodeRuntime = await loadNodeRuntime();
+  assert.ok(nodeRuntime, 'managed Node runtime module must exist');
+  assert.equal(
+    nodeRuntime.runtimeNodePath('C:\\Users\\Qing Mu\\plugins\\imvia-layer\\.node-runtime', 'win32'),
+    'C:\\Users\\Qing Mu\\plugins\\imvia-layer\\.node-runtime\\node.exe',
+  );
+  assert.equal(
+    nodeRuntime.runtimeNodePath('/Users/Qing Mu/plugins/imvia-layer/.node-runtime', 'darwin'),
+    '/Users/Qing Mu/plugins/imvia-layer/.node-runtime/bin/node',
+  );
+  assert.equal(fixtureNodePath('C:\\fixture', 'win32'), 'C:\\fixture\\node.exe');
+  assert.equal(fixtureNodePath('/fixture', 'darwin'), '/fixture/bin/node');
+});
+
+test('failed Node launcher replacement preserves the previous executable and removes staging', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  assert.ok(nodeRuntime, 'managed Node runtime module must exist');
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node atomic-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const cacheNode = await copyNodeFixture(path.join(temporaryRoot, 'Codex Cache', 'node'));
+  const changedSource = await writeChangedNodeFixture(path.join(temporaryRoot, 'changed-node'));
+  t.after(() => removeRuntimeTestTree(temporaryRoot));
+
+  const first = await nodeRuntime.ensurePersistentNodeLauncher({
+    pluginRoot,
+    nodeExecutable: cacheNode,
+    fetchImpl: officialLicenseFetch(),
+  });
+  const before = await readFile(first.command);
+  const faultingFileSystem = {
+    ...realFileSystem,
+    async copyFile(source, destination) {
+      if (source === changedSource) throw Object.assign(new Error('simulated launcher copy failure'), { code: 'EIO' });
+      return realFileSystem.copyFile(source, destination);
+    },
+  };
+  await assert.rejects(
+    nodeRuntime.ensurePersistentNodeLauncher({
+      pluginRoot,
+      nodeExecutable: changedSource,
+      fileSystem: faultingFileSystem,
+      fetchImpl: officialLicenseFetch(),
+    }),
+    /simulated launcher copy failure/,
+  );
+  assert.deepEqual(await readFile(first.command), before);
+  const result = spawnSync(first.command, ['--version'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
+});
+
+test('two first-time and two upgrade ensures publish the Node launcher exactly once', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  assert.ok(nodeRuntime, 'managed Node runtime module must exist');
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node concurrent-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const sourceNode = path.join(temporaryRoot, 'fake-node');
+  await writeFile(sourceNode, 'node-v1');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+
+  let copyCount = 0;
+  const delayedFileSystem = {
+    ...realFileSystem,
+    async copyFile(source, destination) {
+      copyCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return realFileSystem.copyFile(source, destination);
+    },
+  };
+  const runCommandImpl = async () => ({ stdout: 'v24.4.1\n', stderr: '' });
+  const options = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    fileSystem: delayedFileSystem,
+    runCommandImpl,
+    fetchImpl: officialLicenseFetch(),
+  };
+
+  const firstResults = await Promise.all([
+    nodeRuntime.ensurePersistentNodeLauncher(options),
+    nodeRuntime.ensurePersistentNodeLauncher(options),
+  ]);
+  assert.deepEqual(firstResults[1], firstResults[0]);
+  assert.equal(copyCount, 1);
+
+  await writeFile(sourceNode, 'node-v2');
+  copyCount = 0;
+  const upgradeResults = await Promise.all([
+    nodeRuntime.ensurePersistentNodeLauncher(options),
+    nodeRuntime.ensurePersistentNodeLauncher(options),
+  ]);
+  assert.deepEqual(upgradeResults[1], upgradeResults[0]);
+  assert.equal(copyCount, 1);
+});
+
+test('Node launcher publishes the exact versioned official LICENSE and records its hash', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node license-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  const requests = [];
+
+  const result = await nodeRuntime.ensurePersistentNodeLauncher({
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: 'v24.4.1\n', stderr: '' }),
+    fetchImpl: officialLicenseFetch(requests),
+  });
+
+  const expectedSource = 'https://raw.githubusercontent.com/nodejs/node/v24.4.1/LICENSE';
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, expectedSource);
+  assert.equal(requests[0].options.redirect, 'manual');
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal('headers' in requests[0].options, false, 'official raw downloads must not depend on GitHub API headers or authentication');
+  const licensePath = path.join(pluginRoot, '.node-runtime', 'LICENSE');
+  assert.equal(await readFile(licensePath, 'utf8'), testLicense);
+  const marker = JSON.parse(await readFile(path.join(pluginRoot, '.node-runtime', '.imvia-layer-node.json'), 'utf8'));
+  assert.equal(marker.nodeVersion, 'v24.4.1');
+  assert.equal(marker.licenseSource, expectedSource);
+  assert.equal(marker.licenseSha256, createHash('sha256').update(testLicense).digest('hex'));
+  assert.equal(result.nodeVersion, 'v24.4.1');
+});
+
+test('valid cached Node LICENSE is reused and a damaged copy is fetched and repaired', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node license cache-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  let fetchCount = 0;
+  const fetchImpl = async () => {
+    fetchCount += 1;
+    return licenseResponse();
+  };
+  const options = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: 'v24.4.1\n', stderr: '' }),
+    fetchImpl,
+  };
+
+  await nodeRuntime.ensurePersistentNodeLauncher(options);
+  await nodeRuntime.ensurePersistentNodeLauncher({
+    ...options,
+    fetchImpl: async () => { throw new Error('cache should avoid network'); },
+  });
+  assert.equal(fetchCount, 1);
+
+  const licensePath = path.join(pluginRoot, '.node-runtime', 'LICENSE');
+  await writeFile(licensePath, 'damaged');
+  await nodeRuntime.ensurePersistentNodeLauncher(options);
+  assert.equal(fetchCount, 2);
+  assert.equal(await readFile(licensePath, 'utf8'), testLicense);
+});
+
+test('LICENSE fetch rejects wrong-version and non-official redirects', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node redirect-'));
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  const baseOptions = {
+    pluginRoot: path.join(temporaryRoot, 'plugins', 'imvia-layer'),
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: 'v24.4.1\n', stderr: '' }),
+  };
+
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...baseOptions,
+    fetchImpl: async () => licenseResponse('', {
+      status: 302,
+      location: 'https://raw.githubusercontent.com/nodejs/node/v23.0.0/LICENSE',
+    }),
+  }), /LICENSE.*version|version.*LICENSE/i);
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...baseOptions,
+    fetchImpl: async () => licenseResponse('', {
+      status: 302,
+      location: 'https://example.com/LICENSE',
+    }),
+  }), /official|raw\.githubusercontent\.com|host/i);
+});
+
+test('staged Node version mismatch and oversized LICENSE fail before publication', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node validation-'));
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const common = { pluginRoot, nodeExecutable: sourceNode };
+
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...common,
+    runCommandImpl: async (command) => ({
+      stdout: command.includes('.node-runtime.staging-') ? 'v23.0.0\n' : 'v24.4.1\n',
+      stderr: '',
+    }),
+    fetchImpl: officialLicenseFetch(),
+  }), /version mismatch.*v24\.4\.1.*v23\.0\.0/i);
+  await assert.rejects(access(path.join(pluginRoot, '.node-runtime')), { code: 'ENOENT' });
+
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...common,
+    runCommandImpl: async () => ({ stdout: 'v24.4.1\n', stderr: '' }),
+    fetchImpl: async () => licenseResponse(`${testLicense}${'x'.repeat(100)}`),
+    licenseMaxBytes: testLicense.length,
+  }), /exceeds.*byte safety limit/i);
+  await assert.rejects(access(path.join(pluginRoot, '.node-runtime')), { code: 'ENOENT' });
+});
+
+test('missing LICENSE fails clearly and preserves the previous valid launcher', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node license rollback-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  let version = 'v24.4.1';
+  const options = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: `${version}\n`, stderr: '' }),
+    fetchImpl: officialLicenseFetch(),
+  };
+  const first = await nodeRuntime.ensurePersistentNodeLauncher(options);
+  const previousLauncher = await readFile(first.command);
+  const previousMarker = await readFile(path.join(pluginRoot, '.node-runtime', '.imvia-layer-node.json'));
+
+  await writeFile(sourceNode, 'node-v25');
+  version = 'v25.0.0';
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...options,
+    fetchImpl: async () => licenseResponse('not found', { status: 404 }),
+  }), /LICENSE.*404|404.*LICENSE/i);
+
+  assert.deepEqual(await readFile(first.command), previousLauncher);
+  assert.deepEqual(await readFile(path.join(pluginRoot, '.node-runtime', '.imvia-layer-node.json')), previousMarker);
+  assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
+});
+
+test('a failed concurrent Node upgrade releases the lock for a succeeding publisher', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node failed waiter-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  let version = 'v24.4.1';
+  const common = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: `${version}\n`, stderr: '' }),
+  };
+  await nodeRuntime.ensurePersistentNodeLauncher({ ...common, fetchImpl: officialLicenseFetch() });
+  await writeFile(sourceNode, 'node-v25');
+  version = 'v25.0.0';
+
+  let failureEntered;
+  const didEnterFailure = new Promise((resolve) => { failureEntered = resolve; });
+  let letFailureReturn;
+  const failureMayReturn = new Promise((resolve) => { letFailureReturn = resolve; });
+  const failed = nodeRuntime.ensurePersistentNodeLauncher({
+    ...common,
+    fetchImpl: async () => {
+      failureEntered();
+      await failureMayReturn;
+      return licenseResponse('not found', { status: 404 });
+    },
+  });
+  await didEnterFailure;
+  const succeeded = nodeRuntime.ensurePersistentNodeLauncher({ ...common, fetchImpl: officialLicenseFetch() });
+  letFailureReturn();
+
+  const results = await Promise.allSettled([failed, succeeded]);
+  assert.equal(results[0].status, 'rejected');
+  assert.match(results[0].reason.message, /LICENSE.*404|404.*LICENSE/i);
+  assert.equal(results[1].status, 'fulfilled');
+  assert.equal(results[1].value.nodeVersion, 'v25.0.0');
+  const marker = JSON.parse(await readFile(path.join(pluginRoot, '.node-runtime', '.imvia-layer-node.json'), 'utf8'));
+  assert.equal(marker.nodeVersion, 'v25.0.0');
+  assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
+});
+
+test('dual Node publish and restore rename failures preserve a recoverable backup for next startup', async (t) => {
+  const nodeRuntime = await loadNodeRuntime();
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia node dual rename-'));
+  const pluginRoot = path.join(temporaryRoot, 'plugins', 'imvia-layer');
+  const runtimeRoot = path.join(pluginRoot, '.node-runtime');
+  const sourceNode = path.join(temporaryRoot, 'node');
+  await writeFile(sourceNode, 'node-v24');
+  t.after(() => realFileSystem.rm(temporaryRoot, { recursive: true, force: true }));
+  let version = 'v24.4.1';
+  const common = {
+    pluginRoot,
+    nodeExecutable: sourceNode,
+    runCommandImpl: async () => ({ stdout: `${version}\n`, stderr: '' }),
+  };
+  await nodeRuntime.ensurePersistentNodeLauncher({ ...common, fetchImpl: officialLicenseFetch() });
+  await writeFile(path.join(runtimeRoot, 'previous-runtime.txt'), 'recover me');
+  await writeFile(sourceNode, 'node-v25');
+  version = 'v25.0.0';
+
+  const suffix = '707-808-aabbccddeeff';
+  const stagingRoot = `${runtimeRoot}.staging-${suffix}`;
+  const backupRoot = `${runtimeRoot}.backup-${suffix}`;
+  const faultingFileSystem = {
+    ...realFileSystem,
+    async rename(from, to) {
+      if (from === stagingRoot && to === runtimeRoot) {
+        throw Object.assign(new Error('simulated Node publish rename failure'), { code: 'EACCES' });
+      }
+      if (from === backupRoot && to === runtimeRoot) {
+        throw Object.assign(new Error('simulated Node restore rename failure'), { code: 'EIO' });
+      }
+      return realFileSystem.rename(from, to);
+    },
+  };
+  await assert.rejects(
+    nodeRuntime.ensurePersistentNodeLauncher({
+      ...common,
+      fileSystem: faultingFileSystem,
+      fetchImpl: officialLicenseFetch(),
+      pid: 707,
+      now: () => 808,
+      token: 'aabbccddeeff',
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors.map(({ message }) => message), [
+        'simulated Node publish rename failure',
+        'simulated Node restore rename failure',
+      ]);
+      assert.match(error.message, new RegExp(backupRoot.replaceAll('\\', '\\\\').replaceAll('.', '\\.')));
+      return true;
+    },
+  );
+  await assert.rejects(access(runtimeRoot), { code: 'ENOENT' });
+  assert.equal(await readFile(path.join(backupRoot, 'previous-runtime.txt'), 'utf8'), 'recover me');
+  await assert.rejects(access(stagingRoot), { code: 'ENOENT' });
+
+  await assert.rejects(nodeRuntime.ensurePersistentNodeLauncher({
+    ...common,
+    fetchImpl: async () => licenseResponse('not found', { status: 404 }),
+  }), /LICENSE.*404|404.*LICENSE/i);
+  assert.equal(await readFile(path.join(runtimeRoot, 'previous-runtime.txt'), 'utf8'), 'recover me');
+  await assert.rejects(access(backupRoot), { code: 'ENOENT' });
+  assert.equal((await readdir(pluginRoot)).some((name) => name.startsWith('.node-runtime.staging-')), false);
+});

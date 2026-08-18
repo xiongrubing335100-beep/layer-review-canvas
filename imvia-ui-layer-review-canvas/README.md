@@ -1,0 +1,91 @@
+# Imvia Layer
+
+Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
+
+仓库首页提供 macOS 与 Windows 的完整安装、启动、重连、更新、卸载和故障排除说明：[imvia-layer-review-canvas](../README.md)。本目录是应用目录 `imvia-ui-layer-review-canvas`。
+
+## 当前版本：v0.1.0
+
+这是首个可安装版本，提供以下能力：
+
+- **插件唤起工作台**：安装后通过 `@imvia-layer` 在当前 Codex 任务的右侧浏览器打开工作台，无需解释本地服务、MCP 或会话桥接的工作方式。
+- **可见会话拆分**：每个拆分任务会作为可见消息进入当前 Codex 对话；不会静默转为后台拆分。
+- **框选与画布总览**：支持框选单张原图的拆分区域，也支持在无限画布中查看多张原图及各自的拆分节点与结果。
+- **多图独立处理**：不同原图拥有独立的图层、任务和结果，互不覆盖；画布中按原图组织其子节点。
+- **任务队列与回传**：当前会话繁忙时，新的拆分任务会排队；完成的透明 PNG 自动回传工作台并可下载、放大预览。
+- **定向拆分与验收**：框选尺寸作为无限画布的逻辑尺寸与定位；ImageGen 定向修复使用标准参考画布与显式坐标映射。ImageGen 返回同比例的原生尺寸时按比例换算 `content_region`，修复类 UI 组件以该原生分辨率直接调用 BRIA RMBG 2.0（`bria-rmbg`）并回传高分辨率透明 PNG，不再因 `1024×1024 → 1254×1254` 这类同比例变化失败，也不会在去背景前缩小；文字与标志仍使用原像素锁定的透明 RGBA 流程。
+- **完整贝塞尔钢笔路径**：保留、排除与边界标注支持直线锚点、拖拽创建曲线控制柄、`Option` 拆分单侧控制柄、闭合路径、锚点编辑及撤销。新标注统一写入贝塞尔路径；已有 legacy 画笔数据仍可只读显示和选中，不会被自动改写。
+- **PNG 二次编辑与版本保留**：当前成功 PNG 是每次调整的唯一权威 base，工作台在新任务排队或失败时继续显示它；只有新版 PNG 成功完成后才切换。历史成功文件与任务记录继续保留，但画布只显示当前 base 结果节点。二次编辑使用 base PNG 的实际像素尺寸和 alpha，不使用逻辑框选尺寸；结构化操作与闭合钢笔路径限定可变范围，用户文字只描述视觉目标，路径外未标注 RGBA 像素保持锁定。
+- **一键本地安装**：`npm run setup` 会探测 Python 3.10+、安装 RMBG 依赖、预热 BRIA RMBG 2.0（`bria-rmbg`）模型，并注册本地 Imvia Layer 插件。
+
+## 使用与执行规范
+
+- [Imvia Layer 工作台完整使用指南](docs/guides/imvia-layer-workbench-user-guide.md)：面向使用者，覆盖工作台、框选、钢笔、提示词、队列、验收和 PNG 二次编辑。
+- [PNG 二次编辑局部 ROI 执行规范](docs/superpowers/specs/2026-08-10-png-result-refinement-roi-execution-design.md)：面向系统实现，定义结构化操作、原生 1:1 ROI、RGB/Alpha 权限、像素锁定、版本与终态验收。
+
+## 版本历史与更新规则
+
+后续发布会继续在本 README 维护版本记录。每个版本会说明新增功能、重要修复、兼容性要求及必要的升级步骤。
+
+### v0.1.0 — 首个可安装版本
+
+- 发布 Codex Desktop 本地插件与右侧工作台的一体化安装流程。
+- 提供可见会话拆分、任务队列、透明 PNG 回传、RMBG 最终处理和多图画布总览。
+- 提供插件模板、安装脚本、source-available 许可证与 GitHub 发布说明。
+- 安装器支持 Windows 与 macOS：自动记录本机可用的 Python 命令，后续拆分任务会复用该命令执行 RMBG 处理。
+- ImageGen 定向修复使用 mapping 提取原生 `content_region`；同比例原生画布会自动换算 mapping 坐标，宽高比变化、拉伸压缩或构图偏移才会被拒绝。BRIA 预处理保持原始宽高比并输出高分辨率透明 PNG；框选尺寸只负责无限画布中的显示与定位。
+
+## 一次安装
+
+前置条件：Codex Desktop、Node.js `^20.19.0 || >=22.12.0`（推荐 Node.js 22 LTS）、Python 3.10+。Windows 与 macOS 均支持；macOS 请先通过 [python.org](https://www.python.org/downloads/macos/) 或 Homebrew 安装 Python 3.10+。`npm run setup` 会自动下载 RMBG 的 Python 依赖和 BRIA RMBG 2.0 模型，首次运行需要联网。RMBG 2.0 权重按 BRIA 的 CC BY-NC 4.0 许可提供，仅限非商业使用；商业部署需取得授权。
+
+```sh
+git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
+cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
+npm run setup
+```
+
+如使用 ZIP，请解压仓库后进入其中的 `imvia-ui-layer-review-canvas` 目录，再运行同一条 `npm run setup` 命令。
+
+`npm run setup` 是唯一的安装命令：它会先检查 Node 版本，以 `npm ci` 同步锁定的 JavaScript 依赖并生成全新的 production `dist/`，再创建可持久复用的托管 Python 环境（macOS：`~/plugins/imvia-layer/.python-runtime/bin/python`；Windows：`%USERPROFILE%\\plugins\\imvia-layer\\.python-runtime\\Scripts\\python.exe`）和插件自有 Node launcher `.node-runtime`，安装 RMBG 依赖和 BRIA RMBG 2.0 模型，最后注册本地插件。依赖来自提交的 universal `requirements-rmbg.lock`，并由 pip `--only-binary=:all:` 与 `--require-hashes` 校验所有 wheel；lock、Python ABI、系统与架构变化会触发安全重建。Python runtime 的 staging、venv、pip、probe 或 publish 失败会保留上一个有效 runtime；模型预热发生在 runtime 发布之后，因此预热失败会停止注册但不会回滚已验证 runtime。完成后重启 Codex Desktop（或新建任务），在对话中发送：
+
+```text
+[@imvia-layer](plugin://imvia-layer@personal) 打开工作台
+```
+
+工作台会在当前任务的右侧浏览器打开。上传图片、框选拆分项并点击“拆分”后，任务会以可见消息进入当前对话；结果 PNG 会回传到工作台。用户无需手动运行开发服务、打开 `127.0.0.1` 地址、安装额外插件或了解 MCP/会话桥接机制。
+
+## 仅更新插件
+
+工作台源码更新后，确保当前工作目录是 `imvia-ui-layer-review-canvas` 应用目录，再运行会重新同步依赖、production build 并注册插件的完整更新命令：
+
+```sh
+npm run update
+```
+
+然后重启 Codex Desktop 以重新加载插件清单。
+
+如需卸载插件及其托管 `.python-runtime`、`.node-runtime`，在应用目录运行：
+
+```sh
+npm run uninstall:codex-plugin
+```
+
+重新运行 `npm run setup` 可完整重建插件与 runtime；模型缓存不属于插件目录，不会由此命令删除。
+
+## 项目内容
+
+- `src/`：React 工作台界面与状态逻辑。
+- `layer-review-mcp-server.mjs`：MCP 服务，负责从 Codex 打开右侧工作台。
+- `plugin-template/`：可移植插件模板；安装时会自动写入本机路径，不含作者个人目录。
+- `scripts/`：工作台启动、PNG 最终处理、插件安装和初始化脚本。
+- `requirements-rmbg.txt`：UI 组件去背景使用的 RMBG 顶层 Python 依赖。
+- `requirements-rmbg.lock`：跨 macOS/Windows 的完整 hashed 依赖锁，安装时配合 `--require-hashes` 验证供应链。
+
+运行时输出会写入 `output/`，该目录被 Git 忽略，不会随仓库发布。
+
+## 许可证与发布
+
+本项目为 source-available 软件，采用根目录 [Imvia Layer Personal & Commercial License](../LICENSE)；本目录的 [LICENSE](LICENSE) 是其字节一致的发布副本。个人非商业使用免费；商业使用必须事先取得付费书面授权（prior written paid authorization）。第三方组件、模型和素材仍受其各自许可证约束；特别是 BRIA RMBG 2.0 的 third-party license 不会被本项目的商业授权覆盖或自动授予。
+
+商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。发布操作见 [GitHub 发布说明](docs/GITHUB_RELEASE.md)，作者与第三方归属见根目录 [NOTICE.md](../NOTICE.md)。

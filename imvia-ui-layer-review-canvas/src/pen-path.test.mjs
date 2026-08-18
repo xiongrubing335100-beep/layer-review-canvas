@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  appendAnchor,
+  closePenPath,
+  createPenPath,
+  deleteAnchor,
+  draftPreviewSegment,
+  flattenPenPath,
+  isValidClosedPath,
+  moveAnchor,
+  moveHandle,
+  pathToSvgD,
+  toggleAnchorMode,
+} from './pen-path.js';
+
+function curvedFixture() {
+  let path = createPenPath({ id: 'curve', kind: 'boundary', point: { x: .1, y: .2 } });
+  path = appendAnchor(path, { x: .9, y: .2 });
+  path = appendAnchor(path, { x: .5, y: .85 });
+  path = moveHandle(path, 0, 'out', { x: .35, y: .05 }, { breakLink: true });
+  path = moveHandle(path, 1, 'in', { x: .65, y: .05 }, { breakLink: true });
+  return closePenPath(path);
+}
+
+test('a path needs three distinct anchors before it can close', () => {
+  let path = createPenPath({ id: 'p1', kind: 'foreground', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  assert.equal(isValidClosedPath(closePenPath(path)), false);
+  path = appendAnchor(path, { x: .9, y: .9 });
+  assert.equal(isValidClosedPath(closePenPath(path)), true);
+});
+
+test('linked handles stay collinear until option breaks the link', () => {
+  const path = closePenPath(appendAnchor(appendAnchor(
+    createPenPath({ id: 'p1', kind: 'boundary', point: { x: .1, y: .1 } }),
+    { x: .9, y: .1 },
+  ), { x: .5, y: .9 }));
+  const linked = moveHandle(path, 0, 'out', { x: .3, y: .1 }, { breakLink: false });
+  assert.deepEqual(linked.anchors[0].in, { x: -.1, y: .1 });
+  const broken = moveHandle(linked, 0, 'out', { x: .3, y: .2 }, { breakLink: true });
+  assert.deepEqual(broken.anchors[0].in, linked.anchors[0].in);
+  assert.equal(broken.anchors[0].handlesLinked, false);
+});
+
+test('directly moved handles keep finite coordinates outside the anchor bounds', () => {
+  const path = createPenPath({ id: 'p1', kind: 'boundary', point: { x: .9, y: .2 } });
+  const moved = moveHandle(path, 0, 'out', { x: 1.25, y: -.3 }, { breakLink: true });
+
+  assert.deepEqual(moved.anchors[0].out, { x: 1.25, y: -.3 });
+  assert.deepEqual(moved.anchors[0], {
+    x: .9, y: .2,
+    in: { x: .9, y: .2 }, out: { x: 1.25, y: -.3 }, handlesLinked: false,
+  });
+});
+
+test('out-of-bounds handles affect flattening while emitted pixels stay on the canvas', () => {
+  let path = createPenPath({ id: 'curve', kind: 'boundary', point: { x: .9, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .9 });
+  path = appendAnchor(path, { x: .1, y: .5 });
+  const outside = closePenPath(moveHandle(path, 0, 'out', { x: 1.25, y: .15 }, { breakLink: true }));
+  const edge = closePenPath(moveHandle(path, 0, 'out', { x: 1, y: .15 }, { breakLink: true }));
+  const outsidePixels = flattenPenPath(outside, { width: 640, height: 360, maxErrorPx: 1 });
+
+  assert.notDeepEqual(outsidePixels, flattenPenPath(edge, { width: 640, height: 360, maxErrorPx: 1 }));
+  assert.ok(outsidePixels.every(({ x, y }) => x >= 0 && x <= 640 && y >= 0 && y <= 360));
+  assert.ok(outsidePixels.every((point, index) => (
+    index === 0 || point.x !== outsidePixels[index - 1].x || point.y !== outsidePixels[index - 1].y
+  )));
+});
+
+test('flattening a closed curve is deterministic and stays inside source pixels', () => {
+  const points = flattenPenPath(curvedFixture(), { width: 640, height: 360, maxErrorPx: 1 });
+  assert.deepEqual(points, flattenPenPath(curvedFixture(), { width: 640, height: 360, maxErrorPx: 1 }));
+  assert.ok(points.length > curvedFixture().anchors.length);
+  assert.ok(points.every(({ x, y }) => x >= 0 && x <= 640 && y >= 0 && y <= 360));
+});
+
+test('path operations are immutable and keep anchor coordinates normalized', () => {
+  const initial = createPenPath({ id: 'p1', kind: 'boundary', point: { x: -.2, y: 1.4 } });
+  const appended = appendAnchor(initial, { x: .6, y: .4 });
+  const moved = moveAnchor(appended, 1, { x: 2, y: -1 });
+
+  assert.deepEqual(initial.anchors[0], {
+    x: 0, y: 1,
+    in: { x: 0, y: 1 }, out: { x: 0, y: 1 }, handlesLinked: true,
+  });
+  assert.deepEqual(moved.anchors[1], {
+    x: 1, y: 0,
+    in: { x: 1, y: 0 }, out: { x: 1, y: 0 }, handlesLinked: true,
+  });
+  assert.notStrictEqual(moved, appended);
+  assert.notStrictEqual(moved.anchors, appended.anchors);
+});
+
+test('switching a straight corner to smooth changes geometry with finite symmetric handles', () => {
+  let path = createPenPath({ id: 'corners', kind: 'boundary', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  path = closePenPath(appendAnchor(path, { x: .5, y: .9 }));
+  const original = path.anchors[1];
+  const smooth = toggleAnchorMode(path, 1).anchors[1];
+
+  assert.notDeepEqual(smooth.in, original.in);
+  assert.notDeepEqual(smooth.out, original.out);
+  assert.ok([smooth.in.x, smooth.in.y, smooth.out.x, smooth.out.y].every(Number.isFinite));
+  assert.ok(Math.hypot(smooth.in.x - smooth.x, smooth.in.y - smooth.y) > .01);
+  assert.deepEqual(
+    { x: Number((smooth.in.x + smooth.out.x).toFixed(12)), y: Number((smooth.in.y + smooth.out.y).toFixed(12)) },
+    { x: Number((smooth.x * 2).toFixed(12)), y: Number((smooth.y * 2).toFixed(12)) },
+  );
+  assert.equal(smooth.handlesLinked, true);
+});
+
+test('switching a smooth anchor back to a corner collapses both handles', () => {
+  let path = createPenPath({ id: 'corners', kind: 'boundary', point: { x: .1, y: .1 } });
+  path = appendAnchor(path, { x: .9, y: .1 });
+  path = closePenPath(appendAnchor(path, { x: .5, y: .9 }));
+  const smoothPath = toggleAnchorMode(path, 1);
+  const corner = toggleAnchorMode(smoothPath, 1).anchors[1];
+
+  assert.deepEqual(corner.in, { x: corner.x, y: corner.y });
+  assert.deepEqual(corner.out, { x: corner.x, y: corner.y });
+  assert.equal(corner.handlesLinked, false);
+  assert.equal(isValidClosedPath(deleteAnchor(smoothPath, 1)), false);
+  assert.equal(deleteAnchor(createPenPath({ id: 'only', kind: 'boundary', point: { x: .5, y: .5 } }), 0), null);
+});
+
+test('SVG serialization uses cubic segments and closes only when requested', () => {
+  let path = createPenPath({ id: 'p1', kind: 'boundary', point: { x: .1, y: .2 } });
+  path = appendAnchor(path, { x: .8, y: .2 });
+  path = appendAnchor(path, { x: .5, y: .9 });
+  path = moveHandle(path, 0, 'out', { x: .2, y: .1 }, { breakLink: true });
+  path = moveHandle(path, 1, 'in', { x: .7, y: .1 }, { breakLink: true });
+  path = closePenPath(path);
+
+  assert.equal(
+    pathToSvgD(path, { close: false }),
+    'M 0.1 0.2 C 0.2 0.1 0.7 0.1 0.8 0.2 C 0.8 0.2 0.5 0.9 0.5 0.9',
+  );
+  assert.equal(
+    pathToSvgD(path, { close: true }),
+    'M 0.1 0.2 C 0.2 0.1 0.7 0.1 0.8 0.2 C 0.8 0.2 0.5 0.9 0.5 0.9 C 0.5 0.9 0.1 0.2 0.1 0.2 Z',
+  );
+});
+
+test('draft preview continues from the last outgoing handle as a cubic segment', () => {
+  const anchor = {
+    x: .4,
+    y: .5,
+    in: { x: .3, y: .5 },
+    out: { x: .55, y: .35 },
+    handlesLinked: true,
+  };
+
+  assert.deepEqual(draftPreviewSegment(anchor, { x: .8, y: .7 }), {
+    start: { x: .4, y: .5 },
+    control1: { x: .55, y: .35 },
+    control2: { x: .8, y: .7 },
+    end: { x: .8, y: .7 },
+  });
+});
