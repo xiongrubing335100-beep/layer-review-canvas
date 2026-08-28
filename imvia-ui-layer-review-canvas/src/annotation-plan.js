@@ -16,6 +16,7 @@ function normalizedKind(kind) {
 function semanticForKind(kind) {
   if (kind === 'foreground') return 'force_keep';
   if (kind === 'background') return 'force_exclude';
+  if (kind === 'repair') return 'force_repair';
   return 'edge_override';
 }
 

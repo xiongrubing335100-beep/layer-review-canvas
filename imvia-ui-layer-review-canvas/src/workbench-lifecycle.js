@@ -15,6 +15,9 @@ const cancelablePlanStatuses = new Set([
 const startedPlanStatuses = new Set([
   'sent_to_codex',
   'processing',
+  'repair_rgb',
+  'repair_matte',
+  'alpha_matte',
   'partial',
   'finalizing',
 ]);
@@ -47,6 +50,10 @@ export function isCancelablePlanStatus(status) {
 }
 
 export function isStartedPlanStatus(status) {
+  return startedPlanStatuses.has(status);
+}
+
+export function isAbandonablePlanStatus(status) {
   return startedPlanStatuses.has(status);
 }
 

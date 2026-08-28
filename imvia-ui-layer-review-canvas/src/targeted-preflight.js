@@ -3,7 +3,7 @@ import path from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { buildRouteMetadata } from './split-execution.js';
 
-const allowedRoutes = new Set(['direct_crop', 'alpha_extract', 'codex_rgba', 'targeted_repair', 'result_refinement']);
+const allowedRoutes = new Set(['direct_crop', 'alpha_extract', 'codex_rgba', 'codex_rgba_repair', 'targeted_repair', 'result_refinement']);
 const jobIdPattern = /^layer-job-[a-zA-Z0-9._-]+$/;
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const maximumDecodedPngBytes = 512 * 1024 * 1024;
@@ -190,14 +190,37 @@ function expectedOutput(layer) {
   return { width, height, original_source_x: x, original_source_y: y };
 }
 
-function repairRegions(layer) {
+function repairRegions(layer, output) {
   if (layer.repair_regions === undefined || layer.repair_regions === null) return null;
   if (!Array.isArray(layer.repair_regions)) throw fail(`${layer.name || layer.id || '图层'}的 repair_regions 必须是数组`);
   const source = layer.repair_region_source;
   if (!['submitted_annotation', 'codex_declared'].includes(source)) {
     throw fail(`${layer.name || layer.id || '图层'}的 repair_region_source 不受支持`);
   }
-  return layer.repair_regions;
+  return layer.repair_regions.map((region, index) => {
+    if (!region || typeof region !== 'object') throw fail(`${layer.name || layer.id || '图层'}的 repair_regions[${index}] 无效`);
+    if (region.shape === 'rect') {
+      const values = ['x', 'y', 'width', 'height'].map((key) => Number(region[key]));
+      const [x, y, width, height] = values;
+      if (!values.every(Number.isFinite) || width <= 0 || height <= 0
+        || x < 0 || y < 0 || x + width > output.width || y + height > output.height) {
+        throw fail(`${layer.name || layer.id || '图层'}的 repair_regions[${index}] 超出输出画布`);
+      }
+      return { shape: 'rect', x, y, width, height };
+    }
+    if (region.shape === 'polygon') {
+      if (!Array.isArray(region.points) || region.points.length < 3) {
+        throw fail(`${layer.name || layer.id || '图层'}的 repair_regions[${index}] 多边形无效`);
+      }
+      const points = region.points.map((point) => ({ x: Number(point?.x), y: Number(point?.y) }));
+      if (!points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+        && point.x >= 0 && point.y >= 0 && point.x <= output.width && point.y <= output.height)) {
+        throw fail(`${layer.name || layer.id || '图层'}的 repair_regions[${index}] 超出输出画布`);
+      }
+      return { shape: 'polygon', points };
+    }
+    throw fail(`${layer.name || layer.id || '图层'}的 repair_regions[${index}] shape 不受支持`);
+  });
 }
 
 function finitePoint(point) {
@@ -678,7 +701,7 @@ export async function buildTargetedExecutionSpec({
       }
       trustedRefinementPolicy = validateRefinementOperation(layer, refinementAnnotations, refinementPngSize);
     }
-    const repairRegionsValue = repairRegions(layer);
+    const repairRegionsValue = repairRegions(layer, output);
     const inferredMetadata = buildRouteMetadata({
       category: layer.category,
       requirement: layer.requirement,
@@ -689,7 +712,13 @@ export async function buildTargetedExecutionSpec({
     });
     const transparency = layer.transparency_strategy || inferredMetadata.transparency_strategy;
     if (route === 'targeted_repair' && transparency === 'codex_rgba') {
-      throw fail(`${layerName} 不支持 targeted_repair 与 codex_rgba 组合；文字透明层必须使用 codex_rgba 路线`);
+      throw fail(`${layerName} 不支持 targeted_repair 与 codex_rgba 组合；文字透明修复层必须使用 codex_rgba_repair 路线`);
+    }
+    if (route === 'codex_rgba_repair' && (transparency !== 'codex_rgba' || !layer.remove_background)) {
+      throw fail(`${layerName} 的 codex_rgba_repair 必须启用文字透明层去背景，且禁止改走 RMBG`);
+    }
+    if (route === 'codex_rgba_repair' && (!repairRegionsValue || repairRegionsValue.length === 0)) {
+      throw fail(`${layerName} 的 codex_rgba_repair 必须包含至少一个已提交的补全范围`);
     }
     const repairEngine = layer.repair_engine ?? inferredMetadata.repair_engine;
     const maximumImagegenCalls = trustedRefinementPolicy?.maximum_imagegen_calls

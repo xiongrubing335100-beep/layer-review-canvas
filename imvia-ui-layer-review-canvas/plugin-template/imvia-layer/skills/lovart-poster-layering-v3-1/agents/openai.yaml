@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lovart Poster Layering v3.1"
+  short_description: "Evidence-grounded poster layer repair"
+  default_prompt: "Use $lovart-poster-layering-v3-1 to split this poster into complete editable layers."

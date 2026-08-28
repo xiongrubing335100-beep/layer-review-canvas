@@ -1,0 +1,5 @@
+interface:
+  display_name: "海报分层工作台"
+  short_description: "先复核海报计划，再逐层生成一个待用户审核的全画布候选"
+  default_prompt: "使用 $imvia-poster-layering-workbench-v1 按工作台预检执行海报分析或单层候选；不得自动重试或接受候选。"
+  auto_retry: false

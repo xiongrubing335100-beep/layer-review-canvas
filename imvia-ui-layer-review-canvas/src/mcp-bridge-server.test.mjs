@@ -14,7 +14,7 @@ test('the MCP tool returns a right-panel browser URL and mounts the conversation
   assert.match(serverSource, /buildWorkbenchWidgetHtml/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'dist', 'index\.html'\)/);
   assert.match(serverSource, /widgetResourceDomains = \[workbenchDomain, 'data:', 'blob:'\]/);
-  assert.match(serverSource, /ui:\/\/imvia-layer\/conversation-bridge-v20\.html/);
+  assert.match(serverSource, /ui:\/\/imvia-layer\/conversation-bridge-v22\.html/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'public', 'layer-review-bridge-widget\.html'\)/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'public', 'layer-review-bridge-widget\.js'\)/);
   assert.doesNotMatch(serverSource, /frameDomains:/);

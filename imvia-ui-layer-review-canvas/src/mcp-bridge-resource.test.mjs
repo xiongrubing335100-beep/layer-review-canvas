@@ -69,7 +69,7 @@ test('the real MCP resource contains only the lightweight conversation bridge', 
   );
 
   assert.match(html, /data-bridge-status/);
-  assert.doesNotMatch(html, /<button[^>]*data-bridge-send/);
+  assert.match(html, /<button[^>]*data-bridge-send/);
   assert.match(html, /ui\/message/);
   assert.match(html, /tools\/call/);
   assert.match(html, /register_layer_review_conversation_bridge/);
@@ -77,8 +77,7 @@ test('the real MCP resource contains only the lightweight conversation bridge', 
   assert.match(html, /mark_layer_review_foreground_dispatch_delivered/);
   assert.match(html, /release_layer_review_foreground_dispatch_claim/);
   assert.doesNotMatch(html, /acknowledge_layer_review_foreground_dispatch/);
-  assert.doesNotMatch(html, /http:\/\/127\.0\.0\.1:4173/);
-  assert.doesNotMatch(html, /\bfetch\(/);
+  assert.match(html, /http:\/\/127\.0\.0\.1:4173\/api\/layer-review\/workbench-session/);
   assert.doesNotMatch(html, /__LAYER_REVIEW_BRIDGE_SCRIPT__/);
   assert.doesNotMatch(html, /<iframe/i);
 });

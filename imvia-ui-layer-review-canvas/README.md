@@ -1,6 +1,6 @@
 # Imvia Layer
 
-Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
+Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图与海报分层工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
 
 仓库首页提供 macOS 与 Windows 的完整安装、启动、重连、更新、卸载和故障排除说明：[imvia-layer-review-canvas](../README.md)。本目录是应用目录 `imvia-ui-layer-review-canvas`。
 
@@ -17,10 +17,14 @@ Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆�
 - **完整贝塞尔钢笔路径**：保留、排除与边界标注支持直线锚点、拖拽创建曲线控制柄、`Option` 拆分单侧控制柄、闭合路径、锚点编辑及撤销。新标注统一写入贝塞尔路径；已有 legacy 画笔数据仍可只读显示和选中，不会被自动改写。
 - **PNG 二次编辑与版本保留**：当前成功 PNG 是每次调整的唯一权威 base，工作台在新任务排队或失败时继续显示它；只有新版 PNG 成功完成后才切换。历史成功文件与任务记录继续保留，但画布只显示当前 base 结果节点。二次编辑使用 base PNG 的实际像素尺寸和 alpha，不使用逻辑框选尺寸；结构化操作与闭合钢笔路径限定可变范围，用户文字只描述视觉目标，路径外未标注 RGBA 像素保持锁定。
 - **一键本地安装**：`npm run setup` 会探测 Python 3.10+、安装 RMBG 依赖、预热 BRIA RMBG 2.0（`bria-rmbg`）模型，并注册本地 Imvia Layer 插件。
+- **海报分层工作流**：上传海报后先确认图层所有权计划，再按授权、快照和 dispatch journal 逐层生成候选；候选经用户审核后才进入正式图层与重组流程。快速定向模式支持区域级 ImageGen、BRIA RMBG 2.0 与语义 alpha matte 路由。
 
 ## 使用与执行规范
 
 - [Imvia Layer 工作台完整使用指南](docs/guides/imvia-layer-workbench-user-guide.md)：面向使用者，覆盖工作台、框选、钢笔、提示词、队列、验收和 PNG 二次编辑。
+- [海报分层工作流](docs/guides/imvia-layer-workbench-user-guide.md#海报分层工作流)：覆盖模式选择、所有权计划、逐层候选、透明结果、审核和重组。
+- [海报分层工作台设计](docs/superpowers/specs/2026-08-20-poster-layering-workbench-mode-design.md)：定义海报计划、候选授权、正式图层与重组审计。
+- [快速定向海报工作台设计](docs/superpowers/specs/2026-08-21-poster-targeted-workbench-fast-mode-design.md)：定义 confirmed snapshot、区域输出与定向候选执行边界。
 - [PNG 二次编辑局部 ROI 执行规范](docs/superpowers/specs/2026-08-10-png-result-refinement-roi-execution-design.md)：面向系统实现，定义结构化操作、原生 1:1 ROI、RGB/Alpha 权限、像素锁定、版本与终态验收。
 
 ## 版本历史与更新规则

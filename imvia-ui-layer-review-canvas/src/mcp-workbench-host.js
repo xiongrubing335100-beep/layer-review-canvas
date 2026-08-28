@@ -5,9 +5,29 @@ import {
 
 const workbenchOrigin = 'http://127.0.0.1:4173';
 
+function isTrustedLocalWorkbenchOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+    const host = url.hostname.toLowerCase();
+    return host === '127.0.0.1'
+      || host === '::1'
+      || host === '[::1]'
+      || host === 'localhost'
+      || host.endsWith('.localhost');
+  } catch {
+    return false;
+  }
+}
+
+function currentWorkbenchOrigin() {
+  const origin = globalThis.location?.origin;
+  return isTrustedLocalWorkbenchOrigin(origin) ? origin : workbenchOrigin;
+}
+
 export function resolveWorkbenchUrl(value) {
   if (typeof value !== 'string' || !value.startsWith('/')) return value;
-  return new URL(value, `${workbenchOrigin}/`).href;
+  return new URL(value, `${currentWorkbenchOrigin()}/`).href;
 }
 
 export async function getConversationBridgePresence(fetchImpl = fetch) {
@@ -75,6 +95,18 @@ export async function cancelQueuedSplit(jobId, fetchImpl = fetch) {
   ), { method: 'POST' });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || `取消失败：HTTP ${response.status}`);
+  return result;
+}
+
+export async function abandonRunningSplit(jobId, fetchImpl = fetch) {
+  if (isMcpAppHost()) {
+    return callMcpAppTool('abandon_layer_review_job', { jobId });
+  }
+  const response = await fetchImpl(resolveWorkbenchUrl(
+    `/api/layer-review/foreground-dispatch/${encodeURIComponent(jobId)}/abandon`,
+  ), { method: 'POST' });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `放弃任务失败：HTTP ${response.status}`);
   return result;
 }
 

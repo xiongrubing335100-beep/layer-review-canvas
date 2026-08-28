@@ -12,6 +12,22 @@
 
 尺寸、坐标映射、透明通道、路径外像素锁定和标准画布由系统处理，用户不需要把这些技术要求写进提示词。
 
+## 海报分层工作流
+
+海报分层是与 UI/运营图拆分并列的独立流程。上传前必须明确选择“海报分层”；已有项目如果没有记录模式，会继续按“UI/运营图拆分”打开。功能开关关闭时，上传入口只显示 UI/运营图拆分，既有 UI 项目和已存在的海报任务仍可读取，不会删除计划、候选或已接受图层；只是不能提交新的海报分析。
+
+1. 选择“海报分层”并上传原图。工作台把完整原图保存为海报任务的唯一视觉权威；分析阶段只建立证据与所有权计划，**不会调用 ImageGen**。
+2. 在计划复核中检查从前景到背景的图层、来源证据、遮挡关系、支持组件、独立 UI、修复 envelope、锁定可见锚点与风险。日期、CTA、价格、Logo、角标和图标组默认应独立移动，不应为了方便合并到标题。计划有缺项、所有权冲突或不允许的合并时，不能确认。
+3. 点击“确认海报计划”后，才可对一个待处理图层点击“生成候选”。一次明确授权仅生成该图层的一张候选；不会因为失败、刷新、计时器或重试授权而自动生成第二张。计划结构发生变更会使尚未接受的旧候选失效。
+4. 审核时并排查看原图、原生候选、叠加对齐和透明模拟预览。透明模拟仅用于预览，绝不是正式交付文件。普通不透明图层的正式候选在资产外使用统一 `#00FF00`；Screen/Add 光效层使用 `#000000`，两者都保持原图全画布尺寸与原始坐标，且不混入 alpha。
+5. 工作台会先写入自动检查的失败码及说明。硬失败码包括 `UNSUPPORTED_GRAPHIC_EFFECT`、`UI_BUNDLING_ERROR`、`VISIBLE_ANCHOR_MUTATION`、`WHOLE_ASSET_REGENERATION`、`REPAIR_ENVELOPE_EXCEEDED`、`COMPLETION_MISSING`、`ANATOMY_OR_STRUCTURE_BROKEN`、`TEXT_OR_LOGO_MUTATED`、`BACKGROUND_LAYOUT_DRIFT`、`OCCLUDER_OWNERSHIP_ERROR`、`EFFECT_CONTINUITY_BROKEN`、`FOREIGN_CONTENT_LEAK`、`REGISTRATION_UNCERTAIN`、`KEY_UNUSABLE` 与 `CANVAS_OR_GREEN_FIELD_INVALID`。例如 `TEXT_OR_LOGO_MUTATED` 表示文字、字形或 Logo 被改变。硬失败候选不能接受，只能在用户再次明确授权后重新生成。
+6. 没有硬失败的候选会进入“需要用户审核”。“接受候选”是唯一会把候选以非生成式缩放和固定画布 padding 规范化到 `layers/` 的动作；“重试此层”只登记一次新的明确生成授权，随后仍需用户再次点击“生成候选”。接受不会再次调用 ImageGen。
+7. 所有计划图层均被接受后，运行“重组审计”。审计检查前后景堆叠、独立 UI、证据归属、锁定锚点、补全连续性、背景几何与重复/泄漏内容。审计失败会保留已接受图层但阻止导出：对每个冲突层点击“归档并重新授权”，工作台会归档该层的正式文件并创建新的授权；随后仍要显式点击生成、审核并接受新候选。所有冲突处理完毕后重新运行审计，只有新的审计通过才能导出完整包。
+
+海报任务包位于 `output/poster-jobs/<job-id>/`，包含 `source.png`、`poster-layer-plan.json`、`layer_manifest.json`、`evidence/`、`candidates/`、`layers/` 与 `poster-execution-report.json`。候选永远留在 `candidates/`；只有明确接受的文件才会进入 `layers/`。
+
+“放弃任务并释放队列”会停止工作台侧队列并忽略迟到结果，但无法强制停止已经开始的 Codex turn；界面会保留这一限制说明。取消或放弃不会删除来源图、历史候选或已接受图层。
+
 ## 2. 打开工作台
 
 在 Codex Desktop 当前任务中发送：

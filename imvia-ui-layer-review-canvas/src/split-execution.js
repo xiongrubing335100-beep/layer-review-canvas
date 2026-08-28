@@ -1,4 +1,4 @@
-const repairIntent = /(?:移除|删除|去掉|去除|擦掉|抹掉).{0,8}(?:文字|文本|数字|水印|内容)|补全.{0,12}(?:底板|空洞|遮挡|缺口)|修复.{0,8}(?:空洞|遮挡|缺口)|(?:remove|erase|delete)\s+(?:the\s+)?(?:text|copy|numbers?|watermarks?|content)|(?:fill|repair|reconstruct)\s+(?:the\s+)?(?:base|hole|occlusion|gap)/i;
+const repairIntent = /(?:移除|删除|去掉|去除|擦掉|抹掉).{0,8}(?:文字|文本|数字|水印|内容)|补全.{0,16}(?:底板|空洞|遮挡|缺口|隐藏|被挡)|(?:被遮挡|被挡|遮挡区域|隐藏部分)|修复.{0,8}(?:空洞|遮挡|缺口)|(?:remove|erase|delete)\s+(?:the\s+)?(?:text|copy|numbers?|watermarks?|content)|(?:fill|repair|reconstruct)\s+(?:the\s+)?(?:base|hole|occlusion|gap|hidden\s+area)/i;
 const negatedRepairIntent = /(?:不要|无需|无须|不需要|不必|别|禁止)\s*(?:再)?(?:移除|删除|去掉|去除|擦掉|抹掉).{0,8}(?:文字|文本|数字|水印|内容)|(?:do\s+not|don't|dont|never)\s+(?:remove|erase|delete)\s+(?:the\s+)?(?:text|copy|numbers?|watermarks?|content)/gi;
 const globalContextIntent = /(?:遮挡|被挡|补全.{0,12}(?:底板|背景|空洞|缺口)|修复.{0,8}(?:底板|背景|空洞|缺口)|完整背景|occlusion|reconstruct\s+(?:the\s+)?(?:background|base|hole|gap))/i;
 const codexRgbaCategories = new Set(['kvTitle', 'ordinaryText', 'logo']);
@@ -11,6 +11,9 @@ const runningJobStatuses = new Set([
   'submitted_to_conversation',
   'sent_to_codex',
   'processing',
+  'repair_rgb',
+  'repair_matte',
+  'alpha_matte',
   'partial',
   'finalizing',
 ]);
@@ -56,7 +59,21 @@ export function buildExecutionPolicy({
   executionMode = 'fast',
   executionRoute = 'direct_crop',
 }) {
-  if (executionMode !== 'fast' || executionRoute !== 'targeted_repair') return null;
+  if (executionMode !== 'fast' || !['targeted_repair', 'codex_rgba_repair'].includes(executionRoute)) return null;
+  if (executionRoute === 'codex_rgba_repair') {
+    return {
+      first_candidate_gate: 'validate_then_short_circuit',
+      acceptance_checks: [
+        'dimensions',
+        'annotation_conformance',
+        'repair_scope_conformance',
+        'source_pixel_lock',
+        'structure_integrity',
+      ],
+      on_pass: 'finalize_repair_bundle',
+      on_fail: 'single_stage_retry_then_fail',
+    };
+  }
   return {
     first_candidate_gate: 'validate_then_short_circuit',
     acceptance_checks: [
@@ -78,7 +95,8 @@ export function buildRouteMetadata({
   removeBackground = false,
   sourceRegionPixels = {},
 }) {
-  const isRepair = executionRoute === 'targeted_repair';
+  const isRepair = executionRoute === 'targeted_repair' || executionRoute === 'codex_rgba_repair';
+  const isCodexRgbaRepair = executionRoute === 'codex_rgba_repair';
   const isResultRefinement = executionRoute === 'result_refinement';
   const isQuality = executionMode === 'quality';
   const transparency = isResultRefinement
@@ -86,10 +104,13 @@ export function buildRouteMetadata({
     : transparencyStrategy({ category, removeBackground });
   const requiresGlobalContext = isQuality
     || category === 'kvBackground'
-    || (isRepair && globalContextIntent.test(String(requirement)));
+    || (isRepair && globalContextIntent.test(String(requirement)))
+    || isCodexRgbaRepair;
   const maximumImagegenCalls = isResultRefinement
     ? null
-    : isRepair || transparency === 'codex_rgba' ? 2 : 0;
+    : isCodexRgbaRepair
+      ? (isQuality ? 4 : 3)
+      : isRepair || transparency === 'codex_rgba' ? 2 : 0;
   const codexAlphaMatte = transparency === 'codex_rgba';
   return {
     repair_engine: isRepair || isResultRefinement ? 'imagegen' : 'none',
@@ -97,13 +118,13 @@ export function buildRouteMetadata({
     maximum_imagegen_calls: maximumImagegenCalls,
     transparency_strategy: transparency,
     rmbg_required: transparency === 'rembg',
-    structure_validation_required: codexAlphaMatte || isResultRefinement,
+    structure_validation_required: codexAlphaMatte || isResultRefinement || isCodexRgbaRepair,
     imagegen_input_kind: isResultRefinement
       ? 'existing_result_png'
-      : codexAlphaMatte ? 'codex_alpha_matte' : null,
+      : isCodexRgbaRepair ? 'codex_rgba_repair_bundle' : codexAlphaMatte ? 'codex_alpha_matte' : null,
     imagegen_canvas_policy: isResultRefinement
       ? 'prepared_result_locked_canvas'
-      : codexAlphaMatte ? 'prepared_source_locked_canvas' : null,
+      : isCodexRgbaRepair || codexAlphaMatte ? 'prepared_source_locked_canvas' : null,
     ...(isResultRefinement
       ? { output_resolution_policy: 'existing_result_pixels' }
       : isRepair && transparency === 'rembg'
@@ -128,6 +149,7 @@ export function classifyExecutionRoute({
   const intent = combinedRequirement({ category, categoryDefault, requirement, refinementPrompt })
     .replace(negatedRepairIntent, '');
   const transparency = transparencyStrategy({ category, removeBackground });
+  if (transparency === 'codex_rgba' && repairIntent.test(intent)) return 'codex_rgba_repair';
   if (transparency === 'codex_rgba') return 'codex_rgba';
   if (repairIntent.test(intent)) return 'targeted_repair';
   return transparency === 'rembg' ? 'alpha_extract' : 'direct_crop';

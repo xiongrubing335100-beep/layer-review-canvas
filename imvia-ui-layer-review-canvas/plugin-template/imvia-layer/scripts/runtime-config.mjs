@@ -27,13 +27,14 @@ async function readRuntimeConfig(pluginRoot, environment) {
   return config;
 }
 
-async function probePython(config, runCommandImpl) {
+async function probePython(config, environment, runCommandImpl) {
   const command = config.python?.command;
   if (typeof command !== 'string' || !command) throw new Error('runtime JSON 缺少 Python command');
   const args = Array.isArray(config.python.args) ? config.python.args : [];
   await runCommandImpl(command, [...args, '-c', 'import rembg'], {
     cwd: config.workbenchRoot,
     stdio: 'pipe',
+    env: { ...environment, NUMBA_DISABLE_JIT: '1' },
   });
 }
 
@@ -55,7 +56,7 @@ export async function resolveVerifiedRuntimeConfig({
   if (!config.workbenchRoot) throw new Error('Imvia Layer 缺少工作台路径，请在下载目录运行 npm run setup');
 
   try {
-    await probePython(config, runCommandImpl);
+    await probePython(config, environment, runCommandImpl);
     return config;
   } catch (probeError) {
     const installerPath = path.join(config.workbenchRoot, 'scripts', 'install-codex-plugin.mjs');
@@ -68,7 +69,7 @@ export async function resolveVerifiedRuntimeConfig({
       if (repairResult.stderr) writeStderr(repairResult.stderr);
       const repaired = await readRuntimeConfig(pluginRoot, environment);
       if (!repaired.workbenchRoot) throw new Error('修复后的 runtime JSON 缺少工作台路径');
-      await probePython(repaired, runCommandImpl);
+      await probePython(repaired, environment, runCommandImpl);
       return repaired;
     } catch (repairError) {
       throw new Error(

@@ -142,7 +142,10 @@ async function resolveBasePython({ cwd, env, platform, nodeExecutable, runComman
 
 async function verifyRmbg(pythonCommand, { cwd, env, runCommandImpl = runCommand }) {
   try {
-    await runCommandImpl(pythonCommand, ['-c', REMBG_PROBE], { cwd, env });
+    await runCommandImpl(pythonCommand, ['-c', REMBG_PROBE], {
+      cwd,
+      env: { ...env, NUMBA_DISABLE_JIT: '1' },
+    });
   } catch (error) {
     throw new Error(`RMBG 依赖验证失败（${pythonCommand} 无法 import rembg）：${error.message}`);
   }

@@ -6,4 +6,4 @@ from rembg import new_session
 
 
 new_session("bria-rmbg")
-print("BRIA RMBG 2.0 (bria-rmbg) model ready")
+print("BRIA RMBG 2.0（bria-rmbg）模型已就绪")
