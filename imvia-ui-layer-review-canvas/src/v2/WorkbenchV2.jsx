@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, ImagePlus, Layers3, LoaderCircle, RotateCcw, Upload } from 'lucide-react';
+import { Download, ImagePlus, Layers3, LoaderCircle, RotateCcw, Upload, FolderInput } from 'lucide-react';
 import { createDocument as newDocument, addLayer, removeLayer, reorderLayers } from './document.js';
+import { importLegacyDocument } from './legacy-import.js';
 import { createWorkbenchV2Client } from './api-client.js';
 import { DocumentCanvas } from './DocumentCanvas.jsx';
 import { LayerList } from './LayerList.jsx';
@@ -13,6 +14,7 @@ import './workbench-v2.css';
 
 const SESSION_KEY = 'imvia-layer-v2-session';
 const DOCUMENT_KEY = 'imvia-layer-v2-document';
+const LEGACY_HISTORY_PREFIX = 'imvia-layer-v2-legacy-history-';
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 const defaultApi = createWorkbenchV2Client();
 const candidateLabels = { pending: '待拆分', processing: '处理中', review: '待审核', adopted: '已采用', stale: '结果已过期', failed: '拆分失败', cancelled: '已取消', inactive: '已移出列表' };
@@ -59,7 +61,10 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
   const [batchState, setBatchState] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [latestExport, setLatestExport] = useState(null);
-  const posterInput = useRef(null); const h5Input = useRef(null);
+  const [legacyDocuments, setLegacyDocuments] = useState([]);
+  const [legacyImageId, setLegacyImageId] = useState('');
+  const [legacyHistory, setLegacyHistory] = useState([]);
+  const posterInput = useRef(null); const h5Input = useRef(null); const legacySourceInput = useRef(null);
   const [sessionId, setSessionId] = useState(browserSessionId);
   const saveQueue = useRef([]);
   const saveActive = useRef(false);
@@ -73,6 +78,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       api.getDocument(documentId).then(value => {
         if (!alive) return;
         setDocument(value); setSelection(value.activeLayerId); setSourceUrl(api.sourceUrl(value.documentId));
+        try { const history = JSON.parse(localStorage.getItem(`${LEGACY_HISTORY_PREFIX}${value.documentId}`) || '[]'); setLegacyHistory(Array.isArray(history) ? history : []); }
+        catch { setLegacyHistory([]); }
         setNotice('已恢复上次编辑的文档');
       }).catch(cause => { if (alive) { sessionStorage.removeItem(DOCUMENT_KEY); setError(`恢复文档失败：${cause.message}`); } })
         .finally(() => { hydrated.current = true; });
@@ -170,9 +177,55 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       const created = await api.createDocument({ mode, file: png, workbenchSessionId: sessionId });
       hydrated.current = true;
       saveQueue.current = []; setDocument(created); setSelection(null); setSourceUrl(api.sourceUrl(created.documentId));
+      setLegacyHistory([]);
       try { sessionStorage.setItem(DOCUMENT_KEY, created.documentId); } catch { /* session persistence is optional */ }
       setNotice('原图已载入，可以添加拆分区域'); setMobilePane('canvas');
     } catch (cause) { setError(`载入失败：${cause.message}`); setNotice(''); }
+    finally { setBusy(false); }
+  }
+
+  function openLegacyImport() {
+    setError('');
+    try {
+      // This legacy key is read only after an explicit user click; no project is auto-imported.
+      const stored = JSON.parse(localStorage.getItem('imvia-layer-project') || 'null');
+      const images = Object.entries(stored?.images || {}).map(([imageId, image]) => ({ ...image, imageId }));
+      if (!images.length) throw new Error('没有找到旧版项目记录');
+      setLegacyDocuments(images); setLegacyImageId(stored.activeImageId && stored.images?.[stored.activeImageId]
+        ? stored.activeImageId : images[0].imageId);
+      setNotice(`找到 ${images.length} 个旧版项目；请选择项目并重新选择匹配的原图`);
+    } catch (cause) { setError(`无法读取旧版项目：${cause.message}`); }
+  }
+
+  async function importSelectedLegacySource(file) {
+    const legacyDocument = legacyDocuments.find(value => value.imageId === legacyImageId);
+    if (!legacyDocument || !file) return;
+    setBusy(true); setError(''); setNotice('正在核对旧版原图并迁移拆分定义…');
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('无法读取所选原图')); reader.readAsDataURL(file);
+      });
+      const legacyFingerprint = `${file.name}:${file.size}:${file.lastModified || 0}:${dataUrl.length}`;
+      if (legacyFingerprint !== legacyDocument.sourceFingerprint) throw new Error('所选文件与旧版原图记录不匹配，请选择当时使用的原始文件');
+      const png = await normalizeImage(file);
+      const created = await api.createDocument({ mode: legacyDocument.documentMode === 'poster' ? 'poster' : 'h5', file: png, workbenchSessionId: sessionId });
+      const imported = importLegacyDocument({ legacyDocument, newDocumentId: created.documentId,
+        verifiedAssets: { workbenchSessionId: sessionId,
+          source: { ...created.source, legacyFingerprint } } });
+      const saved = await api.saveDocument({ ...imported.document, revision: created.revision + 1 }, created.revision);
+      hydrated.current = true; saveQueue.current = []; setDocument(saved); setSelection(saved.activeLayerId);
+      setSourceUrl(api.sourceUrl(saved.documentId)); setReviewLayerId(null); setReviewData(null); setBatchState(null);
+      setLegacyHistory(imported.history);
+      try { localStorage.setItem(`${LEGACY_HISTORY_PREFIX}${saved.documentId}`, JSON.stringify(imported.history)); } catch { /* history is also returned in this session */ }
+      try { sessionStorage.setItem(DOCUMENT_KEY, saved.documentId); } catch { /* session persistence is optional */ }
+      const pendingArtifacts = imported.history.filter(item => item.artifactPresent).length;
+      const acceptedMarkers = imported.history.length - pendingArtifacts;
+      const historyNote = imported.history.length
+        ? `；${pendingArtifacts} 个旧版结果文件待人工复核，${acceptedMarkers} 个旧版“已确认”标记没有对应可导入图像文件` : '';
+      setNotice(`已迁移 ${saved.layerOrder.length} 个拆分定义${historyNote}${imported.warnings.length ? `。${imported.warnings.join(' ')}` : ''}`);
+      setLegacyDocuments([]); setLegacyImageId(''); setMobilePane('canvas');
+    } catch (cause) { setError(`旧版迁移失败：${cause.message}`); }
     finally { setBusy(false); }
   }
 
@@ -339,7 +392,7 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       const nextSession = crypto.randomUUID().replaceAll('-', '');
       try { sessionStorage.setItem(SESSION_KEY, nextSession); sessionStorage.removeItem(DOCUMENT_KEY); } catch { /* persistence is optional */ }
       setSessionId(nextSession); setDocument(null); setSourceUrl(''); setSelection(null); setPendingCategory(null); setLayerStatusById({});
-      setEditorDraft(null); setPenTarget(null); setReviewLayerId(null); setReviewData(null); setBatchState(null); saveQueue.current = [];
+      setEditorDraft(null); setPenTarget(null); setReviewLayerId(null); setReviewData(null); setBatchState(null); setLegacyHistory([]); saveQueue.current = [];
       setNotice('已取消旧会话任务，可以重新上传开始');
     } catch (cause) { setError(`重新开始失败：${cause.message}`); }
   }
@@ -363,6 +416,16 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       </div>
       <input ref={posterInput} type="file" accept="image/*" hidden onChange={event=>{handleUpload('poster',event.target.files?.[0]);event.target.value='';}} />
       <input ref={h5Input} type="file" accept="image/*" hidden onChange={event=>{handleUpload('h5',event.target.files?.[0]);event.target.value='';}} />
+      <input ref={legacySourceInput} type="file" accept="image/*" hidden onChange={event=>{importSelectedLegacySource(event.target.files?.[0]);event.target.value='';}} />
+      {legacyDocuments.length > 0 && <div className="v2-legacy-import" role="group" aria-label="导入旧版项目">
+        <label>选择旧版项目<select value={legacyImageId} onChange={event=>setLegacyImageId(event.target.value)}>
+          {legacyDocuments.map(item=><option key={item.imageId} value={item.imageId}>{item.sourceName || item.imageId} · {item.nodes?.length || 0} 项</option>)}
+        </select></label>
+        <button type="button" disabled={busy||!legacyImageId} onClick={()=>legacySourceInput.current?.click()}><FolderInput size={15}/>选择匹配原图并迁移</button>
+        <small>只复制类别、名称和原位框选；旧候选不会自动采用。</small>
+        <button type="button" className="v2-legacy-import__cancel" onClick={()=>{setLegacyDocuments([]);setLegacyImageId('');setNotice('');}}>取消</button>
+      </div>}
+      {legacyDocuments.length === 0 && <button type="button" className="v2-legacy-import-trigger" onClick={openLegacyImport}><FolderInput size={15}/>导入旧版项目</button>}
       {error ? <p className="v2-notice v2-notice--error" role="alert">{error}</p> : notice ? <p className="v2-notice">{notice}</p> : null}
     </section> : editorDraft ? <div className="v2-editor-stage">
       <header className="v2-editor-stage__head"><span>{penTarget ? '精细编辑' : '单项编辑'} · {editorDraft.values.name}</span><button type="button" onClick={penTarget ? () => setPenTarget(null) : cancelEditor}>← 返回</button></header>
@@ -389,6 +452,7 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
           onAdd={armLayer} onRemove={removeSelectedLayer} onReorder={order=>{try{publishDocument(reorderLayers(document,order));}catch(cause){setError(`排序失败：${cause.message}`);}}}/>
       </section>
       <footer className="v2-bottom-actions"><div className="v2-bottom-actions__status" role={error?'alert':'status'}>{error||notice||'修改将自动保存'}</div>
+        {legacyHistory.length > 0 && <span className="v2-legacy-history-indicator" title="旧版记录未导入当前候选，也未采用">{legacyHistory.length} 条旧版审核记录</span>}
         {['sending', 'awaiting_confirmation', 'confirmed', 'running'].includes(batchState?.status)
           ? <button type="button" className="v2-cancel-batch-action" onClick={cancelBatch}>取消本批次</button>
           : batchState?.status === 'ready_to_send'

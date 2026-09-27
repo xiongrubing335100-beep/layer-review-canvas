@@ -59,6 +59,7 @@ test('empty workbench provides separate poster and H5 upload entry points', () =
   assert.match(markup, /上传海报原图拆分/);
   assert.match(markup, /上传 H5 原图拆分/);
   assert.match(markup, /重新开始/);
+  assert.match(markup, /导入旧版项目/);
 });
 
 test('single-layer editor shows requested controls while pen view keeps the source image and honest tool availability', () => {

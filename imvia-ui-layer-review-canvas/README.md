@@ -27,6 +27,16 @@ Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆�
 - [快速定向海报工作台设计](docs/superpowers/specs/2026-08-21-poster-targeted-workbench-fast-mode-design.md)：定义 confirmed snapshot、区域输出与定向候选执行边界。
 - [PNG 二次编辑局部 ROI 执行规范](docs/superpowers/specs/2026-08-10-png-result-refinement-roi-execution-design.md)：面向系统实现，定义结构化操作、原生 1:1 ROI、RGB/Alpha 权限、像素锁定、版本与终态验收。
 
+## V2 同页原位分层（开发分支）
+
+V2 将拆分定义、审核和导出放在同一张原图画布中。海报/H5 原图只上传一次；拆分项按原图像素坐标框选，结果只有经过当前修订审核并由用户明确采用后才会进入透明 PSD。当前交付的是栅格图层，不会把文字或图形重建为 Photoshop 原生文字层/矢量图层。V2 尚未替换安装版 V1，开发入口位于 `src/v2/WorkbenchV2.jsx`。
+
+空状态的“导入旧版项目”是显式操作：它只读取 V1 明确使用的 `imvia-layer-project` 项目记录；用户还须选中项目并重新选择原始文件。旧 `ui` 模式映射为 H5，旧百分比框选转换为原图像素坐标。旧结果不会自动采用；缺少可验证的原位映射、来源和结果绑定时，只保留待复核元数据，不会进入当前候选或 PSD。旧 V1 项目记录不包含候选 PNG 时，只记录“旧版已确认”标记，不伪称候选图像已迁入。旧版路径标注不自动搬入，需在 V2 重新检查。
+
+这项工作在隔离分支 `codex/workbench-v2-in-place-psd` 开发，不会自动推送或合并。基线为 `a873ee1`，Task 10 提交为 `7a23f70`，Task 11 提交为 `6f7491e`；可用 `git log --oneline codex/workbench-v2-in-place-psd` 查看阶段点。若要回到 Task 10 的本地快照，可在确认没有未保存改动后执行 `git switch --detach 7a23f70`；切回开发分支使用 `git switch codex/workbench-v2-in-place-psd`。这只切换本地代码，不会改远端仓库。
+
+Task 11 的逐项验收状态见 [V2 工作流验收记录](docs/superpowers/evidence/v2-workflow-acceptance.md)。
+
 ## 版本历史与更新规则
 
 后续发布会继续在本 README 维护版本记录。每个版本会说明新增功能、重要修复、兼容性要求及必要的升级步骤。

@@ -191,9 +191,9 @@ PSD 技术依据：官方 [ag-psd 文档](https://github.com/Agamnentzar/ag-psd)
 
 **Interfaces:** `importLegacyDocument({legacyDocument,verifiedAssets,newDocumentId}):{document,history,warnings}`；只复制来源/定义，旧候选默认为待查历史，具备可验证原位映射与匹配身份才可参与新文档审核，不自动采用；旧 `ui` 显式映射 `h5`。
 
-- [ ] 写测试：不改变 legacy 输入及文件；曾经 recenter 的候选 `assert.equal(imported.document.layers.a.acceptedVersionId,null)`；完整 fixture 经 document→batch确认→两项回传→采用→PSD 成功，任一未审核项阻断导出；V1 ZIP API 与旧 dispatch 流程仍通过。运行 `node --test src/v2/legacy-import.test.mjs src/v2/workflow.test.mjs` 确认失败。
-- [ ] 实现显式迁入与旧版入口，文档写明新旧存储和本分支/基线；不迁移任意系统目录、不批量清理已有任务。更新集成测试，不以生成服务 mock 声称真实模型成功。
-- [ ] 跑上述测试及一次最终相关回归：`node --test src/v2/*.test.mjs src/mcp-bridge-widget.test.mjs src/mcp-bridge-resource.test.mjs src/foreground-dispatch.test.mjs src/poster-job-store.test.mjs src/pen-editor-state.test.mjs`、`node scripts/run-managed-python-tests.mjs`、`npm run build`。若失败只扩展与失败有关检查。
+- [x] 写测试：不改变 legacy 输入及文件；曾经 recenter 的候选 `assert.equal(imported.document.layers.a.acceptedVersionId,null)`；完整 fixture 经 document→batch确认→两项回传→采用→PSD 成功，任一未审核项阻断导出；V1 ZIP API 与旧 dispatch 流程仍通过。运行 `node --test src/v2/legacy-import.test.mjs src/v2/workflow.test.mjs` 确认失败。
+- [x] 实现显式迁入与旧版入口，文档写明新旧存储和本分支/基线；不迁移任意系统目录、不批量清理已有任务。更新集成测试，不以生成服务 mock 声称真实模型成功。
+- [x] 跑上述测试及一次最终相关回归：`node --test src/v2/*.test.mjs src/mcp-bridge-widget.test.mjs src/mcp-bridge-resource.test.mjs src/foreground-dispatch.test.mjs src/poster-job-store.test.mjs src/pen-editor-state.test.mjs`、`node scripts/run-managed-python-tests.mjs`、Vite production build（`npm` 不在 PATH，通过 `node node_modules/vite/bin/vite.js build`）。记录的两项既有无关断言失败见验收记录。
 - [ ] 在真实浏览器对照四个 Figma 节点完成上传、添加重叠选区、编辑/精修、确认取消与恢复、历史候选、原位预览、PSD 下载验收；海报/H5 各覆盖一次。真实生成使用用户明确授权的有限样本，记录实际预算和结果；PSD 完成 Photoshop 检查。列出每项 passed/blocked 与证据，不笼统写“全部完成”。
 - [ ] 清理本次无用临时文件，保留必要验收报告与用户结果；核对 diff 范围与 git status。提交 `feat: complete V2 migration and workflow acceptance`；给用户本地分支、各阶段提交及回退入口，不自动合并或推送。
 
