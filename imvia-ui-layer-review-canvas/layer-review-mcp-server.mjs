@@ -35,6 +35,7 @@ import { withDirectoryLock } from './src/file-lock.js';
 import { resetPosterDispatchesForOpen } from './src/poster-dispatch-control.js';
 import { resetWorkbenchForOpen } from './src/workbench-lifecycle-store.js';
 import { isExecutionFeatureEnabled } from './src/execution-features.js';
+import { registerV2BridgeTools } from './src/v2/bridge-tools.mjs';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
 const outputDirectory = path.join(rootDirectory, 'output');
@@ -175,6 +176,7 @@ export function createLayerReviewBridgeServer({
     name: 'layer-review-workbench',
     version: '1.0.0',
   });
+  registerV2BridgeTools(server, { root: path.join(outputDirectory, 'workbench-v2', 'bridge-requests') });
 
   registerAppResource(
     server,
