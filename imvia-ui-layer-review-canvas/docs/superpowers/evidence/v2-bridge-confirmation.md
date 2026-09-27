@@ -21,4 +21,8 @@ An existing V1 regression test (`src/mcp-bridge-widget.test.mjs`, test starting 
 
 ## Outstanding gate
 
+### First live attempt: blank widget (2026-09-27)
+
+The desktop loaded the V2 server and committed the widget frame, then logged `Failed to execute 'write' on 'Document': missing ) after argument list` at 12:34:49.816Z. Local parsing of every generated inline script reproduced the same error in the embedded SDK. `injectMcpAppsBridge` used a string replacement, which interpreted SDK `$` replacement tokens and corrupted its source. Changed that replacement to a callback so SDK contents remain literal. Added a regression that parses all three emitted scripts; observed failure before the fix and success after it. All 10 resource/bridge tests pass. The running MCP process must reload the module; live rendering and delivery remain unverified after this source fix.
+
 This Codex session has no Imvia Layer workbench tool exposed. Its `imvia` tools are image-import tools, not this workbench. A separately named test MCP connection to this branch is required to test the real modal, visible user message and model acknowledgement without replacing the installed legacy plugin. No connection configuration has been changed and no production generation has run.

@@ -3,11 +3,21 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import {
   buildBridgeWidgetHtml,
+  buildV2ConfirmationProbeHtml,
   buildWorkbenchDevWidgetHtml,
   buildWorkbenchWidgetHtml,
 } from './mcp-bridge-resource.js';
+
+test('V2 resource preserves executable syntax of every inline script including the SDK', () => {
+  const scripts = [...buildV2ConfirmationProbeHtml().matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
+  assert.equal(scripts.length, 3);
+  for (const [index, script] of scripts.entries()) {
+    assert.doesNotThrow(() => new vm.Script(script[1]), `inline script ${index} must parse`);
+  }
+});
 
 test('the MCP resource inlines the built workbench assets', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'layer-review-widget-'));

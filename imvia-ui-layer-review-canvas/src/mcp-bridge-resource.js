@@ -127,7 +127,8 @@ function injectMcpAppsBridge(html) {
     mcpHostBridgeScript(),
     '</script>',
   ].join('\n');
-  return html.replace(/<head>/i, `<head>\n    ${bridge}`);
+  // A replacement string would interpret SDK literals such as $& and $'.
+  return html.replace(/<head>/i, () => `<head>\n    ${bridge}`);
 }
 
 function mcpAppsBundle() {
