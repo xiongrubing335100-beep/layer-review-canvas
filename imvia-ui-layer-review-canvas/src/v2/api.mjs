@@ -7,6 +7,8 @@ import { readPosterPngBytes } from '../poster-png.js';
 import { createBatchStore } from './batch-store.js';
 import { createBridgeRequestStore } from './bridge-request-store.js';
 import { buildBatchPrompt } from './batch-bridge.js';
+import { listV2CandidateVersions, readV2CandidatePng } from './candidate-store.js';
+import { candidateState, getCompositionLayers } from './candidate-review.js';
 
 function error(code, message = code) { return Object.assign(new Error(message), { code }); }
 
@@ -25,6 +27,17 @@ export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = nu
   };
   const batches = providedBatchStore || createBatchStore({ root: runtimeRoot, getDocument: id => store.read(id),
     readConfirmation: id => bridgeStore.read(id), cancelConfirmation });
+  const candidateVersions = async (documentId, layerId = null) => {
+    const document = await store.read(idSchema.parse(documentId));
+    if (layerId && !document.layerOrder.includes(idSchema.parse(layerId))) throw error('INACTIVE_LAYER');
+    const attempts = await batches.listDocumentAttempts(documentId);
+    const versions = await listV2CandidateVersions({ root: runtimeRoot, attempts, documentId, layerId });
+    return { document, attempts, versions };
+  };
+  const publicVersion = version => {
+    const { pngPath, rawPath, reviewReportPath, pixelAuditPath, ...safe } = version;
+    return safe;
+  };
   return {
     async createDocument({ mode, bytes, workbenchSessionId }) {
       if (!['poster', 'h5'].includes(mode)) throw error('INVALID_MODE');
@@ -68,6 +81,33 @@ export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = nu
     cancelBatch(id) { return batches.cancelBatch(id); },
     restartSession(input) { return batches.restartSession(input); },
     applyAttemptEvent(input) { return batches.applyEvent(input); },
+    async listLayerVersions({ documentId, layerId }) {
+      const { document, attempts, versions } = await candidateVersions(documentId, layerId);
+      return { versions: versions.map(publicVersion), state: candidateState(document, layerId, versions, attempts),
+        attempts: attempts.filter(attempt => attempt.layerId === layerId).map(({ attemptId, layerRevision, sourceFingerprint, execution, error: failure }) => ({ attemptId, layerRevision, sourceFingerprint, execution, error: failure })) };
+    },
+    async adoptCandidate({ documentId, expectedRevision, layerId, versionId }) {
+      const { document, versions } = await candidateVersions(documentId, layerId);
+      if (document.revision !== expectedRevision) throw error('REVISION_CONFLICT');
+      const state = candidateState(document, layerId, versions, []);
+      if (!state.versionIds.includes(versionId)) throw error('CANDIDATE_NOT_CURRENT');
+      if (document.layers[layerId].acceptedVersionId === versionId) return document;
+      const next = { ...document, revision: document.revision + 1,
+        layers: { ...document.layers, [layerId]: { ...document.layers[layerId], acceptedVersionId: versionId } } };
+      return store.update({ documentId, expectedRevision, document: next });
+    },
+    async getComposition(documentId) {
+      const { document, versions } = await candidateVersions(documentId);
+      return { documentId, documentRevision: document.revision, width: document.source.width, height: document.source.height,
+        layers: getCompositionLayers(document, versions).map(layer => {
+          const { pngPath, ...safe } = layer;
+          return { ...safe, pngUrl: `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/layers/${encodeURIComponent(layer.layerId)}/versions/${encodeURIComponent(layer.versionId)}/png` };
+        }) };
+    },
+    async readCandidatePng({ documentId, layerId, versionId }) {
+      const { document, attempts } = await candidateVersions(documentId, layerId);
+      return (await readV2CandidatePng({ root: runtimeRoot, attempts, documentId: document.documentId, layerId, versionId })).bytes;
+    },
     saveDocument(document, expectedRevision) {
       return store.update({ documentId: document.documentId, expectedRevision, document: validateDocument(document) });
     },
@@ -111,6 +151,10 @@ export function workbenchV2Middleware({ root }) {
         const eventMatch = url.pathname.match(/^\/api\/workbench-v2\/batches\/([A-Za-z0-9_-]+)\/events$/);
         const restartMatch = url.pathname.match(/^\/api\/workbench-v2\/sessions\/([A-Za-z0-9_-]+)\/restart$/);
         const sessionBatchesMatch = url.pathname.match(/^\/api\/workbench-v2\/sessions\/([A-Za-z0-9_-]+)\/batches$/);
+        const layerVersionsMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/layers\/([A-Za-z0-9_-]+)\/versions$/);
+        const adoptCandidateMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/layers\/([A-Za-z0-9_-]+)\/adopt$/);
+        const compositionMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/composition$/);
+        const candidatePngMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/layers\/([A-Za-z0-9_-]+)\/versions\/([A-Za-z0-9_-]+)\/png$/);
         if (submitBatch && request.method === 'POST') {
           const payload = JSON.parse((await readBody(request)).toString('utf8'));
           result = await api.submitBatch({ ...payload, documentId: submitBatch[1] }); status = 202;
@@ -119,7 +163,15 @@ export function workbenchV2Middleware({ root }) {
         else if (batchCancelMatch && request.method === 'POST') result = await api.cancelBatch(batchCancelMatch[1]);
         else if (sessionBatchesMatch && request.method === 'GET') result = await api.listSessionBatches(sessionBatchesMatch[1]);
         else if (batchMatch && request.method === 'GET') result = await api.getBatch(batchMatch[1]);
-        else if (claimMatch && request.method === 'POST') {
+        else if (layerVersionsMatch && request.method === 'GET') result = await api.listLayerVersions({ documentId: layerVersionsMatch[1], layerId: layerVersionsMatch[2] });
+        else if (adoptCandidateMatch && request.method === 'POST') {
+          const payload = JSON.parse((await readBody(request)).toString('utf8'));
+          result = await api.adoptCandidate({ ...payload, documentId: adoptCandidateMatch[1], layerId: adoptCandidateMatch[2] });
+        } else if (compositionMatch && request.method === 'GET') result = await api.getComposition(compositionMatch[1]);
+        else if (candidatePngMatch && request.method === 'GET') {
+          const bytes = await api.readCandidatePng({ documentId: candidatePngMatch[1], layerId: candidatePngMatch[2], versionId: candidatePngMatch[3] });
+          response.setHeader('Content-Type', 'image/png'); response.setHeader('Cache-Control', 'private, max-age=31536000, immutable'); response.end(bytes); return;
+        } else if (claimMatch && request.method === 'POST') {
           const payload = JSON.parse((await readBody(request)).toString('utf8'));
           result = await api.claimNextBatchItem({ ...payload, batchId: claimMatch[1] });
         } else if (cancelMatch && request.method === 'POST') result = await api.cancelAttempt({ attemptId: cancelMatch[1] });
@@ -144,7 +196,7 @@ export function workbenchV2Middleware({ root }) {
       }
       response.statusCode = status; response.setHeader('Content-Type', 'application/json; charset=utf-8'); response.end(JSON.stringify(result));
     } catch (cause) {
-      response.statusCode = cause.code === 'REVISION_CONFLICT' ? 409 : cause.code === 'NOT_FOUND' ? 404 : cause.code === 'METHOD_NOT_ALLOWED' ? 405 : 400;
+      response.statusCode = cause.code === 'REVISION_CONFLICT' ? 409 : ['NOT_FOUND','CANDIDATE_NOT_FOUND'].includes(cause.code) ? 404 : cause.code === 'METHOD_NOT_ALLOWED' ? 405 : 400;
       response.setHeader('Content-Type', 'application/json; charset=utf-8'); response.end(JSON.stringify({ error: cause.code || 'INVALID_REQUEST', message: cause.message }));
     }
   };

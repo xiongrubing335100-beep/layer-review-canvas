@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readPosterPngBytes } from '../poster-png.js';
-import { finalizeV2Candidate, finalizeV2Failure } from './candidate-store.js';
+import { finalizeV2Candidate, finalizeV2Failure, listV2CandidateVersions, readV2CandidatePng } from './candidate-store.js';
 
 function crcTable() { return Uint32Array.from({ length: 256 }, (_, value) => { let crc = value; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)); return crc >>> 0; }); }
 const crc32 = (data, table = crcTable()) => { let crc = 0xffffffff; for (const byte of data) crc = table[(crc ^ byte) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; };
@@ -66,5 +66,25 @@ test('candidate rejects missing or mismatched review evidence and all-transparen
     await assert.rejects(() => finalizeV2Candidate({ manifestPath: f.manifestPath, rawPath: f.rawPath, reportPath: f.reportPath }), /REVIEW_REPORT_BINDING_MISMATCH/);
     await writeFile(f.reportPath, JSON.stringify({ attemptId: 'attempt-a', dispatchId: 'dispatch-a', authorizationId: 'auth-a', snapshotId: 'snap-a', sourceFingerprint: 'source-a', checks: { png: true } }));
     await assert.rejects(() => finalizeV2Candidate({ manifestPath: f.manifestPath, rawPath: f.rawPath, reportPath: f.reportPath }), /ALL_TRANSPARENT/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('candidate registry scopes versions to their original attempt and verifies archived PNG bytes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'v2-candidate-registry-'));
+  try {
+    const f = await prepared(root);
+    const candidate = await finalizeV2Candidate({ manifestPath: f.manifestPath, rawPath: f.rawPath, reportPath: f.reportPath });
+    const attempt = { attemptId: candidate.attemptId, documentId: candidate.documentId, layerId: candidate.layerId,
+      layerRevision: candidate.layerRevision, dispatchId: candidate.dispatchId, authorizationId: candidate.authorizationId,
+      snapshotId: candidate.snapshotId, sourceFingerprint: candidate.sourceFingerprint, execution: 'suggested' };
+    const versions = await listV2CandidateVersions({ root, attempts: [attempt], documentId: candidate.documentId, layerId: candidate.layerId });
+    assert.equal(versions.length, 1); assert.equal(versions[0].artifactValid, true);
+    const resolved = await readV2CandidatePng({ root, attempts: [attempt], documentId: candidate.documentId, layerId: candidate.layerId, versionId: candidate.versionId });
+    assert.equal(resolved.version.versionId, candidate.versionId); assert.equal(resolved.bytes.length, (await readFile(candidate.pngPath)).length);
+    await writeFile(candidate.pngPath, Buffer.from('corrupt'));
+    const stale = await listV2CandidateVersions({ root, attempts: [attempt], documentId: candidate.documentId, layerId: candidate.layerId });
+    assert.equal(stale[0].artifactValid, false);
+    await assert.rejects(() => readV2CandidatePng({ root, attempts: [attempt], documentId: candidate.documentId,
+      layerId: candidate.layerId, versionId: candidate.versionId }), /CANDIDATE_ARTIFACT_INVALID/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

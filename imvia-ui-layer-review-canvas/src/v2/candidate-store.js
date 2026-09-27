@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readPosterPng } from '../poster-png.js';
+import { readPosterPng, readPosterPngBytes } from '../poster-png.js';
 import { runCommand } from '../../scripts/python-runtime.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -157,4 +157,45 @@ export async function finalizeV2Failure({ manifestPath, error, reportPath = null
   let reviewReportPath = null;
   if (report && reportPath) { reviewReportPath = path.join(targetDirectory, 'review.json'); await copyExclusive(await regularFile(root, reportPath, 'REVIEW_REPORT'), reviewReportPath); }
   return { ...failure, failurePath, reviewReportPath };
+}
+
+/** Read immutable candidate records only for attempts already bound to this document. */
+export async function listV2CandidateVersions({ root, attempts, documentId, layerId = null }) {
+  const versions = [];
+  for (const attempt of attempts.filter(value => value.documentId === documentId && (!layerId || value.layerId === layerId))) {
+    const directory = contained(root, path.join(root, 'candidates', attempt.attemptId), 'CANDIDATE_DIRECTORY');
+    let files;
+    try { files = await readdir(directory); }
+    catch (cause) { if (cause.code === 'ENOENT') continue; throw cause; }
+    for (const name of files.filter(value => /^[A-Za-z0-9_-]+\.json$/u.test(value))) {
+      let version;
+      try { version = JSON.parse(await readFile(await regularFile(root, path.join(directory, name), 'CANDIDATE_RECORD'), 'utf8')); }
+      catch { continue; }
+      if (version.versionId !== name.slice(0, -5) || version.attemptId !== attempt.attemptId
+        || version.documentId !== documentId || version.layerId !== attempt.layerId
+        || version.layerRevision !== attempt.layerRevision || version.dispatchId !== attempt.dispatchId
+        || version.authorizationId !== attempt.authorizationId || version.snapshotId !== attempt.snapshotId
+        || version.sourceFingerprint !== attempt.sourceFingerprint) continue;
+      let artifactValid = false;
+      try {
+        const pngPath = await regularFile(root, version.pngPath, 'CANDIDATE_PNG');
+        const bytes = await readFile(pngPath);
+        const image = readPosterPngBytes(bytes, 'V2 candidate archive');
+        artifactValid = image.width === version.width && image.height === version.height
+          && image.colorType === 6 && hash(bytes) === version.sha256;
+      } catch { artifactValid = false; }
+      versions.push({ ...version, execution: attempt.execution, artifactValid });
+    }
+  }
+  return versions.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+/** Resolve one version through its owning immutable attempt; arbitrary paths are never accepted. */
+export async function readV2CandidatePng({ root, attempts, documentId, layerId, versionId }) {
+  if (typeof versionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(versionId)) throw new Error('INVALID_VERSION_ID');
+  const versions = await listV2CandidateVersions({ root, attempts, documentId, layerId });
+  const version = versions.find(value => value.versionId === versionId);
+  if (!version) throw new Error('CANDIDATE_NOT_FOUND');
+  if (!version.artifactValid) throw new Error('CANDIDATE_ARTIFACT_INVALID');
+  return { version, bytes: await readFile(await regularFile(root, version.pngPath, 'CANDIDATE_PNG')) };
 }

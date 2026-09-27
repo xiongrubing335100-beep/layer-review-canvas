@@ -72,6 +72,10 @@ export function createBatchStore({ root, getDocument, readConfirmation, cancelCo
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     },
     getAttempt(id) { return readJson(attemptPath(id)); },
+    async listDocumentAttempts(documentId) {
+      idSchema.parse(documentId);
+      return (await allAttempts()).filter(attempt => attempt.documentId === documentId);
+    },
     async cancelBatch(id) {
       const batch = await readJson(batchPath(id));
       const attempts = [];

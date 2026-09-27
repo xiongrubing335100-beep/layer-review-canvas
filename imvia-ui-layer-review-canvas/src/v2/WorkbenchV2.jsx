@@ -6,6 +6,7 @@ import { DocumentCanvas } from './DocumentCanvas.jsx';
 import { LayerList } from './LayerList.jsx';
 import { LayerEditor } from './LayerEditor.jsx';
 import { PenEditor } from './PenEditor.jsx';
+import { CandidateReview } from './CandidateReview.jsx';
 import { commitEditorDraft, createEditorDraft, reduceEditorDraft } from './editor-state.js';
 import { sendVisibleWorkbenchMessage } from './host-message.js';
 import './workbench-v2.css';
@@ -14,6 +15,7 @@ const SESSION_KEY = 'imvia-layer-v2-session';
 const DOCUMENT_KEY = 'imvia-layer-v2-document';
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 const defaultApi = createWorkbenchV2Client();
+const candidateLabels = { pending: '待拆分', processing: '处理中', review: '待审核', adopted: '已采用', stale: '结果已过期', failed: '拆分失败', cancelled: '已取消', inactive: '已移出列表' };
 
 function browserSessionId() {
   try {
@@ -50,6 +52,10 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
   const [mobilePane, setMobilePane] = useState('canvas');
   const [editorDraft, setEditorDraft] = useState(null);
   const [penTarget, setPenTarget] = useState(null);
+  const [reviewLayerId, setReviewLayerId] = useState(null);
+  const [reviewData, setReviewData] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [layerStatusById, setLayerStatusById] = useState({});
   const [batchState, setBatchState] = useState(null);
   const posterInput = useRef(null); const h5Input = useRef(null);
   const [sessionId, setSessionId] = useState(browserSessionId);
@@ -114,6 +120,20 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
     return () => { stopped = true; clearInterval(timer); };
   }, [api, batchState?.batchId, batchState?.status]);
 
+  useEffect(() => {
+    if (!document || !reviewLayerId || typeof api.getLayerVersions !== 'function') return undefined;
+    let stopped = false;
+    setReviewBusy(true);
+    Promise.all([api.getLayerVersions(document.documentId, reviewLayerId), api.getComposition?.(document.documentId) || Promise.resolve({ layers: [] })])
+      .then(([versions, composition]) => { if (!stopped) {
+        setReviewData({ ...versions, composition: composition.layers || [] });
+        setLayerStatusById(current => ({ ...current, [reviewLayerId]: candidateLabels[versions.state?.status] || '待拆分' }));
+      } })
+      .catch(cause => { if (!stopped) setError(`读取候选失败：${cause.message}`); })
+      .finally(() => { if (!stopped) setReviewBusy(false); });
+    return () => { stopped = true; };
+  }, [api, document?.documentId, document?.revision, reviewLayerId]);
+
   const drainSaveQueue = () => {
     if (saveActive.current || !saveQueue.current.length) return;
     saveActive.current = true;
@@ -174,6 +194,45 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       setEditorDraft(createEditorDraft(document, layerId));
       setSelection(layerId); setPendingCategory(null); setPenTarget(null); setError('');
     } catch (cause) { setError(`无法打开编辑器：${cause.message}`); }
+  }
+
+  function openCandidateReview(layerId) {
+    setReviewLayerId(layerId); setReviewData(null); setSelection(layerId); setPendingCategory(null); setEditorDraft(null); setPenTarget(null); setError('');
+  }
+
+  async function refreshCandidateReview() {
+    if (!document || !reviewLayerId) return;
+    setReviewBusy(true); setError('');
+    try {
+      const [versions, composition] = await Promise.all([api.getLayerVersions(document.documentId, reviewLayerId), api.getComposition(document.documentId)]);
+      setReviewData({ ...versions, composition: composition.layers || [] });
+      setLayerStatusById(current => ({ ...current, [reviewLayerId]: candidateLabels[versions.state?.status] || '待拆分' }));
+    } catch (cause) { setError(`刷新候选失败：${cause.message}`); }
+    finally { setReviewBusy(false); }
+  }
+
+  async function adoptReviewedCandidate(versionId) {
+    if (!document || !reviewLayerId || !versionId || typeof api.adoptCandidate !== 'function') return;
+    setReviewBusy(true); setError('');
+    try {
+      const saved = await api.adoptCandidate(document.documentId, reviewLayerId, versionId, document.revision);
+      setDocument(saved); setNotice('候选已采用，合成预览已更新');
+    } catch (cause) { setError(`采用候选失败：${cause.message}`); }
+    finally { setReviewBusy(false); }
+  }
+
+  async function retryReviewedLayer() {
+    if (!document || !reviewLayerId || saving || saveActive.current || saveQueue.current.length || !api.submitBatch) return;
+    setReviewBusy(true); setError('');
+    try {
+      const result = await api.submitBatch({ documentId: document.documentId, expectedRevision: document.revision,
+        submissionKey: crypto.randomUUID().replaceAll('-', ''), mode: 'retry', layerIds: [reviewLayerId] });
+      if (!result.batch.items.length) throw new Error('没有符合条件的可重试拆分项');
+      setBatchState({ batchId: result.batch.batchId, status: 'ready_to_send', batch: result.batch });
+      await sendBatchMessage(result.batch.batchId, result.prompt, result.batch);
+      setNotice('已提交当前拆分项的明确重试请求');
+    } catch (cause) { setError(`重新拆分失败：${cause.message}`); }
+    finally { setReviewBusy(false); }
   }
 
   function cancelEditor() {
@@ -249,8 +308,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       await api.restartSession(sessionId);
       const nextSession = crypto.randomUUID().replaceAll('-', '');
       try { sessionStorage.setItem(SESSION_KEY, nextSession); sessionStorage.removeItem(DOCUMENT_KEY); } catch { /* persistence is optional */ }
-      setSessionId(nextSession); setDocument(null); setSourceUrl(''); setSelection(null); setPendingCategory(null);
-      setEditorDraft(null); setPenTarget(null); setBatchState(null); saveQueue.current = [];
+      setSessionId(nextSession); setDocument(null); setSourceUrl(''); setSelection(null); setPendingCategory(null); setLayerStatusById({});
+      setEditorDraft(null); setPenTarget(null); setReviewLayerId(null); setReviewData(null); setBatchState(null); saveQueue.current = [];
       setNotice('已取消旧会话任务，可以重新上传开始');
     } catch (cause) { setError(`重新开始失败：${cause.message}`); }
   }
@@ -281,7 +340,11 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
         onChange={event => setEditorDraft(current => reduceEditorDraft(current, event))} onClose={() => setPenTarget(null)} />
         : <LayerEditor document={document} sourceUrl={sourceUrl} draft={editorDraft}
           onChange={event => setEditorDraft(current => reduceEditorDraft(current, event))} onDone={finishEditor} onCancel={cancelEditor} onOpenPen={setPenTarget} />}
-    </div> : <>
+    </div> : reviewLayerId && document ? <CandidateReview document={document} layerId={reviewLayerId}
+      versions={reviewData?.versions || []} state={reviewData?.state || { status: 'pending', versionIds: [] }}
+      composition={reviewData?.composition || []} candidateUrl={versionId => api.candidateUrl(document.documentId, reviewLayerId, versionId)}
+      onBack={() => { setReviewLayerId(null); setReviewData(null); }} onAdopt={adoptReviewedCandidate}
+      onRetry={retryReviewedLayer} onRefresh={refreshCandidateReview} busy={reviewBusy} /> : <>
       <div className="v2-mobile-switch"><button className={mobilePane==='canvas'?'is-active':''} onClick={()=>setMobilePane('canvas')}>原图</button><button className={mobilePane==='list'?'is-active':''} onClick={()=>setMobilePane('list')}>拆分项 {document.layerOrder.length}</button></div>
       <section className="v2-main-grid">
         <section className={`v2-source-section ${mobilePane==='list'?'is-mobile-hidden':''}`} aria-label="原图编辑">
@@ -291,8 +354,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
           <DocumentCanvas document={viewDocument} sourceUrl={sourceUrl} selection={selection} onSelect={setSelection} onBoundsChange={pendingCategory?addRegion:undefined}/>
           <footer className="v2-canvas-foot"><span>{pendingCategory ? '拖动以框选，坐标与图层列表同步' : '选择右侧拆分项可定位对应区域'}</span><span>原位坐标已锁定</span></footer>
         </section>
-        <LayerList document={viewDocument} statusByLayer={{}} onSelect={id=>{setSelection(id);setPendingCategory(null);setMobilePane('canvas');}}
-          onEdit={openEditor}
+        <LayerList document={viewDocument} statusByLayer={layerStatusById} onSelect={id=>{setSelection(id);setPendingCategory(null);setMobilePane('canvas');}}
+          onEdit={openEditor} onReview={openCandidateReview}
           onAdd={armLayer} onRemove={removeSelectedLayer} onReorder={order=>{try{publishDocument(reorderLayers(document,order));}catch(cause){setError(`排序失败：${cause.message}`);}}}/>
       </section>
       <footer className="v2-bottom-actions"><div className="v2-bottom-actions__status" role={error?'alert':'status'}>{error||notice||'修改将自动保存'}</div>

@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createServer as createHttpServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createWorkbenchV2Api } from './api.mjs';
 import { createBridgeRequestStore } from './bridge-request-store.js';
-import { createDocument, addLayer, processingCategories, reorderLayers } from './document.js';
+import { createDocument, addLayer, applyLayerEdit, processingCategories, reorderLayers } from './document.js';
 import { workbenchV2Middleware } from './api.mjs';
 import { fitViewport } from './coordinates.js';
 import { createEditorDraft } from './editor-state.js';
@@ -20,6 +21,7 @@ let DocumentCanvas;
 let LayerList;
 let LayerEditor;
 let PenEditor;
+let CandidateReview;
 
 test('load V2 React components through Vite JSX transform', async () => {
   vite = await createServer({ configFile: path.resolve('vite.config.js'), server: { middlewareMode: true }, appType: 'custom' });
@@ -28,6 +30,7 @@ test('load V2 React components through Vite JSX transform', async () => {
   ({ LayerList } = await vite.ssrLoadModule('/src/v2/LayerList.jsx'));
   ({ LayerEditor } = await vite.ssrLoadModule('/src/v2/LayerEditor.jsx'));
   ({ PenEditor } = await vite.ssrLoadModule('/src/v2/PenEditor.jsx'));
+  ({ CandidateReview } = await vite.ssrLoadModule('/src/v2/CandidateReview.jsx'));
 });
 after(async () => { await vite?.close(); });
 
@@ -73,12 +76,28 @@ test('one stable layer id is shared by canvas selection and list; pending custom
   const list = renderToStaticMarkup(React.createElement(LayerList, { document: doc, statusByLayer: {}, onSelect: noOp, onEdit: noOp, onAdd: noOp, onReorder: noOp }));
   assert.match(canvas, /data-layer-id="layer-a"/);
   assert.match(list, /data-layer-id="layer-a"/);
+  assert.match(list, /查看主标题候选/);
   const empty = renderToStaticMarkup(React.createElement(LayerList, { document: createDocument({ documentId:'empty',workbenchSessionId:'s',mode:'h5',source:doc.source }), statusByLayer:{},onSelect:noOp,onEdit:noOp,onAdd:noOp,onReorder:noOp }));
   assert.deepEqual(processingCategories, ['text','subject','brand_ui','decoration_prop','effect','background']);
   assert.throws(() => addLayer(createDocument({ documentId:'bad',workbenchSessionId:'s',mode:'h5',source:doc.source }), {
     layerId:'bad-route',name:'自定义',displayCategory:'自定义',processingCategory:'unknown',bounds:{x:0,y:0,width:1,height:1},paths:[],requirements:'',
     strategy:{operation:'extract',removeBackground:false,repairPaths:[]},
   }));
+});
+
+test('candidate review fits a transparent full-canvas preview and requires explicit adoption', () => {
+  const doc = documentFixture();
+  const candidate = { versionId: 'version-a', artifactValid: true, width: 250, height: 120,
+    placement: { x: 30, y: 40 }, createdAt: '2026-09-27T00:00:00Z', alpha: { min: 0, max: 255 },
+    review: { checks: { png: true, alpha: true } } };
+  const markup = renderToStaticMarkup(React.createElement(CandidateReview, { document: doc, layerId: 'layer-a', versions: [candidate],
+    state: { status: 'review', versionIds: ['version-a'] }, composition: [], candidateUrl: id => `/candidate/${id}.png`,
+    onBack: noOp, onAdopt: noOp, onRetry: noOp, onRefresh: noOp }));
+  assert.match(markup, /透明候选按原图坐标完整适配/);
+  assert.match(markup, /1562 × 3396/);
+  assert.match(markup, /采用此版本/);
+  assert.match(markup, /重新拆分当前项/);
+  assert.match(markup, /candidate\/version-a.png/);
 });
 
 test('reordering changes only layer order and keeps layer identities and geometry stable', () => {
@@ -153,6 +172,48 @@ test('batch API freezes the saved document, requires a matching bridge receipt, 
   const late = await api.applyAttemptEvent({ batchId: submitted.batch.batchId, event: { eventId: 'late-after-restart',
     attemptId: work.attempt.attemptId, dispatchId: work.attempt.dispatchId, type: 'suggested', payload: { versionId: 'late' } } });
   assert.equal(late.execution, 'cancelled');
+});
+
+test('candidate API lists immutable versions, explicitly adopts current revisions, and composes only adopted layers', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-candidate-api-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const documentsRoot = path.join(root, 'documents'); const api = createWorkbenchV2Api({ root: documentsRoot });
+  const source = tinyPng();
+  const created = await api.createDocument({ mode: 'poster', bytes: source, workbenchSessionId: 'review-session' });
+  const layered = addLayer(created, { layerId: 'review-layer', name: '主标题', displayCategory: '主标题', processingCategory: 'text',
+    bounds: { x: 0, y: 0, width: 1, height: 1 }, paths: [], requirements: '', strategy: { operation: 'extract', removeBackground: false, repairPaths: [] } });
+  await api.saveDocument(layered, created.revision);
+  const submitted = await api.submitBatch({ documentId: created.documentId, expectedRevision: layered.revision,
+    submissionKey: 'review-candidate-attempt', mode: 'retry', layerIds: ['review-layer'] });
+  const attempt = submitted.batch.items[0].attempt;
+  await api.applyAttemptEvent({ batchId: attempt.batchId, event: { eventId: 'review-candidate-ready', attemptId: attempt.attemptId,
+    dispatchId: attempt.dispatchId, type: 'suggested', payload: { versionId: 'version-fixture' } } });
+  const pngPath = path.join(root, 'candidates', attempt.attemptId, 'version-fixture.png');
+  const metadataPath = path.join(root, 'candidates', attempt.attemptId, 'version-fixture.json');
+  await mkdir(path.dirname(pngPath), { recursive: true }); await writeFile(pngPath, source);
+  const version = { versionId: 'version-fixture', attemptId: attempt.attemptId, batchId: attempt.batchId,
+    documentId: attempt.documentId, layerId: attempt.layerId, layerRevision: attempt.layerRevision, dispatchId: attempt.dispatchId,
+    authorizationId: attempt.authorizationId, snapshotId: attempt.snapshotId, sourceFingerprint: attempt.sourceFingerprint,
+    pngPath, sha256: createHash('sha256').update(source).digest('hex'), width: 1, height: 1,
+    alpha: { min: 255, max: 255 }, placement: { x: 0, y: 0 }, review: { checks: { png: true, authorization: true } },
+    pixelAudit: { status: 'NEEDS_USER_REVIEW' }, createdAt: new Date().toISOString() };
+  await writeFile(metadataPath, JSON.stringify(version));
+  const listed = await api.listLayerVersions({ documentId: created.documentId, layerId: 'review-layer' });
+  assert.equal(listed.state.status, 'review'); assert.equal(listed.versions[0].artifactValid, true);
+  assert.equal(listed.versions[0].pngPath, undefined);
+  assert.deepEqual(await api.getComposition(created.documentId).then(value => value.layers), []);
+  const adopted = await api.adoptCandidate({ documentId: created.documentId, expectedRevision: layered.revision,
+    layerId: 'review-layer', versionId: version.versionId });
+  assert.equal(adopted.layers['review-layer'].acceptedVersionId, version.versionId);
+  assert.equal(adopted.layers['review-layer'].layerRevision, layered.layers['review-layer'].layerRevision);
+  const composition = await api.getComposition(created.documentId);
+  assert.deepEqual(composition.layers.map(layer => [layer.layerId, layer.versionId, layer.placement]),
+    [['review-layer', version.versionId, { x: 0, y: 0 }]]);
+  assert.deepEqual(await api.readCandidatePng({ documentId: created.documentId, layerId: 'review-layer', versionId: version.versionId }), source);
+  const edited = applyLayerEdit(adopted, 'review-layer', { requirements: 'new text pixels' });
+  await api.saveDocument(edited, adopted.revision);
+  await assert.rejects(api.adoptCandidate({ documentId: created.documentId, expectedRevision: edited.revision,
+    layerId: 'review-layer', versionId: version.versionId }), /CANDIDATE_NOT_CURRENT/);
 });
 
 test('V2 HTTP endpoints return a saved document, raw source PNG, and a 409 for stale updates', async (t) => {

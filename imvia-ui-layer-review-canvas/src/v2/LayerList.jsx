@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronUp, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Eye, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { categoryPresets, processingCategories } from './document.js';
 
 const processingLabels = { text:'普通文字',subject:'主体',brand_ui:'品牌与 UI',decoration_prop:'装饰与道具',effect:'光效',background:'背景' };
 
-export function LayerList({ document, statusByLayer = {}, onSelect, onEdit, onAdd, onRemove, onReorder }) {
+export function LayerList({ document, statusByLayer = {}, onSelect, onEdit, onReview, onAdd, onRemove, onReorder }) {
   const [menuOpen,setMenuOpen]=useState(false); const [customOpen,setCustomOpen]=useState(false);
   const [customName,setCustomName]=useState(''); const [customRoute,setCustomRoute]=useState('');
   const addCustom=()=>{if(customName.trim()&&processingCategories.includes(customRoute)){onAdd?.({displayCategory:customName.trim(),processingCategory:customRoute});setCustomName('');setCustomRoute('');setCustomOpen(false);setMenuOpen(false);}};
@@ -18,7 +18,7 @@ export function LayerList({ document, statusByLayer = {}, onSelect, onEdit, onAd
     </header>
     <div className="v2-layer-list" role="list" aria-label="所有拆分项">{document.layerOrder.map((id,index)=>{const layer=document.layers[id];return <article key={id} role="listitem" data-layer-id={id} onClick={()=>onSelect?.(id)} className={`v2-layer-row ${document.activeLayerId===id?'v2-layer-row--active':''}`}>
       <button className="v2-layer-row__main" type="button" onClick={event=>{event.stopPropagation();onSelect?.(id);}}><strong>{layer.name}</strong><span><i/> {statusByLayer[id]||'待拆分'}</span></button>
-      <div className="v2-layer-row__actions"><small>{layer.displayCategory}</small><button type="button" aria-label={`编辑${layer.name}`} onClick={event=>{event.stopPropagation();onEdit?.(id);}}><Pencil size={16}/></button><button type="button" aria-label={`${layer.name}上移`} disabled={index===0} onClick={event=>{event.stopPropagation();const next=[...document.layerOrder];[next[index-1],next[index]]=[next[index],next[index-1]];onReorder?.(next);}}><ChevronUp size={16}/></button><button type="button" aria-label={`${layer.name}下移`} disabled={index===document.layerOrder.length-1} onClick={event=>{event.stopPropagation();const next=[...document.layerOrder];[next[index+1],next[index]]=[next[index],next[index+1]];onReorder?.(next);}}><ChevronDown size={16}/></button><button type="button" aria-label={`移除${layer.name}`} onClick={event=>{event.stopPropagation();onRemove?.(id);}}><Trash2 size={15}/></button></div>
+      <div className="v2-layer-row__actions"><small>{layer.displayCategory}</small><button type="button" aria-label={`查看${layer.name}候选`} onClick={event=>{event.stopPropagation();onReview?.(id);}}><Eye size={16}/></button><button type="button" aria-label={`编辑${layer.name}`} onClick={event=>{event.stopPropagation();onEdit?.(id);}}><Pencil size={16}/></button><button type="button" aria-label={`${layer.name}上移`} disabled={index===0} onClick={event=>{event.stopPropagation();const next=[...document.layerOrder];[next[index-1],next[index]]=[next[index],next[index-1]];onReorder?.(next);}}><ChevronUp size={16}/></button><button type="button" aria-label={`${layer.name}下移`} disabled={index===document.layerOrder.length-1} onClick={event=>{event.stopPropagation();const next=[...document.layerOrder];[next[index+1],next[index]]=[next[index],next[index+1]];onReorder?.(next);}}><ChevronDown size={16}/></button><button type="button" aria-label={`移除${layer.name}`} onClick={event=>{event.stopPropagation();onRemove?.(id);}}><Trash2 size={15}/></button></div>
     </article>;})}
       {!document.layerOrder.length?<div className="v2-list-empty">点击 + 选择类别，再在原图上拖出拆分区域。</div>:null}
     </div>
