@@ -57,6 +57,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
   const [reviewBusy, setReviewBusy] = useState(false);
   const [layerStatusById, setLayerStatusById] = useState({});
   const [batchState, setBatchState] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [latestExport, setLatestExport] = useState(null);
   const posterInput = useRef(null); const h5Input = useRef(null);
   const [sessionId, setSessionId] = useState(browserSessionId);
   const saveQueue = useRef([]);
@@ -133,6 +135,14 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       .finally(() => { if (!stopped) setReviewBusy(false); });
     return () => { stopped = true; };
   }, [api, document?.documentId, document?.revision, reviewLayerId]);
+
+  useEffect(() => {
+    if (!document || typeof api.getExports !== 'function') { setLatestExport(null); return undefined; }
+    let alive = true;
+    api.getExports(document.documentId).then(result => { if (alive) setLatestExport(result.exports?.[0] || null); })
+      .catch(() => { if (alive) setLatestExport(null); });
+    return () => { alive = false; };
+  }, [api, document?.documentId, document?.revision]);
 
   const drainSaveQueue = () => {
     if (saveActive.current || !saveQueue.current.length) return;
@@ -233,6 +243,26 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       setNotice('已提交当前拆分项的明确重试请求');
     } catch (cause) { setError(`重新拆分失败：${cause.message}`); }
     finally { setReviewBusy(false); }
+  }
+
+  async function exportPsd() {
+    if (!document || exporting || saving || busy || !api.exportDocumentPsd) return;
+    setExporting(true); setError(''); setNotice('正在冻结当前版本并生成透明 PSD…');
+    try {
+      const record = await api.exportDocumentPsd(document.documentId, document.revision);
+      setLatestExport({ ...record, stale: false });
+      const link = window.document.createElement('a');
+      link.href = api.exportUrl(document.documentId, record.exportId); link.download = `${record.exportId}.psd`;
+      link.click();
+      setNotice(`PSD 已生成（文档修订 r${record.documentRevision}，${record.layerCount} 个栅格图层）`);
+    } catch (cause) {
+      const detail = cause.message.startsWith('EXPORT_LAYER_NOT_ADOPTED:') ? `「${cause.message.split(':').slice(1).join(':')}」还没有采用当前拆分版本`
+        : cause.message.startsWith('EXPORT_CANDIDATE_STALE:') ? `「${cause.message.split(':').slice(1).join(':')}」的采用版本已过期，请重新拆分并审核`
+          : cause.message.includes('CANDIDATE_HASH_MISMATCH') ? '候选文件校验失败，请重新审核该拆分项'
+            : cause.message;
+      setError(`PSD 导出失败：${detail}`);
+    }
+    finally { setExporting(false); }
   }
 
   function cancelEditor() {
@@ -364,7 +394,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
           : batchState?.status === 'ready_to_send'
             ? <button type="button" className="v2-split-action" onClick={resumeBatchSend}><Upload size={17}/>发送本批次到 Codex</button>
           : <button type="button" className="v2-split-action" disabled={saving||busy||Boolean(editorDraft)||['confirmed','running'].includes(batchState?.status)} onClick={submitBatch}><Upload size={17}/>拆分</button>}
-        <button type="button" className="v2-psd-action" disabled title="PSD 导出将在后续阶段接入"><Download size={17}/>下载 PSD</button>
+        {latestExport && <span className="v2-export-revision" title="历史导出不会随文档修改而变化">上次 PSD · r{latestExport.documentRevision}{latestExport.stale || latestExport.documentRevision !== document.revision ? ' · 已过期' : ''}</span>}
+        <button type="button" className="v2-psd-action" disabled={exporting||saving||busy||!document.layerOrder.length} onClick={exportPsd} title="仅导出所有已采用且与当前修订一致的拆分项"><Download size={17}/>{exporting?'正在生成 PSD…':'下载 PSD'}</button>
       </footer>
     </>}
   </main>;

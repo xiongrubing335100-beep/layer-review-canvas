@@ -108,6 +108,23 @@ class V2RegionPixelTests(unittest.TestCase):
             self.assertEqual(opaque.returncode, 0, opaque.stderr)
             self.assertEqual(json.loads(opaque.stdout)["status"], "needs_review")
 
+    def test_export_decoder_returns_straight_rgba_and_checks_frozen_dimensions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            png = root / "candidate.png"
+            Image.new("RGBA", (2, 1), (40, 80, 120, 128)).save(png)
+            rgba = root / "candidate.rgba"
+            command = [str(__import__("sys").executable), str(SCRIPT), "--decode-png", str(png),
+                "--expected-width", "2", "--expected-height", "1", "--output", str(rgba)]
+            decoded = subprocess.run(command, check=False, text=True, capture_output=True)
+            self.assertEqual(decoded.returncode, 0, decoded.stderr)
+            self.assertEqual(json.loads(decoded.stdout), {"width": 2, "height": 1, "channels": 4, "format": "RGBA"})
+            self.assertEqual(rgba.read_bytes(), bytes([40, 80, 120, 128]) * 2)
+            mismatch = subprocess.run(command[:-1] + [str(root / "wrong.rgba"), "--expected-width", "3"],
+                check=False, text=True, capture_output=True)
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("PNG_DIMENSIONS_MISMATCH", mismatch.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

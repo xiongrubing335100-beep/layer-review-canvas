@@ -62,6 +62,17 @@ export function createWorkbenchV2Client(fetchImpl = fetch) {
     async getComposition(documentId) {
       return (await request(fetchImpl, `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/composition`)).json();
     },
+    async exportDocumentPsd(documentId, expectedRevision) {
+      return (await request(fetchImpl, `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/exports`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision }),
+      })).json();
+    },
+    async getExports(documentId) {
+      return (await request(fetchImpl, `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/exports`)).json();
+    },
+    exportUrl(documentId, exportId) {
+      return `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/exports/${encodeURIComponent(exportId)}/download`;
+    },
     candidateUrl(documentId, layerId, versionId) {
       return `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/layers/${encodeURIComponent(layerId)}/versions/${encodeURIComponent(versionId)}/png`;
     },

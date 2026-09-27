@@ -6,10 +6,11 @@ const processingLabels = { text:'普通文字',subject:'主体',brand_ui:'品牌
 
 export function LayerList({ document, statusByLayer = {}, onSelect, onEdit, onReview, onAdd, onRemove, onReorder }) {
   const [menuOpen,setMenuOpen]=useState(false); const [customOpen,setCustomOpen]=useState(false);
+  const adoptedCount = document.layerOrder.filter(id => Boolean(document.layers[id].acceptedVersionId)).length;
   const [customName,setCustomName]=useState(''); const [customRoute,setCustomRoute]=useState('');
   const addCustom=()=>{if(customName.trim()&&processingCategories.includes(customRoute)){onAdd?.({displayCategory:customName.trim(),processingCategory:customRoute});setCustomName('');setCustomRoute('');setCustomOpen(false);setMenuOpen(false);}};
   return <aside className="v2-layer-panel" aria-label="拆分图层列表">
-    <header className="v2-layer-panel__head"><div><h2>拆分图层 <span aria-label="图层数量">ⓘ</span></h2><small>{document.layerOrder.length} 个图层</small></div>
+    <header className="v2-layer-panel__head"><div><h2>拆分图层 <span aria-label="图层数量">ⓘ</span></h2><small>{document.layerOrder.length} 个图层 · 已采用 {adoptedCount}</small></div>
       <button className="v2-icon-button" type="button" aria-label="新增拆分项" onClick={()=>setMenuOpen(value=>!value)}><Plus size={19}/></button>
       {menuOpen?<div className="v2-add-menu" role="menu"><strong>选择类别</strong>{categoryPresets.map(([label,route])=><button key={label} role="menuitem" type="button" onClick={()=>{onAdd?.({displayCategory:label,processingCategory:route});setMenuOpen(false);}}><Sparkles size={15}/>{label}</button>)}
         <button role="menuitem" type="button" onClick={()=>setCustomOpen(true)}>自定义类别</button>

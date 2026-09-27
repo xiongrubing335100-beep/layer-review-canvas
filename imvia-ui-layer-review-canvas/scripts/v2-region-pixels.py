@@ -188,15 +188,43 @@ def run(args):
     return audit
 
 
+def decode_png(args):
+    source = Path(args.decode_png).resolve()
+    target = Path(args.output).resolve()
+    if target.exists():
+        fail("OUTPUT_ALREADY_EXISTS")
+    with Image.open(source) as image:
+        image.verify()
+    with Image.open(source) as image:
+        if image.size != (args.expected_width, args.expected_height):
+            fail("PNG_DIMENSIONS_MISMATCH")
+        rgba = image.convert("RGBA")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as handle:
+            handle.write(rgba.tobytes())
+    return {"width": args.expected_width, "height": args.expected_height, "channels": 4, "format": "RGBA"}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--raw", required=True)
+    parser.add_argument("--manifest")
+    parser.add_argument("--raw")
     parser.add_argument("--matte")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--decode-png")
+    parser.add_argument("--expected-width", type=int)
+    parser.add_argument("--expected-height", type=int)
     args = parser.parse_args()
     try:
-        print(json.dumps(run(args), ensure_ascii=False))
+        if args.decode_png:
+            if not args.expected_width or not args.expected_height:
+                fail("EXPECTED_DIMENSIONS_REQUIRED")
+            result = decode_png(args)
+        else:
+            if not args.manifest or not args.raw:
+                fail("MANIFEST_AND_RAW_REQUIRED")
+            result = run(args)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as error:  # CLI contract emits a machine-readable failure code on stderr.
         message = str(error)
         print(message, file=sys.stderr)

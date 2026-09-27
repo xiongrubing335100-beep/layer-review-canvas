@@ -177,7 +177,15 @@ test('batch API freezes the saved document, requires a matching bridge receipt, 
 test('candidate API lists immutable versions, explicitly adopts current revisions, and composes only adopted layers', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-candidate-api-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const documentsRoot = path.join(root, 'documents'); const api = createWorkbenchV2Api({ root: documentsRoot });
+  const exportRecords = [];
+  const exportStore = { async exportDocumentPsd({ document, expectedRevision }) {
+    assert.equal(document.revision, expectedRevision);
+    const record = { exportId: 'a'.repeat(32), documentId: document.documentId, documentRevision: document.revision,
+      status: 'complete', sha256: 'b'.repeat(64), layerCount: 1, createdAt: new Date().toISOString() };
+    exportRecords.push(record); return record;
+  }, async list(documentId, revision) { return exportRecords.filter(value => value.documentId === documentId).map(value => ({ ...value, stale: value.documentRevision !== revision })); },
+  async readPsd(documentId, exportId) { return { record: exportRecords.find(value => value.documentId === documentId && value.exportId === exportId), bytes: Buffer.from('8BPS') }; } };
+  const documentsRoot = path.join(root, 'documents'); const api = createWorkbenchV2Api({ root: documentsRoot, exportStore });
   const source = tinyPng();
   const created = await api.createDocument({ mode: 'poster', bytes: source, workbenchSessionId: 'review-session' });
   const layered = addLayer(created, { layerId: 'review-layer', name: '主标题', displayCategory: '主标题', processingCategory: 'text',
@@ -210,8 +218,13 @@ test('candidate API lists immutable versions, explicitly adopts current revision
   assert.deepEqual(composition.layers.map(layer => [layer.layerId, layer.versionId, layer.placement]),
     [['review-layer', version.versionId, { x: 0, y: 0 }]]);
   assert.deepEqual(await api.readCandidatePng({ documentId: created.documentId, layerId: 'review-layer', versionId: version.versionId }), source);
+  const exported = await api.exportDocumentPsd({ documentId: created.documentId, expectedRevision: adopted.revision });
+  assert.equal(exported.documentRevision, adopted.revision);
+  assert.equal(exported.layerCount, 1);
+  assert.equal((await api.readExportPsd({ documentId: created.documentId, exportId: exported.exportId })).bytes.subarray(0, 4).toString(), '8BPS');
   const edited = applyLayerEdit(adopted, 'review-layer', { requirements: 'new text pixels' });
   await api.saveDocument(edited, adopted.revision);
+  assert.equal((await api.listExports(created.documentId)).exports[0].stale, true);
   await assert.rejects(api.adoptCandidate({ documentId: created.documentId, expectedRevision: edited.revision,
     layerId: 'review-layer', versionId: version.versionId }), /CANDIDATE_NOT_CURRENT/);
 });
@@ -228,6 +241,7 @@ test('V2 HTTP endpoints return a saved document, raw source PNG, and a 409 for s
   const create=await fetch(`${base}/documents`,{method:'POST',headers:{'Content-Type':'image/png','X-Workbench-Mode':'poster','X-Workbench-Session':'http-session'},body:png});
   assert.equal(create.status,201); const document=await create.json();
   assert.equal((await fetch(`${base}/documents/${document.documentId}`)).status,200);
+  assert.deepEqual(await fetch(`${base}/documents/${document.documentId}/exports`).then(response=>response.json()),{exports:[]});
   const source=await fetch(`${base}/documents/${document.documentId}/source`);
   assert.deepEqual(Buffer.from(await source.arrayBuffer()),png);
   const stale=await fetch(`${base}/documents/${document.documentId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:{...document,revision:2},expectedRevision:0})});

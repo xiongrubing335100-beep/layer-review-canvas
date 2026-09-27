@@ -9,10 +9,11 @@ import { createBridgeRequestStore } from './bridge-request-store.js';
 import { buildBatchPrompt } from './batch-bridge.js';
 import { listV2CandidateVersions, readV2CandidatePng } from './candidate-store.js';
 import { candidateState, getCompositionLayers } from './candidate-review.js';
+import { createExportStore } from './export-store.js';
 
 function error(code, message = code) { return Object.assign(new Error(message), { code }); }
 
-export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = null, bridgeStore: providedBridgeStore = null }) {
+export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = null, bridgeStore: providedBridgeStore = null, exportStore: providedExportStore = null }) {
   const documentsRoot = path.resolve(root);
   const runtimeRoot = path.dirname(documentsRoot);
   const store = createDocumentStore({ root: documentsRoot });
@@ -27,6 +28,7 @@ export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = nu
   };
   const batches = providedBatchStore || createBatchStore({ root: runtimeRoot, getDocument: id => store.read(id),
     readConfirmation: id => bridgeStore.read(id), cancelConfirmation });
+  const exports = providedExportStore || createExportStore({ root: runtimeRoot });
   const candidateVersions = async (documentId, layerId = null) => {
     const document = await store.read(idSchema.parse(documentId));
     if (layerId && !document.layerOrder.includes(idSchema.parse(layerId))) throw error('INACTIVE_LAYER');
@@ -108,6 +110,16 @@ export function createWorkbenchV2Api({ root, batchStore: providedBatchStore = nu
       const { document, attempts } = await candidateVersions(documentId, layerId);
       return (await readV2CandidatePng({ root: runtimeRoot, attempts, documentId: document.documentId, layerId, versionId })).bytes;
     },
+    async exportDocumentPsd({ documentId, expectedRevision }) {
+      const { document, versions } = await candidateVersions(documentId);
+      if (document.revision !== expectedRevision) throw error('REVISION_CONFLICT');
+      return exports.exportDocumentPsd({ document, versions, expectedRevision });
+    },
+    async listExports(documentId) {
+      const document = await store.read(idSchema.parse(documentId));
+      return { exports: await exports.list(documentId, document.revision) };
+    },
+    async readExportPsd({ documentId, exportId }) { return exports.readPsd(idSchema.parse(documentId), idSchema.parse(exportId)); },
     saveDocument(document, expectedRevision) {
       return store.update({ documentId: document.documentId, expectedRevision, document: validateDocument(document) });
     },
@@ -155,6 +167,8 @@ export function workbenchV2Middleware({ root }) {
         const adoptCandidateMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/layers\/([A-Za-z0-9_-]+)\/adopt$/);
         const compositionMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/composition$/);
         const candidatePngMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/layers\/([A-Za-z0-9_-]+)\/versions\/([A-Za-z0-9_-]+)\/png$/);
+        const createExportMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/exports$/);
+        const exportDownloadMatch = url.pathname.match(/^\/api\/workbench-v2\/documents\/([A-Za-z0-9_-]+)\/exports\/([A-Za-z0-9_-]+)\/download$/);
         if (submitBatch && request.method === 'POST') {
           const payload = JSON.parse((await readBody(request)).toString('utf8'));
           result = await api.submitBatch({ ...payload, documentId: submitBatch[1] }); status = 202;
@@ -171,6 +185,15 @@ export function workbenchV2Middleware({ root }) {
         else if (candidatePngMatch && request.method === 'GET') {
           const bytes = await api.readCandidatePng({ documentId: candidatePngMatch[1], layerId: candidatePngMatch[2], versionId: candidatePngMatch[3] });
           response.setHeader('Content-Type', 'image/png'); response.setHeader('Cache-Control', 'private, max-age=31536000, immutable'); response.end(bytes); return;
+        } else if (createExportMatch && request.method === 'POST') {
+          const payload = JSON.parse((await readBody(request)).toString('utf8'));
+          result = await api.exportDocumentPsd({ documentId: createExportMatch[1], expectedRevision: payload.expectedRevision }); status = 201;
+        } else if (createExportMatch && request.method === 'GET') result = await api.listExports(createExportMatch[1]);
+        else if (exportDownloadMatch && request.method === 'GET') {
+          const { record, bytes } = await api.readExportPsd({ documentId: exportDownloadMatch[1], exportId: exportDownloadMatch[2] });
+          response.setHeader('Content-Type', 'image/vnd.adobe.photoshop');
+          response.setHeader('Content-Disposition', `attachment; filename="${record.exportId}.psd"`);
+          response.setHeader('Cache-Control', 'private, no-store'); response.end(bytes); return;
         } else if (claimMatch && request.method === 'POST') {
           const payload = JSON.parse((await readBody(request)).toString('utf8'));
           result = await api.claimNextBatchItem({ ...payload, batchId: claimMatch[1] });
@@ -196,7 +219,7 @@ export function workbenchV2Middleware({ root }) {
       }
       response.statusCode = status; response.setHeader('Content-Type', 'application/json; charset=utf-8'); response.end(JSON.stringify(result));
     } catch (cause) {
-      response.statusCode = cause.code === 'REVISION_CONFLICT' ? 409 : ['NOT_FOUND','CANDIDATE_NOT_FOUND'].includes(cause.code) ? 404 : cause.code === 'METHOD_NOT_ALLOWED' ? 405 : 400;
+      response.statusCode = cause.code === 'REVISION_CONFLICT' ? 409 : ['NOT_FOUND','CANDIDATE_NOT_FOUND','EXPORT_NOT_FOUND'].includes(cause.code) ? 404 : cause.code === 'METHOD_NOT_ALLOWED' ? 405 : 400;
       response.setHeader('Content-Type', 'application/json; charset=utf-8'); response.end(JSON.stringify({ error: cause.code || 'INVALID_REQUEST', message: cause.message }));
     }
   };

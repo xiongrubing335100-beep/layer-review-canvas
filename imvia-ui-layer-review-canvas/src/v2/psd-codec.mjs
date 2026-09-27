@@ -19,8 +19,8 @@ export function checkPsdBudget({ width, height, layers, availableMemory = os.fre
   return { estimatedBytes, budgetBytes };
 }
 
-export function encodePsd({ width, height, layers, composite }) {
-  checkPsdBudget({ width, height, layers });
+export function encodePsd({ width, height, layers, composite, availableMemory = os.freemem() }) {
+  checkPsdBudget({ width, height, layers, availableMemory });
   assertPixelImage(composite);
   if (composite.width !== width || composite.height !== height) throw new Error('COMPOSITE_SIZE_MISMATCH');
   if (!layers.length) throw new Error('PSD_NO_LAYERS');
@@ -36,11 +36,11 @@ export function encodePsd({ width, height, layers, composite }) {
 }
 
 /** Only read bounded files produced by this service; not an arbitrary PSD importer. */
-export function inspectPsd(bytes) {
+export function inspectPsd(bytes, { availableMemory = os.freemem() } = {}) {
   const structural = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
   checkPsdBudget({ width: structural.width, height: structural.height,
-    layers: (structural.children ?? []).map(layer => ({ image: { width: layer.right - layer.left, height: layer.bottom - layer.top } })) });
-  const psd = readPsd(bytes, { useImageData: true, skipThumbnail: true, totalMemoryLimit: 1024 ** 3 });
+    layers: (structural.children ?? []).map(layer => ({ image: { width: layer.right - layer.left, height: layer.bottom - layer.top } })), availableMemory });
+  const psd = readPsd(bytes, { useImageData: true, skipThumbnail: true, totalMemoryLimit: Math.min(1024 ** 3, availableMemory / 4) });
   return { width: psd.width, height: psd.height, composite: psd.imageData,
     layers: (psd.children ?? []).map(layer => ({ name: layer.name, image: layer.imageData,
       placement: { x: layer.left, y: layer.top } })) };

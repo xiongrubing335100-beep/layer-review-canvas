@@ -10,10 +10,10 @@ test('PSD preserves Chinese duplicate names, front-to-back layers, ROI pixels an
     { name:'主体 · 一', image:image(5,4,[0,0,255,128]), placement:{x:1,y:2} },
   ];
   const composite = composeNormal({width:16,height:12,layers});
-  const bytes = encodePsd({width:16,height:12,layers,composite});
+  const bytes = encodePsd({width:16,height:12,layers,composite,availableMemory:8*1024**3});
   assert.equal(Buffer.from(bytes).subarray(0,4).toString(),'8BPS');
   assert.equal(Buffer.from(bytes).readUInt16BE(4),1);
-  const restored = inspectPsd(bytes);
+  const restored = inspectPsd(bytes,{availableMemory:8*1024**3});
   assert.equal(restored.width,16); assert.equal(restored.height,12);
   assert.equal(restored.layers.length,2);
   for (let i=0;i<2;i++) {
