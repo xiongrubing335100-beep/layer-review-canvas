@@ -84,7 +84,7 @@ test('MCP exposes model-only acknowledgement and performs the actual persisted t
   assert.equal((await store.read(record.requestId)).status,'sent');
 });
 test('probe preserves a direct click send and cancels when SDK throws synchronously',async()=>{
-  const nodes=Object.fromEntries(['state','send','cancel'].map(id=>[id,{disabled:true,textContent:''}]));
+  const nodes=Object.fromEntries(['state','send','cancel','badge','title','actions','description'].map(id=>[id,{disabled:true,textContent:'',hidden:false}]));
   const calls=[];
   const html=buildV2ConfirmationProbeHtml();
   const script=[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].at(-1)[1];
@@ -101,4 +101,22 @@ test('probe preserves a direct click send and cancels when SDK throws synchronou
   await new Promise(resolve=>setImmediate(resolve));
   assert.ok(calls.includes('cancel_workbench_v2_confirmation'));
   assert.match(nodes.state.textContent,/Host unavailable/);
+});
+
+test('probe hides actions only after actual delivery acknowledgement',async()=>{
+  const nodes=Object.fromEntries(['state','send','cancel','badge','title','actions','description'].map(id=>[id,{disabled:true,textContent:'',hidden:false}]));
+  const script=[...buildV2ConfirmationProbeHtml().matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].at(-1)[1];
+  let poll;
+  const context={document:{getElementById:id=>nodes[id],body:{dataset:{}}},crypto:{randomUUID:()=> 'fixed'},
+    __IMVIA_MCP_APP_READY__:Promise.resolve(),__IMVIA_MCP_APP__:{async sendMessage(){return {};}},
+    window:{addEventListener(){},openai:{async callTool(name){return {structuredContent:{requestId:'r',status:name==='get_workbench_v2_confirmation'?'sent':'claimed',prompt:'test'}};}}},
+    setInterval:callback=>{poll=callback;return 1;},clearInterval(){}};
+  await vm.runInNewContext(script,context);
+  nodes.send.onclick();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(nodes.actions.hidden,false);
+  await poll();
+  assert.equal(nodes.actions.hidden,true);
+  assert.equal(nodes.description.hidden,true);
+  assert.equal(context.document.body.dataset.result,'sent');
 });

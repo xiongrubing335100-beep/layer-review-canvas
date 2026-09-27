@@ -1,6 +1,12 @@
 # V2 confirmation bridge verification
 
-Date: 2026-09-27. Status: automated verification only; real Codex host gate remains pending.
+Date: 2026-09-27. Status: real visible-message acknowledgement verified after the script fix; subsequent compact styling verified locally, not yet reloaded in the desktop host.
+
+## Successful live receipt and compact card
+
+The user sent the diagnostic through the MCP app. Visible message request `probe-9314518c-6767-44f0-b7d9-c0959d284f84` arrived in this conversation; `confirm_workbench_v2_batch` returned `{ok:true}` with its exact session and envelope digest. The user confirmed receipt and supplied the completed-state card screenshot. No image generation ran.
+
+Following user feedback, the card uses the approved dark/teal direction with a compact 14px title, 13px body, explicit 12px buttons, 14px corner radius and maximum width 640px. Actual acknowledgement hides both actions and redundant descriptive copy. Local headless Chrome rendering checked ready and received states; at 320px width the completed card has no horizontal overflow and is about 87px high. Eleven resource/bridge tests pass, including acknowledgement-driven hiding. The already-running MCP process still needs module reload to show the new styling; existing cards are not claimed updated.
 
 ## Implemented contract
 

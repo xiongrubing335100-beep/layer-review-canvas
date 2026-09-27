@@ -18,15 +18,36 @@ export async function buildBridgeWidgetHtml(htmlPath, scriptPath) {
 /** Isolated diagnostic: never uses the V1 polling or pre-delivery receipt path. */
 export function buildV2ConfirmationProbeHtml() {
   return injectMcpAppsBridge(`<!doctype html><html><head><meta charset="utf-8">
-  <style>body{font:15px system-ui;background:#101719;color:#e6f2ef;padding:24px}button{padding:12px;margin:8px 8px 0 0}p{line-height:1.6}</style></head><body>
-  <h2>V2 会话桥验证</h2><p>仅验证两项测试清单的消息投递，不生成图片，也不修改已有任务。</p>
+  <style>
+  *{box-sizing:border-box}html,body{margin:0;background:transparent;font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8eeee}
+  .card{background:#101617;border:1px solid #253033;border-radius:14px;padding:18px 20px;max-width:640px}
+  header{display:flex;align-items:center;gap:10px}h2{font-size:14px;line-height:20px;font-weight:600;margin:0;flex:1}
+  .mark{color:#6dd9ce;width:20px;height:20px;flex:none}.badge{font-size:11px;color:#8caaa6;white-space:nowrap}
+  p{margin:12px 0 0;color:#94a5a7;overflow-wrap:anywhere}#state{color:#d3dfe0}
+  .actions{display:flex;gap:8px;margin-top:16px}button{font:500 12px/20px inherit;font-family:inherit;font-size:12px;line-height:20px;border:1px solid #344346;border-radius:8px;padding:7px 14px;background:transparent;color:#bac8ca;cursor:pointer}
+  #send{background:#73ddd1;border-color:#73ddd1;color:#0b2925;font-weight:600}button:hover:not(:disabled){filter:brightness(1.1)}button:focus-visible{outline:2px solid #b6fff2;outline-offset:3px}button:disabled{opacity:.45;cursor:default}[hidden]{display:none!important}
+  body[data-result="sent"] .mark,body[data-result="sent"] .badge{color:#74dbad}
+  @media(max-width:360px){.card{padding:16px}.actions{flex-wrap:wrap}.badge{font-size:10px}}
+  </style></head><body>
+  <section class="card" aria-label="会话桥验证">
+  <header><svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z M3 12l9 5 9-5 M3 16l9 5 9-5"/></svg><h2 id="title">IMVIA · 会话桥验证</h2><span class="badge" id="badge">连接中</span></header>
+  <p id="description">2 项测试 · 不生成图片，不修改已有任务</p>
   <p id="state" role="status">连接宿主并准备测试请求…</p>
-  <button id="send" disabled>请求发送确认</button><button id="cancel" disabled>取消测试请求</button>
+  <div class="actions" id="actions"><button id="send" disabled>发送到 Codex</button><button id="cancel" disabled>取消</button></div></section>
   <script>
   (async () => {
     const status = document.getElementById('state');
     const send = document.getElementById('send');
     const cancel = document.getElementById('cancel');
+    const badge = document.getElementById('badge');
+    const finish = (state) => {
+      document.getElementById('actions').hidden = true;
+      document.getElementById('description').hidden = true;
+      document.body.dataset.result = state;
+      badge.textContent = state === 'sent' ? '已收到' : '已取消';
+      document.getElementById('title').textContent = state === 'sent' ? '会话桥连接成功' : '验证已取消';
+      status.textContent = state === 'sent' ? '测试消息已收到，未执行图片生成。' : '未执行图片生成，可重新打开验证卡片。';
+    };
     let record, poll;
     const call = async (name, args) => {
       const result = await window.openai.callTool(name, args);
@@ -39,18 +60,20 @@ export function buildV2ConfirmationProbeHtml() {
       record = await call('prepare_workbench_v2_confirmation_probe', {
         batchId: 'probe-' + crypto.randomUUID(), workbenchSessionId: 'probe-session-' + crypto.randomUUID()
       });
-      status.textContent = '测试请求已准备。点击下方按钮应出现宿主确认框；只有你发送后才会进入当前会话。';
+      badge.textContent = '待发送';
+      status.textContent = '发送后，请在 Codex 弹窗中确认。';
       send.disabled = false; cancel.disabled = false;
       cancel.onclick = async () => {
         send.disabled = true;
         try {
           const result = await call('cancel_workbench_v2_confirmation', {requestId:record.requestId});
-          status.textContent = result.status === 'sent' ? '可见回合已确认接收，无生成任务可取消。' : '测试请求已取消；迟到确认不会恢复它。';
+          finish(result.status === 'sent' ? 'sent' : 'cancelled');
           cancel.disabled = true; clearInterval(poll);
         } catch(error) {status.textContent = error.message;}
       };
       send.onclick = () => {
         send.disabled = true;
+        badge.textContent = '等待确认';
         status.textContent = '等待宿主发送确认与当前可见回合接收；尚未确认送达。';
         // Ready was resolved before enabling this button. Send directly from
         // the user's click, rather than after a network preparation round trip.
@@ -58,13 +81,14 @@ export function buildV2ConfirmationProbeHtml() {
           .then(result => { if (result?.isError) throw new Error('宿主拒绝消息'); })
           .catch(async error => {
             await call('cancel_workbench_v2_confirmation',{requestId:record.requestId}).catch(()=>{});
+            badge.textContent = '未送达';
             status.textContent = '未确认送达：' + error.message; cancel.disabled = true; clearInterval(poll);
           });
         poll = setInterval(async () => {
           try {
             const latest = await call('get_workbench_v2_confirmation',{requestId:record.requestId});
             if (latest.status === 'sent' || latest.status === 'cancelled') {
-              status.textContent = latest.status === 'sent' ? '当前可见回合已确认收到测试批次。没有执行生成。' : '请求已取消。';
+              finish(latest.status);
               cancel.disabled = true; clearInterval(poll);
             }
           } catch(error) { status.textContent = '状态读取失败：' + error.message; clearInterval(poll); }
