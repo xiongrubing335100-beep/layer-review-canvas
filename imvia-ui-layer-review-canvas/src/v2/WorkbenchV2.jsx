@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, ImagePlus, Layers3, LoaderCircle, Upload } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Download, ImagePlus, Layers3, LoaderCircle, RotateCcw, Upload } from 'lucide-react';
 import { createDocument as newDocument, addLayer, removeLayer, reorderLayers } from './document.js';
 import { createWorkbenchV2Client } from './api-client.js';
 import { DocumentCanvas } from './DocumentCanvas.jsx';
@@ -7,6 +7,7 @@ import { LayerList } from './LayerList.jsx';
 import { LayerEditor } from './LayerEditor.jsx';
 import { PenEditor } from './PenEditor.jsx';
 import { commitEditorDraft, createEditorDraft, reduceEditorDraft } from './editor-state.js';
+import { sendVisibleWorkbenchMessage } from './host-message.js';
 import './workbench-v2.css';
 
 const SESSION_KEY = 'imvia-layer-v2-session';
@@ -49,8 +50,9 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
   const [mobilePane, setMobilePane] = useState('canvas');
   const [editorDraft, setEditorDraft] = useState(null);
   const [penTarget, setPenTarget] = useState(null);
+  const [batchState, setBatchState] = useState(null);
   const posterInput = useRef(null); const h5Input = useRef(null);
-  const sessionId = useMemo(browserSessionId, []);
+  const [sessionId, setSessionId] = useState(browserSessionId);
   const saveQueue = useRef([]);
   const saveActive = useRef(false);
   const hydrated = useRef(false);
@@ -69,6 +71,48 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
     } catch (cause) { hydrated.current = true; if (alive) setError(cause.message); }
     return () => { alive = false; };
   }, [api]);
+
+  useEffect(() => {
+    if (typeof api.getSessionBatches !== 'function') return undefined;
+    let alive = true;
+    api.getSessionBatches(sessionId).then(records => {
+      if (!alive) return;
+      const active = records.find(batch => batch.status !== 'complete' && !['cancelled'].includes(batch.confirmation?.status));
+      if (!active) return;
+      const status = active.confirmation?.status === 'sent' ? (active.status === 'running' ? 'running' : 'confirmed')
+        : active.confirmation?.status === 'pending' ? 'ready_to_send' : 'awaiting_confirmation';
+      setBatchState(current => current || { batchId: active.batchId, status, batch: active });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [api, sessionId]);
+
+  useEffect(() => {
+    if (!batchState?.batchId || !['sending', 'awaiting_confirmation', 'confirmed', 'running'].includes(batchState.status) || typeof api.getBatchConfirmation !== 'function') return undefined;
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const confirmation = await api.getBatchConfirmation(batchState.batchId);
+        const batch = await api.getBatch?.(batchState.batchId);
+        if (stopped) return;
+        if (batch?.status === 'complete') {
+          setBatchState(current => current?.batchId === batchState.batchId ? { ...current, status: 'complete', batch } : current);
+          setNotice('本批次处理已结束，可继续检查候选');
+          return;
+        }
+        if (batch?.status === 'running') setBatchState(current => current?.batchId === batchState.batchId ? { ...current, status: 'running', batch } : current);
+        if (confirmation.status === 'sent') {
+          setBatchState(current => current?.batchId === batchState.batchId ? { ...current, status: 'confirmed' } : current);
+          setNotice('Codex 已确认收到本批次消息；执行结果会逐项回传');
+        } else if (confirmation.status === 'cancelled') {
+          setBatchState(current => current?.batchId === batchState.batchId ? { ...current, status: 'cancelled' } : current);
+          setNotice('本批次已取消');
+        }
+      } catch (cause) { if (!stopped) setError(`读取批次确认状态失败：${cause.message}`); }
+    };
+    refresh();
+    const timer = setInterval(refresh, 1200);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [api, batchState?.batchId, batchState?.status]);
 
   const drainSaveQueue = () => {
     if (saveActive.current || !saveQueue.current.length) return;
@@ -146,12 +190,77 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
     } catch (cause) { setError(`保存拆分项失败：${cause.message}`); }
   }
 
+  async function submitBatch() {
+    if (!document || saving || saveActive.current || saveQueue.current.length || editorDraft || busy) return;
+    if (!document.layerOrder.length) { setError('请先添加至少一个拆分区域'); return; }
+    setError(''); setNotice('正在冻结本次拆分清单…'); setBatchState({ status: 'sending' });
+    let batchId = null;
+    try {
+      if (typeof api.submitBatch !== 'function') throw new Error('当前工作台接口尚未连接批次服务');
+      const result = await api.submitBatch({ documentId: document.documentId, expectedRevision: document.revision,
+        submissionKey: crypto.randomUUID().replaceAll('-', ''), mode: 'pending', layerIds: document.layerOrder });
+      if (!result.batch.items.length) {
+        setBatchState({ batchId: result.batch.batchId, status: 'complete', batch: result.batch });
+        setNotice('当前修订没有新的待处理拆分项'); return;
+      }
+      batchId = result.batch.batchId;
+      setBatchState({ batchId, status: 'ready_to_send', batch: result.batch });
+      await sendBatchMessage(batchId, result.prompt, result.batch);
+    } catch (cause) {
+      if (batchId) await api.cancelBatch?.(batchId).catch(() => {});
+      setBatchState(batchId ? { batchId, status: 'cancelled' } : null);
+      setError(`拆分任务未发送：${cause.message}`);
+    }
+  }
+
+  async function sendBatchMessage(batchId, prompt, batch = null) {
+    setBatchState(current => ({ ...(current || {}), batchId, batch: batch || current?.batch, status: 'sending' }));
+    try {
+      await sendVisibleWorkbenchMessage(prompt);
+      setBatchState(current => current?.batchId === batchId ? { ...current, status: 'awaiting_confirmation' } : current);
+      setNotice('已请求发送；等待 Codex 当前会话确认收到消息'); setError('');
+    } catch (cause) {
+      await api.cancelBatch?.(batchId).catch(() => {});
+      setBatchState({ batchId, status: 'cancelled', batch });
+      setError(`拆分任务未发送：${cause.message}`);
+    }
+  }
+
+  async function resumeBatchSend() {
+    if (!batchState?.batchId || typeof api.getBatchSubmission !== 'function') return;
+    try {
+      const submission = await api.getBatchSubmission(batchState.batchId);
+      if (!submission.prompt) { setError('该批次已离开待发送状态，请查看会话确认或取消批次'); return; }
+      await sendBatchMessage(batchState.batchId, submission.prompt, submission.batch);
+    } catch (cause) { setError(`无法继续发送批次：${cause.message}`); }
+  }
+
+  async function cancelBatch() {
+    if (!batchState?.batchId || !api.cancelBatch) return;
+    try { await api.cancelBatch(batchState.batchId); setBatchState({ ...batchState, status: 'cancelled' }); setNotice('批次已取消'); setError(''); }
+    catch (cause) { setError(`取消批次失败：${cause.message}`); }
+  }
+
+  async function restartWorkbench() {
+    if (saving || saveActive.current || saveQueue.current.length) { setError('请等待当前修改保存完成后再重新开始'); return; }
+    setError(''); setNotice('正在取消当前会话的活动拆分项…');
+    try {
+      if (typeof api.restartSession !== 'function') throw new Error('当前工作台接口尚未连接会话恢复服务');
+      await api.restartSession(sessionId);
+      const nextSession = crypto.randomUUID().replaceAll('-', '');
+      try { sessionStorage.setItem(SESSION_KEY, nextSession); sessionStorage.removeItem(DOCUMENT_KEY); } catch { /* persistence is optional */ }
+      setSessionId(nextSession); setDocument(null); setSourceUrl(''); setSelection(null); setPendingCategory(null);
+      setEditorDraft(null); setPenTarget(null); setBatchState(null); saveQueue.current = [];
+      setNotice('已取消旧会话任务，可以重新上传开始');
+    } catch (cause) { setError(`重新开始失败：${cause.message}`); }
+  }
+
   const viewDocument = document && selection ? { ...document, activeLayerId: selection } : document;
   return <main className="v2-workbench">
     <header className="v2-topbar">
       <button className="v2-brand" type="button" onClick={onOpenLegacy} aria-label="回到 Imvia Layer"><img className="v2-brand__mark" src="/imvia-logo.png" alt=""/><strong>IMVIA Studio · Layer</strong></button>
       <nav className="v2-tabs" aria-label="工作区"><button type="button" className="is-active"><Layers3 size={16}/>框选拆分</button><button type="button" onClick={onOpenOverview}>⌘　画布总览</button></nav>
-      <span className="v2-save-state"><i className={error ? 'is-error' : ''}/>{busy ? '载入中' : error ? '需要处理' : document ? (saving ? '正在保存' : '文档已打开') : '等待上传'}</span>
+      <div className="v2-topbar__right"><button type="button" className="v2-restart" onClick={restartWorkbench} disabled={busy||saving}><RotateCcw size={14}/>重新开始</button><span className="v2-save-state"><i className={error ? 'is-error' : ''}/>{busy ? '载入中' : error ? '需要处理' : document ? (saving ? '正在保存' : '文档已打开') : '等待上传'}</span></div>
     </header>
 
     {!document ? <section className="v2-empty" aria-label="上传原图">
@@ -187,7 +296,11 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
           onAdd={armLayer} onRemove={removeSelectedLayer} onReorder={order=>{try{publishDocument(reorderLayers(document,order));}catch(cause){setError(`排序失败：${cause.message}`);}}}/>
       </section>
       <footer className="v2-bottom-actions"><div className="v2-bottom-actions__status" role={error?'alert':'status'}>{error||notice||'修改将自动保存'}</div>
-        <button type="button" className="v2-split-action" disabled title="拆分执行将在后续阶段接入"><Upload size={17}/>拆分</button>
+        {['sending', 'awaiting_confirmation', 'confirmed', 'running'].includes(batchState?.status)
+          ? <button type="button" className="v2-cancel-batch-action" onClick={cancelBatch}>取消本批次</button>
+          : batchState?.status === 'ready_to_send'
+            ? <button type="button" className="v2-split-action" onClick={resumeBatchSend}><Upload size={17}/>发送本批次到 Codex</button>
+          : <button type="button" className="v2-split-action" disabled={saving||busy||Boolean(editorDraft)||['confirmed','running'].includes(batchState?.status)} onClick={submitBatch}><Upload size={17}/>拆分</button>}
         <button type="button" className="v2-psd-action" disabled title="PSD 导出将在后续阶段接入"><Download size={17}/>下载 PSD</button>
       </footer>
     </>}

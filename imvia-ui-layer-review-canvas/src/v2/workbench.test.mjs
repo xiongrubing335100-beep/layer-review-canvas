@@ -7,6 +7,7 @@ import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createWorkbenchV2Api } from './api.mjs';
+import { createBridgeRequestStore } from './bridge-request-store.js';
 import { createDocument, addLayer, processingCategories, reorderLayers } from './document.js';
 import { workbenchV2Middleware } from './api.mjs';
 import { fitViewport } from './coordinates.js';
@@ -54,6 +55,7 @@ test('empty workbench provides separate poster and H5 upload entry points', () =
   const markup = renderToStaticMarkup(React.createElement(WorkbenchV2, { api: {}, onOpenLegacy: noOp, onOpenOverview: noOp }));
   assert.match(markup, /上传海报原图拆分/);
   assert.match(markup, /上传 H5 原图拆分/);
+  assert.match(markup, /重新开始/);
 });
 
 test('single-layer editor shows requested controls while pen view keeps the source image and honest tool availability', () => {
@@ -120,10 +122,43 @@ test('V2 API stores PNG source and document, then rejects stale save without ove
   assert.equal((await api.getDocument(original.documentId)).revision, 2);
 });
 
+test('batch API freezes the saved document, requires a matching bridge receipt, and restart cancels only its session', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-batches-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const documentsRoot = path.join(root, 'documents');
+  const api = createWorkbenchV2Api({ root: documentsRoot });
+  const document = await api.createDocument({ mode: 'poster', bytes: tinyPng(), workbenchSessionId: 'batch-session' });
+  const layered = addLayer(document, { layerId: 'batch-layer', name: '主标题', displayCategory: '主标题', processingCategory: 'text',
+    bounds: { x: 0, y: 0, width: 1, height: 1 }, paths: [], requirements: '', strategy: { operation: 'extract', removeBackground: false, repairPaths: [] } });
+  await api.saveDocument(layered, document.revision);
+  const submitted = await api.submitBatch({ documentId: document.documentId, expectedRevision: layered.revision, submissionKey: 'batch-submit' });
+  assert.equal(submitted.batch.items.length, 1);
+  assert.match(submitted.prompt, /confirm_workbench_v2_batch/);
+  const abandoned = await api.submitBatch({ documentId: document.documentId, expectedRevision: layered.revision,
+    submissionKey: 'cancel-before-send', mode: 'retry', layerIds: ['batch-layer'] });
+  await api.cancelBatch(abandoned.batch.batchId);
+  assert.equal((await api.getConfirmation(abandoned.batch.batchId)).status, 'cancelled');
+  await assert.rejects(api.claimNextBatchItem({ batchId: submitted.batch.batchId, receipt: null }), /BATCH_CONFIRMATION_REQUIRED/);
+  const bridgeStore = createBridgeRequestStore({ root: path.join(root, 'bridge-requests') });
+  const claimed = await bridgeStore.read(submitted.batch.batchId);
+  assert.equal(claimed.status, 'claimed');
+  const receipt = { workbenchSessionId: claimed.workbenchSessionId, envelopeSha256: claimed.envelopeSha256 };
+  await bridgeStore.transition({ requestId: submitted.batch.batchId, expectedStatus: 'claimed', nextStatus: 'sent', receipt });
+  const work = await api.claimNextBatchItem({ batchId: submitted.batch.batchId, receipt });
+  assert.equal(work.manifest.maximumImagegenCalls, 0);
+  assert.deepEqual(work.manifest.snapshot.bounds, { x: 0, y: 0, width: 1, height: 1 });
+  await api.restartSession({ workbenchSessionId: 'batch-session' });
+  const cancelled = await api.getAttempt(work.attempt.attemptId);
+  assert.equal(cancelled.execution, 'cancelled');
+  const late = await api.applyAttemptEvent({ batchId: submitted.batch.batchId, event: { eventId: 'late-after-restart',
+    attemptId: work.attempt.attemptId, dispatchId: work.attempt.dispatchId, type: 'suggested', payload: { versionId: 'late' } } });
+  assert.equal(late.execution, 'cancelled');
+});
+
 test('V2 HTTP endpoints return a saved document, raw source PNG, and a 409 for stale updates', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-http-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const middleware = workbenchV2Middleware({ root });
+  const middleware = workbenchV2Middleware({ root: path.join(root, 'documents') });
   const server = createHttpServer((request,response)=>middleware(request,response,()=>{response.statusCode=404;response.end();}));
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   t.after(()=>new Promise(resolve=>server.close(resolve)));
@@ -136,4 +171,20 @@ test('V2 HTTP endpoints return a saved document, raw source PNG, and a 409 for s
   assert.deepEqual(Buffer.from(await source.arrayBuffer()),png);
   const stale=await fetch(`${base}/documents/${document.documentId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:{...document,revision:2},expectedRevision:0})});
   assert.equal(stale.status,409);
+  const layered=addLayer(document,{layerId:'http-layer',name:'主体',displayCategory:'主体',processingCategory:'subject',bounds:{x:0,y:0,width:1,height:1},paths:[],requirements:'',strategy:{operation:'extract',removeBackground:false,repairPaths:[]}});
+  const saved=await fetch(`${base}/documents/${document.documentId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:layered,expectedRevision:1})});
+  assert.equal(saved.status,200);
+  const submitted=await fetch(`${base}/documents/${document.documentId}/batches`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expectedRevision:2,submissionKey:'http-submit'})});
+  assert.equal(submitted.status,202);const submission=await submitted.json();
+  const bridgeStore=createBridgeRequestStore({root:path.join(root,'bridge-requests')});
+  const pending=await bridgeStore.read(submission.batch.batchId);
+  const claimedReceipt={workbenchSessionId:pending.workbenchSessionId,envelopeSha256:pending.envelopeSha256};
+  assert.equal(pending.status,'claimed');
+  await bridgeStore.transition({requestId:pending.requestId,expectedStatus:'claimed',nextStatus:'sent',receipt:claimedReceipt});
+  const claimed=await fetch(`${base}/batches/${submission.batch.batchId}/claim-next`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({receipt:claimedReceipt})});
+  assert.equal(claimed.status,200);const item=await claimed.json();assert.equal(item.manifest.maximumImagegenCalls,0);
+  const restarted=await fetch(`${base}/sessions/http-session/restart`,{method:'POST'});
+  assert.equal(restarted.status,200);
+  const cancelled=await fetch(`${base}/attempts/${item.attempt.attemptId}`);
+  assert.equal((await cancelled.json()).execution,'cancelled');
 });

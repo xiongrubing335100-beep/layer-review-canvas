@@ -76,11 +76,14 @@ test('MCP exposes model-only acknowledgement and performs the actual persisted t
   t.after(async()=>{await client.close();await server.close();});
   const tools=await client.listTools();
   assert.deepEqual(tools.tools.find(t=>t.name==='confirm_workbench_v2_batch')._meta.ui.visibility,['model']);
+  assert.ok(tools.tools.some(t=>t.name==='claim_workbench_v2_batch_item'));
+  assert.ok(tools.tools.some(t=>t.name==='restart_workbench_v2_session'));
   const prepared=await client.callTool({name:'prepare_workbench_v2_confirmation_probe',arguments:{batchId:'probe',workbenchSessionId:'session-test'}});
   const record=prepared.structuredContent;
   assert.equal(record.status,'claimed');
   const response=await client.callTool({name:'confirm_workbench_v2_batch',arguments:{batchId:'probe',requestId:record.requestId,receipt:receiptFor(record)}});
   assert.equal(response.isError,undefined);
+  assert.deepEqual(response.structuredContent.receipt,receiptFor(record));
   assert.equal((await store.read(record.requestId)).status,'sent');
 });
 test('probe preserves a direct click send and cancels when SDK throws synchronously',async()=>{

@@ -6,7 +6,7 @@ export function buildBatchPrompt(record) {
   const probe = record.envelope.mode === 'confirmation_probe';
   return [probe ? 'Imvia Layer V2 会话桥验证。仅确认消息，不生成、不调用 ImageGen/RMBG，不读取其他任务。' : 'Imvia Layer V2 可见批次任务。仅处理冻结清单，不自动重试或采用结果。',
     `请先调用 confirm_workbench_v2_batch，参数：${JSON.stringify(binding)}`,
-    probe ? '确认成功后仅回复“已收到 V2 测试批次”，然后停止。' : `清单：${record.envelope.manifestPath}；调度信封 SHA-256：${record.envelopeSha256}（不是清单文件哈希）。确认后读取并核对清单绑定，再按 V2 批次适配器执行。`,
+    probe ? '确认成功后仅回复“已收到 V2 测试批次”，然后停止。' : `冻结批次记录：${record.envelope.manifestPath}；调度信封 SHA-256：${record.envelopeSha256}（不是清单文件哈希）。确认工具会返回 receipt。之后先调用 claim_workbench_v2_batch_item，传 batchId 和该 receipt；一次只处理返回的一项。完成后调用 record_workbench_v2_attempt_event，再领取下一项，直到返回 done。严格按 V2 批次适配器；不处理清单以外内容。`,
   ].join('\n');
 }
 

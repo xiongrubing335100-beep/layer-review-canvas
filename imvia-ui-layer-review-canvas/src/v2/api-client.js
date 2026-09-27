@@ -23,6 +23,34 @@ export function createWorkbenchV2Client(fetchImpl = fetch) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document, expectedRevision }),
       })).json();
     },
+    async submitBatch({ documentId, expectedRevision, submissionKey, mode = 'pending', layerIds = null }) {
+      return (await request(fetchImpl, `/api/workbench-v2/documents/${encodeURIComponent(documentId)}/batches`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRevision, submissionKey, mode, layerIds }),
+      })).json();
+    },
+    async getBatch(batchId) { return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}`)).json(); },
+    async getBatchSubmission(batchId) { return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}/submission`)).json(); },
+    async getSessionBatches(workbenchSessionId) { return (await request(fetchImpl, `/api/workbench-v2/sessions/${encodeURIComponent(workbenchSessionId)}/batches`)).json(); },
+    async getBatchConfirmation(batchId) { return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}/confirmation`)).json(); },
+    async cancelBatch(batchId) { return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' })).json(); },
+    async getAttempt(attemptId) { return (await request(fetchImpl, `/api/workbench-v2/attempts/${encodeURIComponent(attemptId)}`)).json(); },
+    async claimNextBatchItem(batchId, receipt) {
+      return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}/claim-next`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ receipt }),
+      })).json();
+    },
+    async cancelAttempt(attemptId) {
+      return (await request(fetchImpl, `/api/workbench-v2/attempts/${encodeURIComponent(attemptId)}/cancel`, { method: 'POST' })).json();
+    },
+    async restartSession(workbenchSessionId) {
+      return (await request(fetchImpl, `/api/workbench-v2/sessions/${encodeURIComponent(workbenchSessionId)}/restart`, { method: 'POST' })).json();
+    },
+    async recordAttemptEvent(batchId, event) {
+      return (await request(fetchImpl, `/api/workbench-v2/batches/${encodeURIComponent(batchId)}/events`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event }),
+      })).json();
+    },
     sourceUrl(id) { return `/api/workbench-v2/documents/${encodeURIComponent(id)}/source`; },
   };
 }

@@ -87,6 +87,29 @@ def matte_mask(path, mapping, expected_size, provider):
     return alpha
 
 
+def inverse_mapped_region(image, mapping, expected_size):
+    if not mapping or not mapping.get("contentRegion") or not mapping.get("canvas") or not mapping.get("sourceRegion"):
+        fail("MAPPING_REQUIRED_FOR_PADDED_IMAGE")
+    if (mapping["sourceRegion"]["width"], mapping["sourceRegion"]["height"]) != expected_size:
+        fail("MAPPING_SOURCE_SIZE_MISMATCH")
+    canvas = mapping["canvas"]
+    region = mapping["contentRegion"]
+    if region["x"] + region["width"] > canvas["width"] or region["y"] + region["height"] > canvas["height"]:
+        fail("INVALID_REFERENCE_MAPPING")
+    if image.size != (canvas["width"], canvas["height"]):
+        fail("MAPPING_CANVAS_SIZE_MISMATCH")
+    source = image.load()
+    width, height = expected_size
+    result = Image.new("RGBA", expected_size)
+    target = result.load()
+    for y in range(height):
+        sy = region["y"] + min(region["height"] - 1, math.floor((y + 0.5) * region["height"] / height))
+        for x in range(width):
+            sx = region["x"] + min(region["width"] - 1, math.floor((x + 0.5) * region["width"] / width))
+            target[x, y] = source[sx, sy]
+    return result
+
+
 def alpha_state(alpha, remove_background):
     low, high = alpha.getextrema()
     if high == 0:
@@ -117,7 +140,8 @@ def run(args):
         fail("SELECTED_CROP_DIMENSIONS_MISMATCH")
     raw = Image.open(raw_path).convert("RGBA")
     if manifest["route"] == "reconstruct" and raw.size != (width, height):
-        fail("RECONSTRUCTION_DIMENSIONS_MISMATCH")
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8")) if mapping_path else manifest.get("mapping")
+        raw = inverse_mapped_region(raw, mapping, (width, height))
     if manifest["route"] == "extract_mask":
         if manifest.get("maskProvider") == "selection":
             mask = path_mask(snapshot.get("paths", []), bounds)

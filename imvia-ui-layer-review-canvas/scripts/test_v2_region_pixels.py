@@ -71,6 +71,26 @@ class V2RegionPixelTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("MAPPING_REQUIRED_FOR_PADDED_MATTE", result.stderr)
 
+    def test_padded_reconstruction_inverse_maps_only_the_reference_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            crop = root / "crop.png"; Image.new("RGBA", (2, 2), (10, 20, 30, 255)).save(crop)
+            raw = Image.new("RGBA", (6, 6), (0, 0, 0, 255))
+            for y in range(2, 4):
+                for x in range(2, 4): raw.putpixel((x, y), (230, 80, 30, 255))
+            raw_path = root / "generated.png"; raw.save(raw_path)
+            mapping = {"canvas": {"width": 6, "height": 6}, "contentRegion": {"x": 2, "y": 2, "width": 2, "height": 2},
+                "sourceRegion": {"width": 2, "height": 2}}
+            mapping_path = root / "mapping.json"; mapping_path.write_text(json.dumps(mapping))
+            manifest = {"schemaVersion": 2, "route": "reconstruct", "maskProvider": "generated_region", "removeBackground": False,
+                "selectedCropPath": str(crop), "mappingPath": str(mapping_path), "outputRoot": str(root),
+                "snapshot": {"bounds": {"x": 129, "y": 1522, "width": 2, "height": 2}, "strategy": {"repairPaths": []}}}
+            manifest_path = root / "manifest.json"; manifest_path.write_text(json.dumps(manifest))
+            result = self.run_cli(manifest_path, raw_path, root / "out.png")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = Image.open(root / "out.png").convert("RGBA")
+            self.assertEqual(output.getpixel((0, 0)), (230, 80, 30, 255))
+
     def test_transparent_and_fully_opaque_background_removal_are_not_false_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
