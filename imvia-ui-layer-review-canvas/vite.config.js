@@ -56,6 +56,7 @@ import { isExecutionFeatureEnabled } from './src/execution-features.js';
 import { shouldHideAbandonedJob } from './src/workbench-lifecycle.js';
 import { readSafePosterCandidatePreview } from './src/poster-candidate-preview.js';
 import { selectPosterFastDownloadAsset } from './src/poster-fast-download.js';
+import { workbenchV2Middleware } from './src/v2/api.mjs';
 import { buildPosterAnalysisPrompt, buildPosterCandidatePrompt, buildPosterTargetedCandidatePrompt } from './src/poster-prompt.js';
 import {
   findBlockingJob,
@@ -223,6 +224,7 @@ export function layerReviewQueue() {
   return {
     name: 'layer-review-queue',
     configureServer(server) {
+      server.middlewares.use(workbenchV2Middleware({ root: path.resolve(process.cwd(), 'output', 'workbench-v2', 'documents') }));
       server.middlewares.use((request, response, next) => {
         const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
         if (!pathname.startsWith('/api/layer-review/') && !pathname.startsWith('/api/poster-layer/')) {

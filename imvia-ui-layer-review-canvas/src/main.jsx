@@ -6173,4 +6173,8 @@ function App() {
 const container = document.getElementById('root');
 const root = window.__layerReviewRoot ?? createRoot(container);
 window.__layerReviewRoot = root;
-root.render(<App />);
+const params = new URLSearchParams(window.location.search);
+if (params.get('workbench') === 'v2') {
+  const openLegacy = () => { const url = new URL(window.location.href); url.searchParams.delete('workbench'); window.location.assign(url); };
+  import('./v2/WorkbenchV2.jsx').then(({ WorkbenchV2 }) => root.render(<WorkbenchV2 onOpenLegacy={openLegacy} onOpenOverview={openLegacy} />));
+} else root.render(<App />);
