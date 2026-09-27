@@ -16,3 +16,22 @@ function convert(paths, sourceSize, normalized) {
 }
 export const toLegacyPaths = (paths, sourceSize) => convert(paths, sourceSize, true);
 export const fromLegacyPaths = (paths, sourceSize) => convert(paths, sourceSize, false);
+
+function mapPoint(point, bounds, inverse = false) {
+  return inverse
+    ? { x: bounds.x + point.x * bounds.width, y: bounds.y + point.y * bounds.height }
+    : { x: (point.x - bounds.x) / bounds.width, y: (point.y - bounds.y) / bounds.height };
+}
+
+function mapRegionPaths(paths, bounds, inverse = false) {
+  const kinds = inverse ? { foreground: 'include', background: 'exclude' } : { include: 'foreground', exclude: 'background' };
+  return (paths ?? []).map(path => {
+    if (!Object.hasOwn(kinds, path.kind)) throw new Error('UNKNOWN_PATH_KIND');
+    return { ...structuredClone(path), kind: kinds[path.kind], anchors: path.anchors.map(anchor => ({
+      ...anchor, ...mapPoint(anchor, bounds, inverse), in: mapPoint(anchor.in, bounds, inverse), out: mapPoint(anchor.out, bounds, inverse),
+    })) };
+  });
+}
+
+export const toRegionPenPaths = (paths, bounds) => mapRegionPaths(paths, bounds);
+export const fromRegionPenPaths = (paths, bounds) => mapRegionPaths(paths, bounds, true);

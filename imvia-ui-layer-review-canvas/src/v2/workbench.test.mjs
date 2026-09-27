@@ -10,18 +10,23 @@ import { createWorkbenchV2Api } from './api.mjs';
 import { createDocument, addLayer, processingCategories, reorderLayers } from './document.js';
 import { workbenchV2Middleware } from './api.mjs';
 import { fitViewport } from './coordinates.js';
+import { createEditorDraft } from './editor-state.js';
 import { createServer } from 'vite';
 
 let vite;
 let WorkbenchV2;
 let DocumentCanvas;
 let LayerList;
+let LayerEditor;
+let PenEditor;
 
 test('load V2 React components through Vite JSX transform', async () => {
   vite = await createServer({ configFile: path.resolve('vite.config.js'), server: { middlewareMode: true }, appType: 'custom' });
   ({ WorkbenchV2 } = await vite.ssrLoadModule('/src/v2/WorkbenchV2.jsx'));
   ({ DocumentCanvas } = await vite.ssrLoadModule('/src/v2/DocumentCanvas.jsx'));
   ({ LayerList } = await vite.ssrLoadModule('/src/v2/LayerList.jsx'));
+  ({ LayerEditor } = await vite.ssrLoadModule('/src/v2/LayerEditor.jsx'));
+  ({ PenEditor } = await vite.ssrLoadModule('/src/v2/PenEditor.jsx'));
 });
 after(async () => { await vite?.close(); });
 
@@ -49,6 +54,15 @@ test('empty workbench provides separate poster and H5 upload entry points', () =
   const markup = renderToStaticMarkup(React.createElement(WorkbenchV2, { api: {}, onOpenLegacy: noOp, onOpenOverview: noOp }));
   assert.match(markup, /上传海报原图拆分/);
   assert.match(markup, /上传 H5 原图拆分/);
+});
+
+test('single-layer editor shows requested controls while pen view keeps the source image and honest tool availability', () => {
+  const doc = documentFixture(); const draft = createEditorDraft(doc, 'layer-a');
+  const editor = renderToStaticMarkup(React.createElement(LayerEditor, { document: doc, sourceUrl: '/source.png', draft, onChange: noOp, onDone: noOp, onCancel: noOp, onOpenPen: noOp }));
+  assert.match(editor, /编辑拆分/); assert.match(editor, /拆分类别/); assert.match(editor, /处理要求/);
+  assert.match(editor, /移除背景/); assert.match(editor, /补全被遮挡区域/); assert.match(editor, /完成/); assert.match(editor, /取消/);
+  const pen = renderToStaticMarkup(React.createElement(PenEditor, { source: doc.source, sourceUrl: '/source.png', draft, onChange: noOp, onClose: noOp }));
+  assert.match(pen, /放大钢笔编辑/); assert.match(pen, /魔棒不可用/); assert.match(pen, /拖动移动画布/);
 });
 
 test('one stable layer id is shared by canvas selection and list; pending custom categories require a processing route', () => {

@@ -4,6 +4,9 @@ import { createDocument as newDocument, addLayer, removeLayer, reorderLayers } f
 import { createWorkbenchV2Client } from './api-client.js';
 import { DocumentCanvas } from './DocumentCanvas.jsx';
 import { LayerList } from './LayerList.jsx';
+import { LayerEditor } from './LayerEditor.jsx';
+import { PenEditor } from './PenEditor.jsx';
+import { commitEditorDraft, createEditorDraft, reduceEditorDraft } from './editor-state.js';
 import './workbench-v2.css';
 
 const SESSION_KEY = 'imvia-layer-v2-session';
@@ -44,6 +47,8 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mobilePane, setMobilePane] = useState('canvas');
+  const [editorDraft, setEditorDraft] = useState(null);
+  const [penTarget, setPenTarget] = useState(null);
   const posterInput = useRef(null); const h5Input = useRef(null);
   const sessionId = useMemo(browserSessionId, []);
   const saveQueue = useRef([]);
@@ -120,6 +125,27 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
     catch (cause) { setError(`移除失败：${cause.message}`); }
   }
 
+  function openEditor(layerId) {
+    try {
+      setEditorDraft(createEditorDraft(document, layerId));
+      setSelection(layerId); setPendingCategory(null); setPenTarget(null); setError('');
+    } catch (cause) { setError(`无法打开编辑器：${cause.message}`); }
+  }
+
+  function cancelEditor() {
+    setEditorDraft(current => current ? reduceEditorDraft(current, { type: 'cancel' }) : current);
+    setEditorDraft(null); setPenTarget(null); setNotice('已放弃本次未保存修改');
+  }
+
+  function finishEditor() {
+    try {
+      const next = commitEditorDraft(document, editorDraft);
+      if (next !== document) publishDocument(next);
+      setSelection(editorDraft.layerId); setEditorDraft(null); setPenTarget(null);
+      setNotice(next === document ? '没有新的修改' : '当前拆分项已保存'); setError('');
+    } catch (cause) { setError(`保存拆分项失败：${cause.message}`); }
+  }
+
   const viewDocument = document && selection ? { ...document, activeLayerId: selection } : document;
   return <main className="v2-workbench">
     <header className="v2-topbar">
@@ -140,7 +166,13 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
       <input ref={posterInput} type="file" accept="image/*" hidden onChange={event=>{handleUpload('poster',event.target.files?.[0]);event.target.value='';}} />
       <input ref={h5Input} type="file" accept="image/*" hidden onChange={event=>{handleUpload('h5',event.target.files?.[0]);event.target.value='';}} />
       {error ? <p className="v2-notice v2-notice--error" role="alert">{error}</p> : notice ? <p className="v2-notice">{notice}</p> : null}
-    </section> : <>
+    </section> : editorDraft ? <div className="v2-editor-stage">
+      <header className="v2-editor-stage__head"><span>{penTarget ? '精细编辑' : '单项编辑'} · {editorDraft.values.name}</span><button type="button" onClick={penTarget ? () => setPenTarget(null) : cancelEditor}>← 返回</button></header>
+      {penTarget ? <PenEditor source={editorDraft.source} sourceUrl={sourceUrl} draft={editorDraft} target={penTarget}
+        onChange={event => setEditorDraft(current => reduceEditorDraft(current, event))} onClose={() => setPenTarget(null)} />
+        : <LayerEditor document={document} sourceUrl={sourceUrl} draft={editorDraft}
+          onChange={event => setEditorDraft(current => reduceEditorDraft(current, event))} onDone={finishEditor} onCancel={cancelEditor} onOpenPen={setPenTarget} />}
+    </div> : <>
       <div className="v2-mobile-switch"><button className={mobilePane==='canvas'?'is-active':''} onClick={()=>setMobilePane('canvas')}>原图</button><button className={mobilePane==='list'?'is-active':''} onClick={()=>setMobilePane('list')}>拆分项 {document.layerOrder.length}</button></div>
       <section className="v2-main-grid">
         <section className={`v2-source-section ${mobilePane==='list'?'is-mobile-hidden':''}`} aria-label="原图编辑">
@@ -151,7 +183,7 @@ export function WorkbenchV2({ api = defaultApi, onOpenLegacy, onOpenOverview }) 
           <footer className="v2-canvas-foot"><span>{pendingCategory ? '拖动以框选，坐标与图层列表同步' : '选择右侧拆分项可定位对应区域'}</span><span>原位坐标已锁定</span></footer>
         </section>
         <LayerList document={viewDocument} statusByLayer={{}} onSelect={id=>{setSelection(id);setPendingCategory(null);setMobilePane('canvas');}}
-          onEdit={id=>{setSelection(id);setNotice(`「${document.layers[id].name}」已选中，精细编辑入口将在下一步接入`);setMobilePane('canvas');}}
+          onEdit={openEditor}
           onAdd={armLayer} onRemove={removeSelectedLayer} onReorder={order=>{try{publishDocument(reorderLayers(document,order));}catch(cause){setError(`排序失败：${cause.message}`);}}}/>
       </section>
       <footer className="v2-bottom-actions"><div className="v2-bottom-actions__status" role={error?'alert':'status'}>{error||notice||'修改将自动保存'}</div>
