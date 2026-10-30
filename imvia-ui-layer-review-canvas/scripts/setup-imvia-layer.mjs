@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { installCodexPluginLocked } from './install-codex-plugin.mjs';
 import { ensurePersistentPythonRuntimeLocked, runCommand } from './python-runtime.mjs';
@@ -16,7 +17,8 @@ async function warmModel(python, { repositoryRoot }) {
 
 export async function setupImviaLayer({
   repositoryRoot = defaultRepositoryRoot,
-  pluginRoot = path.join(os.homedir(), 'plugins', 'imvia-layer'),
+  pluginRoot = process.env.IMVIA_LAYER_PLUGIN_DIRECTORY || path.join(os.homedir(), 'plugins', 'imvia-layer'),
+  marketplacePath = process.env.IMVIA_LAYER_MARKETPLACE_PATH || path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json'),
   ensurePythonLockedImpl = ensurePersistentPythonRuntimeLocked,
   warmModelImpl = warmModel,
   installLockedImpl = installCodexPluginLocked,
@@ -39,6 +41,7 @@ export async function setupImviaLayer({
       return installLockedImpl({
         repositoryRoot,
         pluginRoot,
+        marketplacePath,
         preparedPython: python,
         writeOutput,
       });
@@ -46,7 +49,7 @@ export async function setupImviaLayer({
   });
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+const invokedPath = process.argv[1] ? await realpath(path.resolve(process.argv[1])).catch(() => null) : null;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   setupImviaLayer().catch((error) => {
     process.stderr.write(`Imvia Layer 初始化失败：${error.message}\n`);

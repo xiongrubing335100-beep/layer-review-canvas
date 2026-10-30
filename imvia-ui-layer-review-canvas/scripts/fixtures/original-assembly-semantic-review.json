@@ -1,0 +1,194 @@
+{
+  "rawSha256": "26f38603df5a1ac7cf4757cb3fa7908d38065e33465a71904ecc44dc5b8bbfe6",
+  "sourceFingerprint": "46c7f454375dceef18060c89094e5c7a85ca09ea5396f3bb64a0c00cc66c98e6",
+  "semanticTopology": {
+    "version": 1,
+    "coordinateSpace": "selected_region_pixels",
+    "profile": "material_composite",
+    "objects": [
+      {
+        "name": "complete 3D title with gold extrusions",
+        "point": [
+          473,
+          710
+        ]
+      },
+      {
+        "name": "2024 solid red plaque",
+        "point": [
+          227,
+          481
+        ]
+      },
+      {
+        "name": "microphone body and emblem",
+        "point": [
+          578,
+          292
+        ]
+      },
+      {
+        "name": "left attached wing",
+        "point": [
+          428,
+          249
+        ]
+      },
+      {
+        "name": "right attached wing",
+        "point": [
+          748,
+          249
+        ]
+      },
+      {
+        "name": "vinyl record behind title",
+        "point": [
+          733,
+          417
+        ]
+      },
+      {
+        "name": "left metallic ring segment",
+        "point": [
+          294,
+          368
+        ]
+      },
+      {
+        "name": "right metallic ring segment",
+        "point": [
+          872,
+          399
+        ]
+      },
+      {
+        "name": "attached right jewel",
+        "point": [
+          973,
+          448
+        ]
+      }
+    ],
+    "holes": [
+      {
+        "id": 1,
+        "treatment": "fill_material",
+        "reason": "Dark right microphone support is solid and backed by the requested vinyl record."
+      },
+      {
+        "id": 2,
+        "treatment": "fill_material",
+        "reason": "Dark left microphone support and record are opaque material, not background."
+      },
+      {
+        "id": 3,
+        "treatment": "preserve",
+        "reason": "The pale architectural pillar is visible in the narrow gap between outer ring and plaque."
+      },
+      {
+        "id": 4,
+        "treatment": "fill_material",
+        "reason": "The 4 is printed on the opaque red 2024 plaque."
+      },
+      {
+        "id": 5,
+        "treatment": "fill_material",
+        "reason": "The second 2 is printed on the opaque red plaque."
+      },
+      {
+        "id": 6,
+        "treatment": "fill_material",
+        "reason": "The 0 is printed on the opaque red plaque."
+      },
+      {
+        "id": 7,
+        "treatment": "fill_material",
+        "reason": "The first 2 is printed on the opaque red plaque."
+      },
+      {
+        "id": 8,
+        "treatment": "fill_material",
+        "reason": "This rectangular recess has continuous opaque gold backing and bevels."
+      },
+      {
+        "id": 9,
+        "treatment": "fill_material",
+        "reason": "The triangular inset contains gold 3D letter backing, not visible architecture."
+      },
+      {
+        "id": 10,
+        "treatment": "fill_material",
+        "reason": "The circular letter recess is a solid bronze inset, not a transparent counter."
+      },
+      {
+        "id": 11,
+        "treatment": "fill_material",
+        "reason": "The L-shaped area has continuous gold backing and brown extrusion faces."
+      },
+      {
+        "id": 12,
+        "treatment": "fill_material",
+        "reason": "The lower rectangular recess has solid gold backing and bevels."
+      },
+      {
+        "id": 13,
+        "treatment": "fill_material",
+        "reason": "The diagonal strip is a dark gold letter side wall bounded by bevels."
+      },
+      {
+        "id": 14,
+        "treatment": "fill_material",
+        "reason": "This area is backed by the solid bottom of the requested vinyl record and letter extrusions."
+      },
+      {
+        "id": 15,
+        "treatment": "fill_material",
+        "reason": "The tiny triangular gap is dark gold material at the letter junction."
+      },
+      {
+        "id": 16,
+        "treatment": "fill_material",
+        "reason": "The lower circular recess is a solid gold inset with visible metallic backing."
+      }
+    ],
+    "materialNotches": [
+      {
+        "id": 7,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 8,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 9,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 10,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 16,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 17,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 18,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 19,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      },
+      {
+        "id": 20,
+        "reason": "The complete inspected pocket lies on the opaque microphone grille or its continuous metal side wall, not visible background. Source inspection overlay: local-source/notch-source.png."
+      }
+    ]
+  }
+}

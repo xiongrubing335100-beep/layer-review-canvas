@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
-import { idSchema, validateDocument } from './document.js';
+import { idSchema, validateDocument, replaceDocumentSource } from './document.js';
 import { canonicalJson } from '../poster-plan.js';
 
 function fail(code) { return Object.assign(new Error(code), { code }); }
@@ -34,6 +34,15 @@ export function createDocumentStore({ root }) {
   }
   return {
     read,
+    async replaceSource({ documentId, expectedRevision, source }) {
+      return locked(documentId, async dir => {
+        const current = await read(documentId);
+        if (current.revision !== expectedRevision) throw fail('REVISION_CONFLICT');
+        const next = replaceDocumentSource(current, source);
+        await archive(dir, current);
+        return publish(dir, next);
+      });
+    },
     async create(input) {
       const document = validateDocument(input);
       return locked(document.documentId, async dir => {

@@ -280,7 +280,10 @@ test('author attribution is structurally isolated from PNG finalizers and export
   const exportAndDownloadSource = mainSource.slice(exportStart, exportEnd);
   assert.doesNotMatch(exportAndDownloadSource, /DeveloperAttribution|IMVIA_AUTHOR|青木|xiaohongshu|IMVIA_COPYRIGHT|watermark/i);
   for (const finalizer of [sourceWithoutAttributionHeader(targetedFinalizer), rmbgFinalizer]) {
-    assert.doesNotMatch(finalizer, /attribution(?:\.js)?|IMVIA_AUTHOR|青木|xiaohongshu|IMVIA_COPYRIGHT|watermark|ImageDraw|draw\.text/i);
+    // ImageDraw also constructs the user's repair-region masks. Drawing a mask
+    // is not attribution; reject author payloads and text drawing specifically.
+    assert.doesNotMatch(finalizer, /attribution(?:\.js)?|IMVIA_AUTHOR|青木|xiaohongshu|IMVIA_COPYRIGHT|watermark/i);
+    assert.doesNotMatch(finalizer, authorTextDrawingPattern);
   }
 });
 

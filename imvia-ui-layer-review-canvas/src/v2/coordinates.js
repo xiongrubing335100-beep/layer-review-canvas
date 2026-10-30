@@ -24,6 +24,24 @@ export function toSource(point, t) {
   transform(t); finite(point.x, point.y);
   return { x: (point.x - t.offsetX) / t.scale, y: (point.y - t.offsetY) / t.scale };
 }
+export function moveRegionBounds(bounds, delta, sourceSize) {
+  finite(delta.x, delta.y);
+  return { ...bounds,
+    x: Math.max(0, Math.min(sourceSize.width - bounds.width, Math.round(bounds.x + delta.x))),
+    y: Math.max(0, Math.min(sourceSize.height - bounds.height, Math.round(bounds.y + delta.y))) };
+}
+// Resize the crop, not its pixels or source-space paths. The opposite edge stays fixed.
+export function resizeRegionBounds(bounds, handle, delta, limit) {
+  finite(delta.x, delta.y);
+  if (!['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].includes(handle)) throw new Error('INVALID_RESIZE_HANDLE');
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)));
+  let left = bounds.x, top = bounds.y, right = left + bounds.width, bottom = top + bounds.height;
+  if (handle.includes('w')) left = clamp(left + delta.x, limit.x, right - 1);
+  if (handle.includes('e')) right = clamp(right + delta.x, left + 1, limit.x + limit.width);
+  if (handle.includes('n')) top = clamp(top + delta.y, limit.y, bottom - 1);
+  if (handle.includes('s')) bottom = clamp(bottom + delta.y, top + 1, limit.y + limit.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
 export function quantizeBounds(bounds, sourceSize) {
   size(sourceSize);
   const { x, y, width, height } = bounds;

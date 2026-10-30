@@ -5,7 +5,13 @@ import { assertPixelImage, assertPlacedImage } from './pixels.js';
 initializeCanvas(() => { throw new Error('CANVAS_DISABLED_USE_RGBA'); },
   (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }));
 
-export function checkPsdBudget({ width, height, layers, availableMemory = os.freemem() }) {
+// Process-available memory includes reclaimable pages and respects process limits;
+// os.freemem alone fluctuates with the filesystem cache on macOS.
+export function availablePsdMemory() {
+  return typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem();
+}
+
+export function checkPsdBudget({ width, height, layers, availableMemory = availablePsdMemory() }) {
   if (![width, height].every(n => Number.isSafeInteger(n) && n > 0 && n <= 30000)) throw new Error('PSD_SIZE_LIMIT');
   if (width * height > 40000000) throw new Error('PSD_PIXEL_LIMIT');
   if (layers.length > 100) throw new Error('PSD_LAYER_LIMIT');
@@ -19,7 +25,7 @@ export function checkPsdBudget({ width, height, layers, availableMemory = os.fre
   return { estimatedBytes, budgetBytes };
 }
 
-export function encodePsd({ width, height, layers, composite, availableMemory = os.freemem() }) {
+export function encodePsd({ width, height, layers, composite, availableMemory = availablePsdMemory() }) {
   checkPsdBudget({ width, height, layers, availableMemory });
   assertPixelImage(composite);
   if (composite.width !== width || composite.height !== height) throw new Error('COMPOSITE_SIZE_MISMATCH');
@@ -35,8 +41,34 @@ export function encodePsd({ width, height, layers, composite, availableMemory = 
   { trimImageData: false, generateThumbnail: false, noBackground: true });
 }
 
+/**
+ * ag-psd's 8-bit merged preview stores partially transparent RGB against white:
+ * the writer truncates to Uint8, then the reader unmattes into Uint8Clamped.
+ * That round-trip is quantized, unlike the lossless layer channels. Compare its
+ * exact expected representation, not a blanket tolerance or a recomposed image.
+ */
+export function assertPsdCompositeReadback(expected, actual) {
+  assertPixelImage(expected);
+  assertPixelImage(actual);
+  if (actual.width !== expected.width || actual.height !== expected.height) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+  const decoded = new Uint8ClampedArray(3);
+  for (let i = 0; i < expected.data.length; i += 4) {
+    const alpha = expected.data[i + 3];
+    if (actual.data[i + 3] !== alpha) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = expected.data[i + channel];
+      if (alpha > 0 && alpha < 255) {
+        const a = alpha / 255;
+        const matted = Math.trunc(value * a + 255 * (1 - a));
+        decoded[channel] = matted * (1 / a) + 255 * (1 - 1 / a);
+      } else decoded[channel] = value;
+      if (actual.data[i + channel] !== decoded[channel]) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+    }
+  }
+}
+
 /** Only read bounded files produced by this service; not an arbitrary PSD importer. */
-export function inspectPsd(bytes, { availableMemory = os.freemem() } = {}) {
+export function inspectPsd(bytes, { availableMemory = availablePsdMemory() } = {}) {
   const structural = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
   checkPsdBudget({ width: structural.width, height: structural.height,
     layers: (structural.children ?? []).map(layer => ({ image: { width: layer.right - layer.left, height: layer.bottom - layer.top } })), availableMemory });

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { encodePsd, inspectPsd, checkPsdBudget } from './psd-codec.mjs';
+import os from 'node:os';
+import { encodePsd, inspectPsd, checkPsdBudget, assertPsdCompositeReadback } from './psd-codec.mjs';
 import { composeNormal } from './pixels.js';
 const image = (width,height,rgba) => ({width,height,data:Uint8ClampedArray.from(Array.from({length:width*height},()=>rgba).flat())});
 
@@ -30,4 +31,31 @@ test('PSD rejects oversized documents and memory budgets before encoding', () =>
   assert.throws(()=>checkPsdBudget({...base,layers:Array.from({length:101},()=>({image:{width:1,height:1}}))}), /PSD_LAYER_LIMIT/);
   assert.throws(()=>checkPsdBudget({...base,availableMemory:1}), /PSD_MEMORY_LIMIT/);
   assert.ok(checkPsdBudget(base).estimatedBytes>100*100*4);
+});
+
+test('PSD admission uses memory available to the process, not only transient OS free pages', t => {
+  t.mock.method(process, 'availableMemory', () => 2 * 1024 ** 3);
+  t.mock.method(os, 'freemem', () => 320 * 1024 ** 2);
+  assert.doesNotThrow(() => checkPsdBudget({ width: 880, height: 1808, layers: [{ image: { width: 872, height: 202 } }] }));
+  t.mock.method(process, 'availableMemory', () => 1);
+  assert.throws(() => checkPsdBudget({ width: 880, height: 1808, layers: [] }), /PSD_MEMORY_LIMIT/);
+});
+
+test('merged preview validation accepts only the codec quantization, never altered alpha or pixels', () => {
+  const composite = { width: 5, height: 1, data: Uint8ClampedArray.from([
+    161, 122, 138, 254, 100, 150, 200, 128, 50, 100, 200, 1, 240, 12, 23, 255, 0, 0, 0, 0,
+  ]) };
+  const layers = [{ name: '半透明 UI', placement: { x: 0, y: 0 }, image: composite }];
+  const restored = inspectPsd(encodePsd({ width: 5, height: 1, layers, composite, availableMemory: 8 * 1024 ** 3 }), { availableMemory: 8 * 1024 ** 3 });
+  assert.deepEqual(Array.from(restored.composite.data), [
+    161, 121, 138, 254, 100, 149, 199, 128, 0, 0, 0, 1, 240, 12, 23, 255, 0, 0, 0, 0,
+  ]);
+  assert.deepEqual(restored.layers[0].image.data, composite.data);
+  assert.doesNotThrow(() => assertPsdCompositeReadback(composite, restored.composite));
+  for (let index = 0; index < composite.data.length; index += 1) {
+    const corrupted = { ...restored.composite, data: restored.composite.data.slice() };
+    corrupted.data[index] ^= 1;
+    assert.throws(() => assertPsdCompositeReadback(composite, corrupted), /PSD_COMPOSITE_READBACK_MISMATCH/, `byte ${index}`);
+  }
+  assert.throws(() => assertPsdCompositeReadback(composite, { ...restored.composite, width: 1, height: 5 }), /PSD_COMPOSITE_READBACK_MISMATCH/);
 });

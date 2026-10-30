@@ -64,6 +64,11 @@ export async function resolveVerifiedRuntimeConfig({
       const repairResult = await runCommandImpl(processExecPath, [installerPath], {
         cwd: config.workbenchRoot,
         stdio: 'pipe',
+        env: {
+          ...environment,
+          IMVIA_LAYER_PLUGIN_DIRECTORY: pluginRoot,
+          ...(config.marketplacePath ? { IMVIA_LAYER_MARKETPLACE_PATH: config.marketplacePath } : {}),
+        },
       });
       if (repairResult.stdout) writeStderr(repairResult.stdout);
       if (repairResult.stderr) writeStderr(repairResult.stderr);

@@ -77,7 +77,7 @@ export function runCommand(command, args, { cwd, env = process.env, stdio = 'pip
     child.once('exit', (code) => {
       if (code === 0) return resolve({ stdout, stderr });
       const detail = stderr.trim() || stdout.trim() || `退出码 ${code}`;
-      reject(new Error(`${command} ${args.join(' ')} 执行失败：${detail}`));
+      reject(Object.assign(new Error(`${command} ${args.join(' ')} 执行失败：${detail}`), { exitCode: code, stdout, stderr }));
     });
   });
 }
@@ -240,6 +240,23 @@ async function recoverManagedRuntime({ pluginRoot, runtimeRoot, fileSystem, path
       await fileSystem.rm(pathApi.join(pluginRoot, name), { recursive: true, force: true });
     }
   }
+}
+
+export async function verifyInstalledPythonRuntime({repositoryRoot, pluginRoot,
+  platform = process.platform, env = process.env, fileSystem = realFileSystem, runCommandImpl = runCommand} = {}) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const root = pathApi.join(pluginRoot, '.python-runtime');
+  const marker = await readMarker(pathApi.join(root, '.imvia-layer-runtime.json'), fileSystem);
+  if (!marker) throw new Error('Python runtime not installed');
+  const lockPath = pathApi.join(repositoryRoot, 'requirements-rmbg.lock');
+  const lockSha256 = await requirementsHash(lockPath, fileSystem);
+  const command = runtimePythonPath(root, platform);
+  const options = {cwd:repositoryRoot, env, runCommandImpl};
+  const fingerprint = await probeManagedEnvironment(command, options);
+  if (!markerMatches(marker, lockSha256, fingerprint)) throw new Error('installed Python marker mismatch');
+  await verifyRmbg(command, options);
+  await verifyLockedDistributions(command, lockPath, options);
+  return {command, args:[], version:fingerprint.pythonVersion, lockSha256};
 }
 
 export async function ensurePersistentPythonRuntimeLocked({

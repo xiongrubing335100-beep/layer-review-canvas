@@ -34,7 +34,7 @@ test('legacy import copies only verified source and definitions into a fresh, un
   assert.deepEqual(legacyDocument, inputBefore);
   assert.equal(imported.history[0].status, 'untrusted_pending_review');
   assert.equal(imported.history[0].artifactPresent, true);
-  assert.match(imported.warnings.join(' '), /旧版候选不会自动采用/);
+  assert.match(imported.warnings.join(' '), /旧版候选仅保留为历史记录/);
 });
 
 test('legacy UI mode maps explicitly to H5 and recentered artifacts stay out of the new candidate list', () => {

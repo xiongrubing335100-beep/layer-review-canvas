@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -31,13 +31,15 @@ function run(command, args, options = {}) {
   });
 }
 
-async function copyTrackedApplication(destinationRoot) {
-  const { stdout } = await run('git', ['ls-files', '-z', '--', applicationDirectoryName], {
+async function copyReleaseCandidateApplication(destinationRoot) {
+  // Verify the current candidate before it is committed. This is intentionally
+  // not a claim about HEAD: new source files are part of the candidate too.
+  const { stdout } = await run('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', applicationDirectoryName], {
     cwd: repositoryRoot,
   });
-  const trackedPaths = stdout.split('\0').filter(Boolean);
-  assert.ok(trackedPaths.length > 0, 'tracked archive should contain application files');
-  for (const trackedPath of trackedPaths) {
+  const candidatePaths = [...new Set(stdout.split('\0').filter(Boolean))];
+  assert.ok(candidatePaths.length > 0, 'source release candidate should contain application files');
+  for (const trackedPath of candidatePaths) {
     const relativePath = path.relative(applicationDirectoryName, trackedPath);
     const destination = path.join(destinationRoot, relativePath);
     await mkdir(path.dirname(destination), { recursive: true });
@@ -80,6 +82,9 @@ async function initializeMcp(command, args, cwd, env) {
   const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
+  let launchError;
+  child.once('error', (error) => { launchError = error; });
+  const completion = new Promise((resolve) => child.once('close', resolve));
   child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
   child.stdin.write(`${JSON.stringify({
@@ -88,16 +93,24 @@ async function initializeMcp(command, args, cwd, env) {
     method: 'initialize',
     params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'fresh-archive-test', version: '1.0.0' } },
   })}\n`);
-  const deadline = Date.now() + 10_000;
-  while (!stdout.includes('"id":1')) {
-    if (child.exitCode !== null) throw new Error(`MCP exited before initialize: ${stderr || stdout}`);
-    if (Date.now() >= deadline) throw new Error(`MCP initialize timed out: ${stderr || stdout}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!stdout.includes('"id":1')) {
+      if (launchError) throw launchError;
+      if (child.exitCode !== null || child.signalCode) {
+        throw new Error(`MCP exited before initialize (exit ${child.exitCode}, signal ${child.signalCode}): ${stderr || stdout}`);
+      }
+      if (Date.now() >= deadline) throw new Error(`MCP initialize timed out: ${stderr || stdout}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const initialized = stdout.trim().split('\n').map((line) => JSON.parse(line)).find((message) => message.id === 1);
+    assert.ok(initialized?.result?.serverInfo, `MCP initialize must succeed: ${stdout}`);
+    assert.doesNotMatch(stderr, /ENOENT/);
+  } finally {
+    child.stdin.end();
+    if (child.exitCode === null && !child.signalCode) child.kill();
+    await completion;
   }
-  child.stdin.end();
-  child.kill();
-  await new Promise((resolve) => child.once('exit', resolve));
-  assert.doesNotMatch(stderr, /ENOENT/);
 }
 
 test('npm cache discovery accepts the absolute path reported by npm.cmd on Windows', async () => {
@@ -155,7 +168,7 @@ test('npm cache discovery does not require HOME or npm_config_cache', async () =
   assert.equal(cacheDirectory, '/var/tmp/npm-cache');
 });
 
-test('a clean tracked archive setup and update build a fresh bundle before MCP import', { timeout: 300_000 }, async (t) => {
+test('a clean current working tree release candidate runs real npm ci, setup, update and installed MCP', { timeout: 300_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia clean archive-'));
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
   const archiveRoot = path.join(temporaryRoot, applicationDirectoryName);
@@ -163,7 +176,7 @@ test('a clean tracked archive setup and update build a fresh bundle before MCP i
   const pluginRoot = path.join(homeRoot, 'plugins', 'imvia-layer');
   const fakePython = path.join(temporaryRoot, 'python', 'python3');
   const npmCache = path.join(temporaryRoot, 'npm-cache');
-  await copyTrackedApplication(archiveRoot);
+  await copyReleaseCandidateApplication(archiveRoot);
   if (process.platform !== 'win32') await writeFakePython(fakePython);
   const sourceNpmCache = await resolveNpmCacheDirectory();
   await mkdir(npmCache, { recursive: true });
@@ -202,7 +215,11 @@ test('a clean tracked archive setup and update build a fresh bundle before MCP i
   assert.doesNotMatch(await readFile(distIndexPath, 'utf8'), /STALE-BUNDLE-MUST-NOT-SURVIVE/);
 
   const hash = (contents) => createHash('sha256').update(contents).digest('hex');
-  for (const relativePath of ['LICENSE', 'NOTICE.md', path.join('.codex-plugin', 'plugin.json')]) {
+  for (const relativePath of [
+    'LICENSE', 'NOTICE.md', path.join('.codex-plugin', 'plugin.json'),
+    'skills/imvia-layer-batch-v2/SKILL.md',
+    'skills/imvia-layer-batch-v2/references/item-contract.md',
+  ]) {
     assert.equal(
       hash(await readFile(path.join(pluginRoot, relativePath))),
       hash(await readFile(path.join(archiveRoot, 'plugin-template', 'imvia-layer', relativePath))),
@@ -211,5 +228,8 @@ test('a clean tracked archive setup and update build a fresh bundle before MCP i
   }
 
   const mcpConfig = JSON.parse(await readFile(path.join(pluginRoot, '.mcp.json'), 'utf8')).mcpServers['imvia-layer'];
-  await initializeMcp(mcpConfig.command, mcpConfig.args, mcpConfig.cwd, env);
+  const runtimeConfig = JSON.parse(await readFile(path.join(pluginRoot, 'imvia-layer-runtime.json'), 'utf8'));
+  assert.equal(runtimeConfig.workbenchRoot, path.join(pluginRoot, 'runtime'));
+  await rename(archiveRoot, `${archiveRoot}-unavailable`);
+  await initializeMcp(mcpConfig.command, mcpConfig.args, temporaryRoot, env);
 });

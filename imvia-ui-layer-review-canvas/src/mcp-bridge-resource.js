@@ -15,6 +15,10 @@ export async function buildBridgeWidgetHtml(htmlPath, scriptPath) {
   return html.replace(scriptPlaceholder, script);
 }
 
+export async function buildV2RelayHtml() {
+  return injectMcpAppsBridge(await readFile(new URL('../public/workbench-v2-relay.html', import.meta.url), 'utf8'));
+}
+
 /** Isolated diagnostic: never uses the V1 polling or pre-delivery receipt path. */
 export function buildV2ConfirmationProbeHtml() {
   return injectMcpAppsBridge(`<!doctype html><html><head><meta charset="utf-8">
@@ -202,6 +206,10 @@ function mcpHostBridgeScript() {
       { autoResize: true },
     );
     globalThis.__IMVIA_MCP_APP__ = app;
+    app.ontoolresult = (result) => {
+      globalThis.__IMVIA_MCP_TOOL_RESULT__ = result;
+      window.dispatchEvent(new CustomEvent('imvia:tool-result', { detail: result }));
+    };
     const ready = app.connect();
     globalThis.__IMVIA_MCP_APP_READY__ = ready;
     const callWhenReady = (callback) => (...args) => ready.then(() => callback(...args));

@@ -4,11 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createBridgeRequestStore } from './bridge-request-store.js';
-import { createBatchBridge } from './batch-bridge.js';
+import { buildBatchPrompt, createBatchBridge } from './batch-bridge.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerV2BridgeTools } from './bridge-tools.mjs';
+import { createDocumentStore } from './document-store.js';
+import { createDocument } from './document.js';
 import vm from 'node:vm';
 import { buildV2ConfirmationProbeHtml } from '../mcp-bridge-resource.js';
 
@@ -19,6 +21,14 @@ async function fixture(t) {
 }
 const envelope = {workbenchSessionId:'session-test',mode:'confirmation_probe',items:[{layerId:'one',action:'no-generation'},{layerId:'two',action:'no-generation'}]};
 const receiptFor = record => ({workbenchSessionId:record.workbenchSessionId,envelopeSha256:record.envelopeSha256});
+
+test('a workbench-click batch tells the visible Codex turn to execute without another user confirmation',()=>{
+  const prompt=buildBatchPrompt({batchId:'batch-direct',requestId:'batch-direct',workbenchSessionId:'session-test',envelopeSha256:'a'.repeat(64),
+    envelope:{mode:'layer_batch',manifestPath:'/tmp/batch-direct.json',executionPolicy:{trigger:'workbench_user_click',startAfterVisibleReceipt:true,additionalUserConfirmation:false}}});
+  assert.match(prompt,/工作台点击已授权执行/);
+  assert.match(prompt,/不要再次询问用户/);
+  assert.match(prompt,/立即调用 claim_workbench_v2_batch_item/);
+});
 
 test('host resolve is not delivery; repeated click opens one request until actual acknowledgement',async t=>{
   const {store}=await fixture(t); let calls=0;
@@ -85,6 +95,40 @@ test('MCP exposes model-only acknowledgement and performs the actual persisted t
   assert.equal(response.isError,undefined);
   assert.deepEqual(response.structuredContent.receipt,receiptFor(record));
   assert.equal((await store.read(record.requestId)).status,'sent');
+});
+test('MCP opens one existing V2 document without resetting it or falling back to the legacy workbench',async t=>{
+  const base=await mkdtemp(path.join(os.tmpdir(),'imvia-v2-open-'));
+  t.after(()=>rm(base,{recursive:true,force:true}));
+  const root=path.join(base,'bridge-requests');
+  const documents=createDocumentStore({root:path.join(base,'documents')});
+  const store=createBridgeRequestStore({root});
+  const document=createDocument({documentId:'doc-one',workbenchSessionId:'session-one',mode:'poster',
+    source:{path:path.join(base,'source.png'),width:1200,height:800,fingerprint:'source-one',revision:1}});
+  await documents.create(document);
+  await store.bindWorkspace({workspaceId:'workspace-one',documentId:'doc-one',workbenchSessionId:'session-one'});
+  const server=new McpServer({name:'v2-open-test',version:'1'});
+  registerV2BridgeTools(server,{root,workbenchOrigin:'http://127.0.0.1:4173',ensureWorkbenchRunning:async()=>{}});
+  const client=new Client({name:'test',version:'1'});
+  const [a,b]=InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  t.after(async()=>{await client.close();await server.close();});
+
+  const tools=await client.listTools();
+  assert.ok(tools.tools.some(tool=>tool.name==='open_workbench_v2'));
+  const response=await client.callTool({name:'open_workbench_v2',arguments:{mode:'resume',documentId:'doc-one',workspaceId:'workspace-one'}});
+  assert.equal(response.isError,undefined);
+  assert.equal(response.structuredContent.documentId,'doc-one');
+  assert.equal(response.structuredContent.workspaceId,'workspace-one');
+  assert.equal(response.structuredContent.workbenchSessionId,'session-one');
+  assert.equal(response.structuredContent.bridgeProtocolVersion,2);
+  const url=new URL(response.structuredContent.workbenchUrl);
+  assert.equal(url.origin,'http://127.0.0.1:4173');
+  assert.equal(url.searchParams.get('workbench'),'v2');
+  assert.equal(url.searchParams.get('documentId'),'doc-one');
+  assert.equal(url.searchParams.get('workspaceId'),'workspace-one');
+  assert.equal(url.searchParams.get('bridgeProtocolVersion'),'2');
+  assert.ok(url.searchParams.get('open'));
+  assert.deepEqual(await documents.read('doc-one'),document);
 });
 test('probe preserves a direct click send and cancels when SDK throws synchronously',async()=>{
   const nodes=Object.fromEntries(['state','send','cancel','badge','title','actions','description'].map(id=>[id,{disabled:true,textContent:'',hidden:false}]));

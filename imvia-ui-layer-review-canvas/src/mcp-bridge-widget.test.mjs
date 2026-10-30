@@ -86,13 +86,39 @@ test('the bridge prefers the host-bound follow-up helper for the current Codex t
   assert.deepEqual(notifications, []);
   assert.deepEqual(followUpMessages, [{
     prompt: 'split this layer',
-    presentation: {
-      preview: {
-        mimeType: 'image/png',
-        data: 'cHJldmlldw==',
-      },
-    },
+    title: '确认发送拆分任务到 Codex',
+    scrollToBottom: true,
   }]);
+});
+
+test('the bridge sends text and preview through ui/message when no host follow-up helper exists', async () => {
+  const requests = [];
+  const notifications = [];
+  const previousWindow = globalThis.window;
+  globalThis.window = { openai: {} };
+  try {
+    const connection = await connectHost(async (request) => {
+      requests.push(request);
+      return {};
+    }, (notification) => notifications.push(notification));
+    await sendForegroundMessage({
+      prompt: '  split this layer  ',
+      presentation: { preview: { mimeType: 'image/png', data: 'cHJldmlldw==' } },
+    }, connection);
+
+    assert.equal(connection.mode, 'ui_message');
+    assert.deepEqual(requests.map(({ method }) => method), ['ui/initialize', 'ui/message']);
+    assert.deepEqual(notifications.map(({ method }) => method), ['ui/notifications/initialized']);
+    assert.deepEqual(requests[1].params, {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'split this layer' },
+        { type: 'image', mimeType: 'image/png', data: 'cHJldmlldw==' },
+      ],
+    });
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
 
 test('the bridge fails closed when the visible conversation message route is unavailable', async () => {

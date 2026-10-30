@@ -33,11 +33,11 @@ async function storeSuggestedCandidate(root, attempt, versionId, png) {
     snapshotId: attempt.snapshotId, sourceFingerprint: attempt.sourceFingerprint, layerRevision: attempt.layerRevision,
     pngPath, sha256: sha256(png), width: 1, height: 1, alpha: { min: 255, max: 255 }, placement: { x: 0, y: 0 },
     review: { checks: { png: true, alpha: true, authorization: true, dispatch: true } },
-    pixelAudit: { status: 'NEEDS_USER_REVIEW' }, createdAt: new Date().toISOString() };
+    pixelAudit: { status: 'candidate' }, createdAt: new Date().toISOString() };
   await writeFile(pngPath, png); await writeFile(path.join(directory, `${versionId}.json`), JSON.stringify(record));
 }
 
-test('legacy definitions flow through visible batch confirmation, two reviewed attempts, explicit adoption, and raster PSD export', async t => {
+test('legacy definitions flow through batch authorization to two automatic results and raster PSD without adoption', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-workflow-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const documentsRoot = path.join(root, 'documents'); const bytes = tinyPng();
@@ -77,14 +77,15 @@ test('legacy definitions flow through visible batch confirmation, two reviewed a
     suggestions.push({ layerId, versionId });
   }
 
-  await assert.rejects(api.exportDocumentPsd({ documentId: document.documentId, expectedRevision: document.revision }), /EXPORT_LAYER_NOT_ADOPTED/);
-  let current = document;
   for (const suggestion of suggestions) {
     const versions = await api.listLayerVersions({ documentId: document.documentId, layerId: suggestion.layerId });
-    assert.equal(versions.state.status, 'review');
-    current = await api.adoptCandidate({ documentId: document.documentId, expectedRevision: current.revision,
-      layerId: suggestion.layerId, versionId: suggestion.versionId });
+    assert.equal(versions.state.status, 'ready');
+    assert.equal(versions.state.resultVersionId, suggestion.versionId);
   }
+  const current = await api.getDocument(document.documentId);
+  assert.deepEqual(current, document);
+  const composition = await api.getComposition(current.documentId);
+  assert.equal(composition.layers.length, 2);
   const exported = await api.exportDocumentPsd({ documentId: current.documentId, expectedRevision: current.revision });
   const downloaded = await api.readExportPsd({ documentId: current.documentId, exportId: exported.exportId });
   assert.equal(exported.layerCount, 2); assert.equal(downloaded.bytes.subarray(0, 4).toString(), '8BPS');

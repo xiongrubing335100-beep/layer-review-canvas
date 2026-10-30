@@ -1,5 +1,5 @@
 // Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveVerifiedRuntimeConfig } from './runtime-config.mjs';
@@ -19,5 +19,8 @@ try {
 }
 
 process.chdir(workbenchRoot);
+// The server guards its startup with the executable entrypoint. Delegate that
+// entrypoint to the installed server before importing it in this process.
+process.argv[1] = await realpath(serverPath);
 process.argv.push('--stdio');
 await import(pathToFileURL(serverPath).href);

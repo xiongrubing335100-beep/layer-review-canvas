@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { composeNormal } from '../src/v2/pixels.js';
-import { encodePsd, inspectPsd } from '../src/v2/psd-codec.mjs';
+import { availablePsdMemory, checkPsdBudget, encodePsd, inspectPsd, assertPsdCompositeReadback } from '../src/v2/psd-codec.mjs';
 import { validateExportPngBytes } from '../src/v2/export-store.js';
 import { runCommand } from './python-runtime.mjs';
 
@@ -42,8 +42,8 @@ async function main() {
   const snapshotPath = process.argv[process.argv.indexOf('--snapshot') + 1];
   const output = process.argv[process.argv.indexOf('--output') + 1];
   const memoryArgumentIndex = process.argv.indexOf('--available-memory');
-  const availableMemory = memoryArgumentIndex >= 0 ? Number(process.argv[memoryArgumentIndex + 1]) : undefined;
-  if (availableMemory !== undefined && (!Number.isFinite(availableMemory) || availableMemory <= 0)) throw new Error('INVALID_MEMORY_BUDGET');
+  const availableMemory = memoryArgumentIndex >= 0 ? Number(process.argv[memoryArgumentIndex + 1]) : availablePsdMemory();
+  if (!Number.isFinite(availableMemory) || availableMemory <= 0) throw new Error('INVALID_MEMORY_BUDGET');
   if (!snapshotPath || !output) throw new Error('SNAPSHOT_AND_OUTPUT_REQUIRED');
   const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'));
   if (snapshot.schemaVersion !== 1 || snapshot.background !== 'transparent' || !snapshot.layers?.length) throw new Error('INVALID_EXPORT_SNAPSHOT');
@@ -52,6 +52,8 @@ async function main() {
   for (const layer of candidates) {
     if (!layer.pngPath || !/^[a-f0-9]{64}$/iu.test(layer.sha256 || '') || layer.blendMode !== 'normal') throw new Error('INVALID_EXPORT_LAYER');
   }
+  checkPsdBudget({ width: snapshot.width, height: snapshot.height, availableMemory,
+    layers: candidates.map(layer => ({ image: { width: layer.width, height: layer.height } })) });
   const runtimePath = path.join(os.homedir(), 'plugins', 'imvia-layer', 'imvia-layer-runtime.json');
   const runtime = JSON.parse(await readFile(runtimePath, 'utf8'));
   if (!runtime.python?.command || !Array.isArray(runtime.python.args)) throw new Error('MANAGED_PYTHON_RUNTIME_MISSING');
@@ -60,7 +62,7 @@ async function main() {
   for (let index = 0; index < candidates.length; index += 1) layers.push(await readPngInRoot(root, candidates[index].pngPath, candidates[index], index, runtime.python, path.dirname(output)));
   const composite = composeNormal({ width: snapshot.width, height: snapshot.height, layers });
   const bytes = encodePsd({ width: snapshot.width, height: snapshot.height, layers, composite, availableMemory });
-  const inspected = inspectPsd(bytes, availableMemory === undefined ? undefined : { availableMemory });
+  const inspected = inspectPsd(bytes, { availableMemory });
   if (inspected.width !== snapshot.width || inspected.height !== snapshot.height || inspected.layers.length !== layers.length) throw new Error('PSD_READBACK_MISMATCH');
   for (let index = 0; index < layers.length; index += 1) {
     const expected = layers[index]; const actual = inspected.layers[index];
@@ -68,7 +70,7 @@ async function main() {
       || actual.image.width !== expected.image.width || actual.image.height !== expected.image.height
       || !Buffer.from(actual.image.data).equals(Buffer.from(expected.image.data))) throw new Error('PSD_LAYER_READBACK_MISMATCH');
   }
-  if (!Buffer.from(inspected.composite.data).equals(Buffer.from(composite.data))) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+  assertPsdCompositeReadback(composite, inspected.composite);
   await writeFile(output, bytes, { flag: 'wx' });
   process.stdout.write(JSON.stringify({ exportId: snapshot.exportId, documentId: snapshot.documentId,
     documentRevision: snapshot.documentRevision, width: snapshot.width, height: snapshot.height,

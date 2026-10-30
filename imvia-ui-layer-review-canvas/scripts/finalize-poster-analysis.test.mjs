@@ -199,7 +199,7 @@ test('candidate enqueue failure rolls its exact reservation back before a retry 
   });
   assert.equal(attempted.statusCode, 400);
   const rolledBack = await readPosterJob(outputRoot, 'poster-job-1');
-  assert.equal(rolledBack.manifest.layers[0].status, 'GENERATION_AUTHORIZED');
+  assert.equal(rolledBack.manifest.layers[0].status, 'PENDING');
   assert.equal(rolledBack.manifest.layers[0].authorization_consumed, false);
   assert.deepEqual(rolledBack.manifest.authorizations, []);
   await unlink(path.join(fixture.record.paths.root, 'foreground-dispatches'));

@@ -1,14 +1,19 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { createBridgeRequestStore } from './bridge-request-store.js';
 import { createBatchBridge, buildBatchPrompt } from './batch-bridge.js';
 import { idSchema } from './document.js';
-import { buildV2ConfirmationProbeHtml } from '../mcp-bridge-resource.js';
+import { buildV2ConfirmationProbeHtml, buildV2RelayHtml } from '../mcp-bridge-resource.js';
 import path from 'node:path';
 import { createDocumentStore } from './document-store.js';
 import { createBatchStore } from './batch-store.js';
 
-export function registerV2BridgeTools(server, { root }) {
+export function registerV2BridgeTools(server, {
+  root,
+  workbenchOrigin = 'http://127.0.0.1:4173',
+  ensureWorkbenchRunning = async () => {},
+}) {
   const store = createBridgeRequestStore({ root });
   const bridge = createBatchBridge({ store });
   const runtimeRoot = path.dirname(path.resolve(root));
@@ -22,6 +27,72 @@ export function registerV2BridgeTools(server, { root }) {
     return record;
   };
   const batches = createBatchStore({ root: runtimeRoot, getDocument: id => documents.read(id), readConfirmation: id => store.read(id), cancelConfirmation });
+  const relayUri = 'ui://imvia-layer/v2-conversation-relay.html';
+  registerAppResource(server, 'imvia-v2-relay', relayUri, {}, async () => ({
+    contents: [{ uri: relayUri, mimeType: RESOURCE_MIME_TYPE, text: await buildV2RelayHtml() }],
+  }));
+  const openDefinition = {
+    title: '打开全新 Imvia Layer V2 工作台与会话桥',
+    description: 'Default mode new creates a fresh empty V2 workbench and matching visible relay on every call, ignoring previous document/workspace IDs. Open the returned URL in the current Codex right-side browser using open_in_codex. The relay is already mounted by this call; do not call another open tool for the same opening. Use mode resume with documentId only when the user explicitly requests continuing an existing document or repairing its connection.',
+    inputSchema: { mode: z.enum(['new', 'resume']).default('new'), documentId: idSchema.optional(), workspaceId: idSchema.optional() },
+    outputSchema: {
+      state: z.literal('ready'),
+      workbenchUrl: z.string(),
+      workbenchSessionId: idSchema,
+      documentId: idSchema.nullable(),
+      workspaceId: idSchema,
+      bindingRevision: z.number().int(),
+      bridgeProtocolVersion: z.literal(2),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+    _meta: { ui: { resourceUri: relayUri, visibility: ['model', 'app'] } },
+  };
+  const openWorkbench = async ({ mode = 'new', documentId, workspaceId } = {}) => {
+    await ensureWorkbenchRunning();
+    let workspace;
+    if (mode === 'resume') {
+      if (!documentId) throw new Error('RESUME_DOCUMENT_REQUIRED');
+      const document = await documents.read(documentId);
+      workspace = workspaceId ? await store.getWorkspace(workspaceId) : await store.findWorkspace(documentId);
+      if (!workspace) throw new Error('WORKSPACE_NOT_FOUND');
+      if (workspace.documentId !== documentId || workspace.workbenchSessionId !== document.workbenchSessionId) throw new Error('WORKSPACE_DOCUMENT_MISMATCH');
+    } else {
+      workspace = await store.bindWorkspace({ workspaceId: randomUUID().replaceAll('-', ''),
+        workbenchSessionId: randomUUID().replaceAll('-', ''), documentId: null });
+    }
+    const url = new URL('/', workbenchOrigin);
+    url.searchParams.set('open', randomUUID().replaceAll('-', ''));
+    url.searchParams.set('workbench', 'v2');
+    if (workspace.documentId) url.searchParams.set('documentId', workspace.documentId);
+    url.searchParams.set('workspaceId', workspace.workspaceId);
+    url.searchParams.set('workbenchSessionId', workspace.workbenchSessionId);
+    url.searchParams.set('bridgeProtocolVersion', '2');
+    return {
+      content: [{ type: 'text', text: `${mode === 'resume' ? '指定文档' : '全新空白工作台'}与 V2 会话桥已就绪。请使用 open_in_codex 在当前对话右侧打开 workbenchUrl。会话桥已随本次调用挂载，无需再次调用打开工具。` }],
+      structuredContent: {
+        state: 'ready',
+        workbenchUrl: url.href,
+        workbenchSessionId: workspace.workbenchSessionId,
+        documentId: workspace.documentId,
+        workspaceId: workspace.workspaceId,
+        bindingRevision: workspace.bindingRevision,
+        bridgeProtocolVersion: 2,
+      },
+    };
+  };
+  registerAppTool(server, 'open_workbench_v2', openDefinition, openWorkbench);
+  registerAppTool(server, 'open_workbench_v2_bridge', { ...openDefinition, title: '打开全新 V2 会话桥与工作台' }, openWorkbench);
+  registerAppTool(server, 'poll_workbench_v2_relay', {
+    title: '监听 V2 待发送批次', description: 'Heartbeat one visible session relay and atomically claim a queued message once. Never acknowledges delivery or starts generation.',
+    inputSchema: { workbenchSessionId: idSchema, documentId: idSchema.nullable(), workspaceId: idSchema.optional(), bindingRevision: z.number().int().optional(), bridgeId: idSchema, claim: z.boolean().default(true) },
+    _meta: { ui: { resourceUri: relayUri, visibility: ['app'] } },
+  }, async args => {
+    const result = await store.pollRelay(args);
+    const publicRequest = request => request ? { requestId:request.requestId, batchId:request.batchId, prompt:buildBatchPrompt(request) } : null;
+    return { content: [], structuredContent: { ...result, request: result.request ? {
+      requestId:result.request.requestId, batchId:result.request.batchId, prompt:buildBatchPrompt(result.request),
+    } : null, recoverableRequest: publicRequest(result.recoverableRequest) } };
+  });
   const resourceUri = 'ui://imvia-layer/v2-confirmation-probe.html';
   registerAppResource(server, 'imvia-v2-confirmation-probe', resourceUri, {}, async () => ({
     contents: [{ uri: resourceUri, mimeType: RESOURCE_MIME_TYPE, text: buildV2ConfirmationProbeHtml() }],
@@ -86,4 +157,5 @@ export function registerV2BridgeTools(server, { root }) {
     title: '重启 V2 工作台会话', description: 'Cancel active attempts bound only to the specified V2 workbench session and preserve history.',
     inputSchema: { workbenchSessionId: idSchema }, _meta: { ui: { visibility: ['model', 'app'] } },
   }, async args => ({ content: [], structuredContent: await batches.restartSession(args) }));
+  return { openDefinition, openWorkbench };
 }

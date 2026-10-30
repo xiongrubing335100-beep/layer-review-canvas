@@ -1,24 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
+  cancelForegroundDispatch,
   claimNextForegroundDispatchFromRoots,
   enqueueForegroundDispatch,
   markForegroundDispatchDelivered,
+  readForegroundDispatch,
   readForegroundQueueSummaryFromRoots,
 } from '../src/foreground-dispatch.js';
-import {
-  readWorkbenchSession,
-  rotateWorkbenchSession,
-} from '../src/workbench-lifecycle-store.js';
+import { resetPosterDispatchesForOpen } from '../src/poster-dispatch-control.js';
 import {
   activateConversationBridge,
   markConversationBridgeHeartbeat,
 } from '../src/conversation-bridge-presence.js';
-import { buildPosterTargetedCandidatePrompt } from '../src/poster-prompt.js';
+import { buildFastLayerSnapshot } from '../src/poster-fast-plan.js';
+import { canonicalJson, digestCanonicalJson } from '../src/poster-plan.js';
+import { assertPosterFastAuthorizationBinding } from '../src/poster-job-store.js';
 import {
   readWorkbenchSessionId,
   resolveWorkbenchSessionId,
@@ -40,7 +42,7 @@ async function createPosterQueueFixture() {
   return { root, jobsDirectory, jobId, jobDirectory, planPath };
 }
 
-test('a delivered task is reclaimed by a replacement bridge after its confirmation lease expires', async (t) => {
+test('an undelivered claim is recovered by a replacement bridge after its lease expires', async (t) => {
   const fixture = await createPosterQueueFixture();
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
 
@@ -64,14 +66,6 @@ test('a delivered task is reclaimed by a replacement bridge after its confirmati
   });
   assert.equal(firstClaim.dispatchId, dispatchId);
 
-  await markForegroundDispatchDelivered(fixture.jobDirectory, {
-    bridgeId: firstClaim.bridgeId,
-    claimToken: firstClaim.claimToken,
-    deliveredAt: '2026-08-23T00:00:02.000Z',
-    dispatchId,
-    rootKind: 'poster',
-  });
-
   const recoveredClaim = await claimNextForegroundDispatchFromRoots([fixture.jobsDirectory], {
     bridgeId: 'bridge-after-reload',
     workbenchSessionId: 'session-a',
@@ -82,9 +76,16 @@ test('a delivered task is reclaimed by a replacement bridge after its confirmati
   assert.equal(recoveredClaim.dispatchId, dispatchId);
   assert.equal(recoveredClaim.bridgeId, 'bridge-after-reload');
   assert.notEqual(recoveredClaim.claimToken, firstClaim.claimToken);
+  await assert.rejects(markForegroundDispatchDelivered(fixture.jobDirectory, {
+    bridgeId: firstClaim.bridgeId,
+    claimToken: firstClaim.claimToken,
+    deliveredAt: '2026-08-23T00:01:04.000Z',
+    dispatchId,
+    rootKind: 'poster',
+  }), /领取凭证已失效/);
 });
 
-test('an expired delivery from an old workbench session cannot block the current session queue', async (t) => {
+test('a delivered message is not replayed on reload and cancellation releases the queue', async (t) => {
   const fixture = await createPosterQueueFixture();
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
 
@@ -108,6 +109,20 @@ test('an expired delivery from an old workbench session cannot block the current
     bridgeId: oldClaim.bridgeId,
     claimToken: oldClaim.claimToken,
     deliveredAt: '2026-08-23T00:00:02.000Z',
+    dispatchId: oldClaim.dispatchId,
+    rootKind: 'poster',
+  });
+  const dispatchPath = path.join(fixture.jobDirectory, 'foreground-dispatches', `${oldClaim.dispatchId}.json`);
+  const delivered = JSON.parse(await readFile(dispatchPath, 'utf8'));
+  assert.equal(delivered.status, 'delivered');
+  assert.equal(delivered.leaseExpiresAt, null);
+  assert.equal(await claimNextForegroundDispatchFromRoots([fixture.jobsDirectory], {
+    bridgeId: 'replacement-bridge',
+    workbenchSessionId: 'old-workbench-session',
+    claimedAt: '2026-08-23T00:01:00.000Z',
+  }), null);
+  assert.deepEqual(JSON.parse(await readFile(dispatchPath, 'utf8')), delivered);
+  await cancelForegroundDispatch(fixture.jobDirectory, '2026-08-23T00:01:00.000Z', {
     dispatchId: oldClaim.dispatchId,
     rootKind: 'poster',
   });
@@ -144,6 +159,10 @@ test('an expired delivery from an old workbench session cannot block the current
 
   assert.equal(currentClaim?.dispatchId, 'dispatch-from-current-session');
   assert.equal(currentClaim?.workbenchSessionId, 'current-workbench-session');
+  assert.equal((await readForegroundDispatch(fixture.jobDirectory, {
+    dispatchId: oldClaim.dispatchId,
+    rootKind: 'poster',
+  })).status, 'cancelled');
 });
 
 test('the bridge remembers its workbench session across a widget reload', () => {
@@ -217,97 +236,160 @@ test('the bridge can recover its session directly from the running workbench', a
   }
 });
 
-test('targeted prompt treats the whole plan file hash as audit metadata, not a live expiry gate', () => {
-  const prompt = buildPosterTargetedCandidatePrompt({
-    jobId: 'poster-a',
-    planPath: '/tmp/poster-a/poster-layer-plan.json',
-    snapshotPath: '/tmp/poster-a/poster-layer-plan.json',
-    sourcePath: '/tmp/poster-a/source.png',
-    selectedCropPath: '/tmp/poster-a/evidence/layer-3.selected-crop.png',
-    expectedOutput: { width: 320, height: 180 },
-    layerIndex: 3,
-    candidateNumber: 1,
-    processingCategory: 'brand_ui',
-  });
+test('targeted authorization survives unrelated plan edits but rejects changed snapshot content', () => {
+  const { plan, snapshot } = buildFastLayerSnapshot({
+    job_id: 'poster-a',
+    project_id: 'project-a',
+    image_id: 'image-a',
+    plan_version: 1,
+    planning_mode: 'targeted_fast',
+    source: { path: 'source.png', width: 320, height: 180 },
+    skill_contract: {},
+    layers: [{ layer_index: 3, processing_category: 'brand_ui', prompt: '只保留品牌标识' }],
+  }, 3, {}, '2026-08-23T00:00:00.000Z');
+  const planFileHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const authorization = {
+    planning_mode: 'targeted_fast',
+    layer_index: 3,
+    snapshot_id: snapshot.snapshot_id,
+    source_fingerprint: digestCanonicalJson(plan.source),
+    processing_category: 'brand_ui',
+    snapshot_sha256: createHash('sha256').update(canonicalJson(snapshot)).digest('hex'),
+    snapshot_file_sha256: planFileHash(plan),
+  };
+  assert.equal(assertPosterFastAuthorizationBinding({ plan }, authorization), true);
+  plan.audit_note = 'another layer is under review';
+  assert.notEqual(planFileHash(plan), authorization.snapshot_file_sha256);
+  assert.equal(assertPosterFastAuthorizationBinding({ plan }, authorization), true);
 
-  assert.match(prompt, /snapshot_file_sha256.*派发时.*审计/);
-  assert.match(prompt, /不得仅因.*整份计划文件.*哈希.*失效/);
+  plan.layers[0].confirmed_snapshot.layer.prompt = 'changed after authorization';
+  assert.throws(() => assertPosterFastAuthorizationBinding({ plan }, authorization), /snapshot or source binding is stale/);
 });
 
-test('reopening the workbench rotates the queue session so old messages cannot reach the new bridge', async (t) => {
+test('reopening cancels old pending messages without rotating the workbench session', async (t) => {
   const fixture = await createPosterQueueFixture();
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
 
-  const firstSessionId = await rotateWorkbenchSession(fixture.root, {
-    sessionId: 'session-before-reopen',
-    reopenedAt: '2026-08-23T01:00:00.000Z',
-  });
+  const sessionId = 'persisted-workbench-session';
   await activateConversationBridge(
     fixture.root,
     'bridge-before-reopen',
     '2026-08-23T01:00:00.500Z',
-    { workbenchSessionId: firstSessionId },
+    { workbenchSessionId: sessionId },
   );
   await enqueueForegroundDispatch(fixture.jobDirectory, {
     dispatchId: 'dispatch-from-old-workbench',
-    taskKind: 'poster_candidate',
-    layerIndex: 2,
-    candidateNumber: 1,
+    taskKind: 'poster_analysis',
     submittedAt: '2026-08-23T01:00:01.000Z',
-    workbenchSessionId: firstSessionId,
+    workbenchSessionId: sessionId,
     planPath: fixture.planPath,
     prompt: 'old message must not be sent after reopen',
   });
 
-  const reopenedSessionId = await rotateWorkbenchSession(fixture.root, {
-    sessionId: 'session-after-reopen',
-    reopenedAt: '2026-08-23T01:01:00.000Z',
-  });
+  assert.deepEqual(await resetPosterDispatchesForOpen(
+    fixture.jobsDirectory,
+    '2026-08-23T01:01:00.000Z',
+  ), { cancelledDispatchIds: ['dispatch-from-old-workbench'], abandonedDispatchIds: [] });
+  await activateConversationBridge(
+    fixture.root,
+    'bridge-after-reopen',
+    '2026-08-23T01:01:00.500Z',
+    { workbenchSessionId: sessionId },
+  );
 
-  assert.equal(await readWorkbenchSession(fixture.root), reopenedSessionId);
-  assert.notEqual(reopenedSessionId, firstSessionId);
   assert.equal(await markConversationBridgeHeartbeat(
     fixture.root,
     'bridge-before-reopen',
     '2026-08-23T01:01:01.000Z',
-    { workbenchSessionId: firstSessionId },
+    { workbenchSessionId: sessionId },
   ), false);
   assert.deepEqual(
     await readForegroundQueueSummaryFromRoots([fixture.jobsDirectory], {
       bridgeId: 'bridge-after-reopen',
-      workbenchSessionId: reopenedSessionId,
+      workbenchSessionId: sessionId,
     }),
     { count: 0, jobIds: [] },
   );
   assert.equal(await claimNextForegroundDispatchFromRoots([fixture.jobsDirectory], {
     bridgeId: 'bridge-after-reopen',
-    workbenchSessionId: reopenedSessionId,
+    workbenchSessionId: sessionId,
     claimedAt: '2026-08-23T01:01:01.000Z',
   }), null);
+  assert.equal((await readForegroundDispatch(fixture.jobDirectory, {
+    dispatchId: 'dispatch-from-old-workbench',
+    rootKind: 'poster',
+  })).status, 'cancelled');
+  assert.deepEqual(await resetPosterDispatchesForOpen(
+    fixture.jobsDirectory,
+    '2026-08-23T01:02:00.000Z',
+  ), { cancelledDispatchIds: [], abandonedDispatchIds: [] });
 });
 
-test('a delayed bridge card from the previous workbench session cannot register after reopen', async (t) => {
+test('an older bridge card cannot replace the current listener in the persisted session', async (t) => {
   const fixture = await createPosterQueueFixture();
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
 
-  await rotateWorkbenchSession(fixture.root, {
-    sessionId: 'current-workbench-session',
-    reopenedAt: '2026-08-23T01:02:00.000Z',
-  });
+  await activateConversationBridge(
+    fixture.root,
+    'current-bridge',
+    '2026-08-23T01:02:00.000Z',
+    { workbenchSessionId: 'persisted-workbench-session' },
+  );
 
   const registration = await activateConversationBridge(
     fixture.root,
     'delayed-bridge-from-previous-session',
-    '2026-08-23T01:02:01.000Z',
-    { workbenchSessionId: 'previous-workbench-session' },
+    '2026-08-23T01:01:00.000Z',
+    { workbenchSessionId: 'persisted-workbench-session' },
   );
 
   assert.equal(registration.active, false);
-  assert.equal(registration.workbenchSessionId, 'current-workbench-session');
+  assert.equal(registration.workbenchSessionId, 'persisted-workbench-session');
+  assert.equal(registration.bridgeId, 'current-bridge');
   assert.equal(await markConversationBridgeHeartbeat(
     fixture.root,
     'delayed-bridge-from-previous-session',
     '2026-08-23T01:02:02.000Z',
-    { workbenchSessionId: 'previous-workbench-session' },
+    { workbenchSessionId: 'persisted-workbench-session' },
   ), false);
+});
+
+test('terminal dispatch records survive reopening without becoming claimable again', async (t) => {
+  const fixture = await createPosterQueueFixture();
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const records = [];
+  for (const status of ['completed', 'failed', 'cancelled']) {
+    // Persisted terminal records model a prior process, not a successful new run.
+    const record = {
+      dispatchId: `dispatch-${status}`,
+      jobId: fixture.jobId,
+      rootKind: 'poster',
+      taskKind: 'poster_candidate',
+      layerIndex: 2,
+      candidateNumber: 1,
+      workbenchSessionId: 'persisted-workbench-session',
+      planPath: fixture.planPath,
+      prompt: 'must never be sent again',
+      status,
+    };
+    const file = path.join(fixture.jobDirectory, 'foreground-dispatches', `${record.dispatchId}.json`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(record));
+    records.push({ file, record });
+  }
+  assert.deepEqual(await resetPosterDispatchesForOpen(fixture.jobsDirectory), {
+    cancelledDispatchIds: [],
+    abandonedDispatchIds: [],
+  });
+  const listener = {
+    bridgeId: 'bridge-after-reopen',
+    workbenchSessionId: 'persisted-workbench-session',
+  };
+  assert.deepEqual(await readForegroundQueueSummaryFromRoots([fixture.jobsDirectory], listener), {
+    count: 0, jobIds: [],
+  });
+  assert.equal(await claimNextForegroundDispatchFromRoots([fixture.jobsDirectory], listener), null);
+  for (const { file, record } of records) {
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), record);
+  }
 });

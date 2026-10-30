@@ -134,12 +134,18 @@ test('chooses Codex RGBA for title and ordinary text cutouts', () => {
   }), 'codex_rgba');
 });
 
-test('text transparency stays on Codex RGBA even when the text requirement mentions repair', () => {
-  assert.equal(classifyExecutionRoute({
+test('text repair uses the repair bundle while retaining Codex RGBA transparency', () => {
+  const request = {
     category: 'kvTitle',
     requirement: '补全被遮挡的标题并保留完整字形',
     removeBackground: true,
-  }), 'codex_rgba');
+  };
+  const executionRoute = classifyExecutionRoute(request);
+  assert.equal(executionRoute, 'codex_rgba_repair');
+  const metadata = buildRouteMetadata({ ...request, executionRoute });
+  assert.equal(metadata.transparency_strategy, 'codex_rgba');
+  assert.equal(metadata.rmbg_required, false);
+  assert.equal(metadata.imagegen_input_kind, 'codex_rgba_repair_bundle');
 });
 
 test('chooses targeted repair only for explicit repair work', () => {

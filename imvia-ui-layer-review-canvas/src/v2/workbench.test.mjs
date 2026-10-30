@@ -9,10 +9,11 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createWorkbenchV2Api } from './api.mjs';
 import { createBridgeRequestStore } from './bridge-request-store.js';
+import { createBridgeRecovery } from './bridge-recovery.js';
 import { createDocument, addLayer, applyLayerEdit, processingCategories, reorderLayers } from './document.js';
 import { workbenchV2Middleware } from './api.mjs';
 import { fitViewport } from './coordinates.js';
-import { createEditorDraft } from './editor-state.js';
+import { createEditorDraft, reduceEditorDraft } from './editor-state.js';
 import { createServer } from 'vite';
 
 let vite;
@@ -22,6 +23,7 @@ let LayerList;
 let LayerEditor;
 let PenEditor;
 let CandidateReview;
+let NodeBoard;
 
 test('load V2 React components through Vite JSX transform', async () => {
   vite = await createServer({ configFile: path.resolve('vite.config.js'), server: { middlewareMode: true }, appType: 'custom' });
@@ -31,6 +33,7 @@ test('load V2 React components through Vite JSX transform', async () => {
   ({ LayerEditor } = await vite.ssrLoadModule('/src/v2/LayerEditor.jsx'));
   ({ PenEditor } = await vite.ssrLoadModule('/src/v2/PenEditor.jsx'));
   ({ CandidateReview } = await vite.ssrLoadModule('/src/v2/CandidateReview.jsx'));
+  ({ NodeBoard } = await vite.ssrLoadModule('/src/v2/NodeBoard.jsx'));
 });
 after(async () => { await vite?.close(); });
 
@@ -54,12 +57,122 @@ const documentFixture = (mode = 'poster') => addLayer(createDocument({ documentI
   strategy: { operation: 'extract', removeBackground: false, repairPaths: [] },
 });
 
+test('automatic recovery integrates with document binding, preserves edits, and blocks superseded documents', async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),'imvia-auto-document-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const bridgeStore=createBridgeRequestStore({root:path.join(root,'bridge-requests')});
+  const api=createWorkbenchV2Api({root:path.join(root,'documents'),bridgeStore});
+  const old=await api.createDocument({mode:'poster',bytes:tinyPng(),workbenchSessionId:'old-session'});
+  const current=await api.createDocument({mode:'poster',bytes:tinyPng(),workbenchSessionId:'current-session'});
+  await api.registerBridgeWorkspace(old.documentId,'workspace');
+  const oldBinding=await bridgeStore.getWorkspace('workspace');
+  await bridgeStore.pollRelay({...oldBinding,bridgeId:'card',claim:false});
+  await api.registerBridgeWorkspace(current.documentId,'workspace');
+  const status=await api.getBridgeStatus(current.documentId,'workspace');
+  assert.equal(status.reason,'binding_mismatch');
+  const recovery=createBridgeRecovery({api,documentId:current.documentId,workspaceId:'workspace'});
+  assert.equal((await recovery.recover(status)).online,false,'a reconnect request alone is not an acknowledgement');
+  const receipt=await bridgeStore.pollRelay({...oldBinding,bridgeId:'card',claim:false});
+  assert.equal(receipt.request,null);
+  assert.equal((await api.getBridgeStatus(current.documentId,'workspace')).online,true);
+  assert.deepEqual(await api.getDocument(current.documentId),current);
+  assert.deepEqual(await api.getDocument(old.documentId),old);
+  assert.deepEqual(await api.listSessionBatches('current-session'),[]);
+  const stale=await api.reconnectBridge(old.documentId,'workspace',{automatic:true});
+  assert.equal(stale.autoReconnectBlocked,true);
+  assert.equal(stale.online,false);
+  assert.equal((await bridgeStore.getWorkspace('workspace')).documentId,current.documentId);
+});
+
 test('empty workbench provides separate poster and H5 upload entry points', () => {
   const markup = renderToStaticMarkup(React.createElement(WorkbenchV2, { api: {}, onOpenLegacy: noOp, onOpenOverview: noOp }));
   assert.match(markup, /上传海报原图拆分/);
   assert.match(markup, /上传 H5 原图拆分/);
-  assert.match(markup, /重新开始/);
-  assert.match(markup, /导入旧版项目/);
+  assert.match(markup, /新建空白任务/);
+  assert.match(markup, /aria-label="更多"/);
+  assert.doesNotMatch(markup, /导入旧版项目/);
+});
+
+test('a fresh workbench allows entering the node board before any source is uploaded', () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkbenchV2, { api: {} }));
+  const button = markup.match(/<button[^>]*>⌘　画布总览<\/button>/)?.[0];
+  assert.ok(button, 'the board entry must be available');
+  assert.doesNotMatch(button, /disabled/, 'an empty task still has a usable board');
+});
+
+test('the empty node board has upload and navigation tools, not a disabled document preview', () => {
+  const markup=renderToStaticMarkup(React.createElement(NodeBoard,{document:null,workspaceId:'fresh',sessionId:'fresh'}));
+  assert.match(markup,/aria-label="无限画布/);
+  assert.match(markup,/上传海报原图/);assert.match(markup,/上传 H5 原图/);
+  assert.match(markup,/aria-label="放大画布"(?! disabled)/);
+  assert.doesNotMatch(markup,/data-board-node=/);
+});
+
+test('the node board renders independent source and split nodes, linked and clipped to the source region', () => {
+  const markup=renderToStaticMarkup(React.createElement(NodeBoard,{document:documentFixture(),sourceUrl:'/source.png',workspaceId:'w',sessionId:'s'}));
+  assert.match(markup,/data-board-node="source"/);
+  assert.match(markup,/data-board-node="layer:layer-a"/);
+  assert.match(markup,/aria-label="原图、拆分项与结果的关系"/);
+  assert.match(markup,/viewBox="30 40 250 120"/);
+  assert.match(markup,/clip-path="url\(#board-crop-layer-a\)"/);
+  assert.match(markup,/aria-label="画板编辑：主标题"/);
+});
+
+test('every layer has an individually named split action and submission busy state disables it', () => {
+  const doc = addLayer(documentFixture(), { layerId: 'layer-b', name: '背景', displayCategory: '背景', processingCategory: 'background',
+    bounds: { x: 0, y: 0, width: 100, height: 100 }, paths: [], requirements: '',
+    strategy: { operation: 'extract', removeBackground: false, repairPaths: [] } });
+  const render = splitDisabled => renderToStaticMarkup(React.createElement(LayerList, { document: doc, onSplit: noOp, splitDisabled }));
+  for (const name of ['主标题', '背景']) {
+    assert.match(render(false), new RegExp(`aria-label="单独拆分：${name}"(?! disabled)`));
+    assert.match(render(true), new RegExp(`aria-label="单独拆分：${name}" disabled=""`));
+  }
+});
+
+test('layer summary counts delivered current results, not historical accepted IDs', () => {
+  const document = documentFixture(); document.layers['layer-a'].acceptedVersionId = 'old-version';
+  const stale = renderToStaticMarkup(React.createElement(LayerList, { document, adoptedCount: 0 }));
+  assert.doesNotMatch(stale, /已完成 1/);
+  const current = renderToStaticMarkup(React.createElement(LayerList, { document, adoptedCount: 1 }));
+  assert.match(current, /已完成 1/);
+});
+
+test('a stale eligibility response cannot show an unverified PNG as a delivered result', () => {
+  const document = documentFixture();
+  const markup = renderToStaticMarkup(React.createElement(CandidateReview, { document, layerId: 'layer-a',
+    state: { status: 'ready', versionIds: ['old'], resultVersionId: 'old' }, candidateUrl: () => '/candidate.png',
+    versions: [{ versionId: 'old', artifactValid: true, width: 250, height: 120, placement: { x: 30, y: 40 },
+      pixelAudit: { maskProvider: 'imagegen_matte' }, createdAt: '2026-10-13T00:00:00Z' }] }));
+  assert.doesNotMatch(markup, /src="\/candidate.png"|下载 PNG|确认并采用|type="checkbox"/);
+});
+
+test('quality failures do not expose manual waiver controls or pretend to be completed PNGs', () => {
+  const document = documentFixture();
+  const version = { versionId: 'edge-review', artifactValid: true, sha256: 'a'.repeat(64), snapshotId: 'snap',
+    width: 250, height: 120, placement: { x: 30, y: 40 }, createdAt: '2026-10-13T00:00:00Z',
+    pixelAudit: { maskProvider: 'imagegen_matte', sourceGeometryAlignment: {
+      policyVersion: 7, method: 'source_guided_matte', evidenceMethod: 'bounded_shape', status: 'needs_review',
+      contourIntegrity: { status: 'passed', changedByAlphaRecoveryPixels: 0, lostCounterPixels: 0 },
+      reviewReasons: ['SOURCE_BOUNDARY_UNCERTAIN'], boundaryMatchRatio: .96, boundaryPixels: 1000, longestUnsupportedRun: 22,
+      uncertainRegions: [{ x: 10, y: 15, width: 4, height: 22, boundaryPixels: 22 }] } } };
+  const markup = renderToStaticMarkup(React.createElement(CandidateReview, { document, layerId: 'layer-a', versions: [version],
+    state: { status: 'quality_failed', versionIds: [] }, candidateUrl: () => '/candidate.png', sourceUrl: '/source.png' }));
+  assert.match(markup, /未能完成该项/);
+  assert.doesNotMatch(markup, /type="checkbox"|确认并采用|我已检查|src="\/candidate.png"|下载 PNG/);
+  assert.match(markup, /<details class="v2-result-history">/, 'diagnostics are optional collapsed history');
+});
+
+test('verified result view offers PNG directly and keeps source comparison optional', () => {
+  const document = documentFixture();
+  const version = { versionId: 'ready', artifactValid: true, width: 250, height: 120,
+    alpha: { min: 0, max: 255 }, placement: { x: 30, y: 40 }, createdAt: '2026-10-13T00:00:00Z' };
+  const markup = renderToStaticMarkup(React.createElement(CandidateReview, { document, layerId: 'layer-a', versions: [version],
+    state: { status: 'ready', versionIds: ['ready'], resultVersionId: 'ready' },
+    candidateUrl: () => '/candidate.png', sourceUrl: '/source.png' }));
+  assert.match(markup, /v2-review-preview has-result/);
+  assert.match(markup, /href="\/candidate.png\?download=1"/);
+  assert.match(markup, /已完成，可直接下载|对照原图/);
+  assert.doesNotMatch(markup, /确认并采用|采用此版本|type="checkbox"/);
 });
 
 test('single-layer editor shows requested controls while pen view keeps the source image and honest tool availability', () => {
@@ -68,7 +181,56 @@ test('single-layer editor shows requested controls while pen view keeps the sour
   assert.match(editor, /编辑拆分/); assert.match(editor, /拆分类别/); assert.match(editor, /处理要求/);
   assert.match(editor, /移除背景/); assert.match(editor, /补全被遮挡区域/); assert.match(editor, /完成/); assert.match(editor, /取消/);
   const pen = renderToStaticMarkup(React.createElement(PenEditor, { source: doc.source, sourceUrl: '/source.png', draft, onChange: noOp, onClose: noOp }));
-  assert.match(pen, /放大钢笔编辑/); assert.match(pen, /魔棒不可用/); assert.match(pen, /拖动移动画布/);
+  assert.match(pen, /放大钢笔编辑/); assert.doesNotMatch(pen, /魔棒/); assert.match(pen, /拖动移动画布/);
+  const tools = pen.match(/<div class="v2-pen-tools"[\s\S]*?<\/div>/)?.[0];
+  assert.equal((tools.match(/aria-pressed="true"/g) || []).length, 1, 'only one mutually exclusive tool is selected');
+  assert.equal((tools.match(/aria-pressed="false"/g) || []).length, 2);
+  assert.match(tools, /aria-label="删除选中路径或锚点"[^>]*disabled=""/, 'delete is an unavailable action, not a selected mode');
+  assert.doesNotMatch(pen, /绘制保留区域|每个选区单独记录|闭合选区后填写要求，拆分时与整体要求一起处理/);
+  assert.doesNotMatch(editor, /魔棒|编辑修复区域/);
+  assert.equal((editor.match(/aria-label="编辑钢笔路径"/g) || []).length, 1);
+});
+
+test('single-layer editing shows only the selected crop at its original coordinates with a zoom entry', () => {
+  const doc = addLayer(documentFixture(), { layerId: 'other', name: '不应出现在编辑画布的区域', displayCategory: '角色', processingCategory: 'subject',
+    bounds: { x: 800, y: 1200, width: 100, height: 200 }, paths: [], requirements: '', strategy: { operation: 'extract', removeBackground: false, repairPaths: [] } });
+  const markup = renderToStaticMarkup(React.createElement(LayerEditor, { document: doc, sourceUrl: '/source.png',
+    draft: createEditorDraft(doc, 'layer-a'), onChange: noOp, onDone: noOp, onCancel: noOp, onOpenPen: noOp }));
+  assert.match(markup, /viewBox="30 40 250 120"/);
+  assert.match(markup, /clip-path="url\(#/);
+  assert.match(markup, /aria-label="放大编辑当前选区"/);
+  assert.doesNotMatch(markup, /不应出现在编辑画布的区域|data-layer-id="other"/);
+});
+
+test('category chooser exposes a labelled closed combobox and preserves custom category names', () => {
+  for (const category of ['主标题', '自定义标题']) {
+    const doc = applyLayerEdit(documentFixture(), 'layer-a', { displayCategory: category });
+    const draft = createEditorDraft(doc, 'layer-a');
+    const markup = renderToStaticMarkup(React.createElement(LayerEditor, { document: doc, sourceUrl: '/source.png',
+      draft, onChange: noOp, onDone: noOp, onCancel: noOp, onOpenPen: noOp }));
+    const chooser = markup.match(/<button[^>]*role="combobox"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    assert.ok(chooser, 'category choices must use the themed in-page chooser');
+    assert.match(chooser, /aria-label="拆分类别"/);
+    assert.match(chooser, /aria-expanded="false"/);
+    assert.match(chooser, /aria-haspopup="listbox"/);
+    if (category === '主标题') assert.ok(chooser.includes(category));
+    else {
+      assert.match(chooser, /自定义/);
+      assert.match(markup, /value="自定义标题"/, 'the saved custom name remains editable');
+      assert.match(markup, /aria-label="处理类别"/);
+    }
+    assert.match(markup, /aria-label="移除背景"/);
+  }
+});
+
+test('choosing custom shows editable fields and blocks Done until the category is named', () => {
+  const doc = documentFixture();
+  let draft = reduceEditorDraft(createEditorDraft(doc, 'layer-a'), { type: 'set-category', value: '__custom__' });
+  const render = () => renderToStaticMarkup(React.createElement(LayerEditor, { document: doc, draft, onChange: noOp }));
+  assert.match(render(), /自定义类别名称/);
+  assert.match(render(), /<button[^>]* disabled=""[^>]*>完成<\/button>/);
+  draft = reduceEditorDraft(draft, { type: 'set-field', field: 'displayCategory', value: '活动徽章' });
+  assert.doesNotMatch(render(), /<button[^>]* disabled=""[^>]*>完成<\/button>/);
 });
 
 test('one stable layer id is shared by canvas selection and list; pending custom categories require a processing route', () => {
@@ -77,7 +239,7 @@ test('one stable layer id is shared by canvas selection and list; pending custom
   const list = renderToStaticMarkup(React.createElement(LayerList, { document: doc, statusByLayer: {}, onSelect: noOp, onEdit: noOp, onAdd: noOp, onReorder: noOp }));
   assert.match(canvas, /data-layer-id="layer-a"/);
   assert.match(list, /data-layer-id="layer-a"/);
-  assert.match(list, /查看主标题候选/);
+  assert.match(list, /查看主标题结果/);
   const empty = renderToStaticMarkup(React.createElement(LayerList, { document: createDocument({ documentId:'empty',workbenchSessionId:'s',mode:'h5',source:doc.source }), statusByLayer:{},onSelect:noOp,onEdit:noOp,onAdd:noOp,onReorder:noOp }));
   assert.deepEqual(processingCategories, ['text','subject','brand_ui','decoration_prop','effect','background']);
   assert.throws(() => addLayer(createDocument({ documentId:'bad',workbenchSessionId:'s',mode:'h5',source:doc.source }), {
@@ -86,19 +248,65 @@ test('one stable layer id is shared by canvas selection and list; pending custom
   }));
 });
 
-test('candidate review fits a transparent full-canvas preview and requires explicit adoption', () => {
+test('canvas paints bottom layers first so list order controls overlap hit priority', () => {
+  const doc = addLayer(documentFixture(), { layerId: 'background', name: '背景', displayCategory: '背景', processingCategory: 'background',
+    bounds: { x: 0, y: 0, width: 1562, height: 3396 }, paths: [], requirements: '',
+    strategy: { operation: 'extract', removeBackground: false, repairPaths: [] } });
+  const before = structuredClone(doc);
+  const paintOrder = (document, selection) => {
+    const markup = renderToStaticMarkup(React.createElement(DocumentCanvas, {
+      document, sourceUrl: '/source.png', transform: { scale: .2, offsetX: 0, offsetY: 0 }, selection,
+    }));
+    return [...markup.matchAll(/data-layer-id="([^"]+)"/g)].map(match => match[1]);
+  };
+  assert.deepEqual(paintOrder(doc, 'background'), ['background', 'layer-a'], 'selecting the background must not raise it above foreground regions');
+  assert.deepEqual(paintOrder(doc, 'layer-a'), ['background', 'layer-a']);
+  const reordered = reorderLayers(doc, ['background', 'layer-a']);
+  assert.deepEqual(paintOrder(reordered, 'layer-a'), ['layer-a', 'background'], 'moving a layer to the top must raise its hit priority');
+  assert.deepEqual(doc, before, 'rendering must not mutate saved layer order or geometry');
+});
+
+test('overview and focused editor expose eight resize handles for the active region', () => {
+  const doc = documentFixture();
+  const canvas = renderToStaticMarkup(React.createElement(DocumentCanvas, { document: doc, sourceUrl: '/source.png',
+    transform: { scale: .2, offsetX: 0, offsetY: 0 }, selection: 'layer-a', onRegionResize: noOp }));
+  const editor = renderToStaticMarkup(React.createElement(LayerEditor, { document: doc, sourceUrl: '/source.png',
+    draft: createEditorDraft(doc, 'layer-a'), onChange: noOp }));
+  for (const markup of [canvas, editor]) {
+    assert.equal((markup.match(/data-resize-handle=/g) || []).length, 8);
+    for (const side of ['nw','n','ne','e','se','s','sw','w']) assert.ok(markup.includes(`data-resize-handle="${side}"`));
+  }
+});
+
+test('hiding all regions removes outlines, labels and handles without changing the document', () => {
+  const doc = documentFixture();
+  const before = structuredClone(doc);
+  const props = { document: doc, sourceUrl: '/source.png', transform: { scale: .2, offsetX: 0, offsetY: 0 }, selection: 'layer-a', onRegionResize: noOp };
+  const hidden = renderToStaticMarkup(React.createElement(DocumentCanvas, { ...props, regionsVisible: false }));
+  assert.match(hidden, /上传的原图/);
+  assert.doesNotMatch(hidden, /v2-canvas__overlay|data-layer-id=|data-resize-handle=|主标题/);
+  const shown = renderToStaticMarkup(React.createElement(DocumentCanvas, { ...props, regionsVisible: true }));
+  assert.match(shown, /data-layer-id="layer-a"/);
+  assert.equal((shown.match(/data-resize-handle=/g) || []).length, 8);
+  assert.deepEqual(doc, before);
+});
+
+test('result view provides zoom controls and PNG download without adoption', () => {
   const doc = documentFixture();
   const candidate = { versionId: 'version-a', artifactValid: true, width: 250, height: 120,
     placement: { x: 30, y: 40 }, createdAt: '2026-09-27T00:00:00Z', alpha: { min: 0, max: 255 },
     review: { checks: { png: true, alpha: true } } };
   const markup = renderToStaticMarkup(React.createElement(CandidateReview, { document: doc, layerId: 'layer-a', versions: [candidate],
-    state: { status: 'review', versionIds: ['version-a'] }, composition: [], candidateUrl: id => `/candidate/${id}.png`,
+    state: { status: 'ready', versionIds: ['version-a'], resultVersionId: 'version-a' }, composition: [], candidateUrl: id => `/candidate/${id}.png`,
     onBack: noOp, onAdopt: noOp, onRetry: noOp, onRefresh: noOp }));
-  assert.match(markup, /透明候选按原图坐标完整适配/);
+  assert.match(markup, /拆分结果预览，可缩放和拖动/);
+  assert.match(markup, /aria-label="放大候选"/);
+  assert.match(markup, /download="主标题-version-.png"/);
   assert.match(markup, /1562 × 3396/);
-  assert.match(markup, /采用此版本/);
+  assert.doesNotMatch(markup, /采用此版本/);
   assert.match(markup, /重新拆分当前项/);
   assert.match(markup, /candidate\/version-a.png/);
+  assert.match(markup, /candidate\/version-a.png\?download=1/);
 });
 
 test('reordering changes only layer order and keeps layer identities and geometry stable', () => {
@@ -175,7 +383,7 @@ test('batch API freezes the saved document, requires a matching bridge receipt, 
   assert.equal(late.execution, 'cancelled');
 });
 
-test('candidate API lists immutable versions, explicitly adopts current revisions, and composes only adopted layers', async t => {
+test('candidate API automatically composes valid results and permits optional explicit version selection', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'imvia-v2-candidate-api-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const exportRecords = [];
@@ -208,17 +416,34 @@ test('candidate API lists immutable versions, explicitly adopts current revision
     pixelAudit: { status: 'NEEDS_USER_REVIEW' }, createdAt: new Date().toISOString() };
   await writeFile(metadataPath, JSON.stringify(version));
   const listed = await api.listLayerVersions({ documentId: created.documentId, layerId: 'review-layer' });
-  assert.equal(listed.state.status, 'review'); assert.equal(listed.versions[0].artifactValid, true);
+  assert.equal(listed.state.status, 'ready'); assert.equal(listed.versions[0].artifactValid, true);
   assert.equal(listed.versions[0].pngPath, undefined);
-  assert.deepEqual(await api.getComposition(created.documentId).then(value => value.layers), []);
+  const awaitingAdoption = await api.getComposition(created.documentId);
+  assert.equal(awaitingAdoption.layers[0].versionId, 'version-fixture');
+  assert.equal(awaitingAdoption.states['review-layer'].status, 'ready');
+  assert.deepEqual(awaitingAdoption.states['review-layer'].versionIds, ['version-fixture']);
   const adopted = await api.adoptCandidate({ documentId: created.documentId, expectedRevision: layered.revision,
     layerId: 'review-layer', versionId: version.versionId });
   assert.equal(adopted.layers['review-layer'].acceptedVersionId, version.versionId);
   assert.equal(adopted.layers['review-layer'].layerRevision, layered.layers['review-layer'].layerRevision);
   const composition = await api.getComposition(created.documentId);
+  assert.equal(composition.states['review-layer'].status, 'ready');
+  assert.equal(composition.documentRevision, adopted.revision);
   assert.deepEqual(composition.layers.map(layer => [layer.layerId, layer.versionId, layer.placement]),
     [['review-layer', version.versionId, { x: 0, y: 0 }]]);
   assert.deepEqual(await api.readCandidatePng({ documentId: created.documentId, layerId: 'review-layer', versionId: version.versionId }), source);
+  const middleware = workbenchV2Middleware({ root: documentsRoot });
+  const server = createHttpServer((request, response) => middleware(request, response, () => { response.statusCode = 404; response.end(); }));
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const candidateUrl = `http://127.0.0.1:${server.address().port}/api/workbench-v2/documents/${created.documentId}/layers/review-layer/versions/${version.versionId}/png`;
+  const previewResponse = await fetch(candidateUrl);
+  assert.equal(previewResponse.headers.get('content-disposition'), null);
+  const response = await fetch(`${candidateUrl}?download=1`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-disposition'), 'attachment; filename="version-fixture.png"');
+  assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.equal(response.headers.get('cache-control'), 'private, no-store');
   const exported = await api.exportDocumentPsd({ documentId: created.documentId, expectedRevision: adopted.revision });
   assert.equal(exported.documentRevision, adopted.revision);
   assert.equal(exported.layerCount, 1);

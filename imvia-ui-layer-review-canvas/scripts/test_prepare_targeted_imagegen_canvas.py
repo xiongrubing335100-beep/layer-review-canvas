@@ -155,7 +155,7 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         preflight["layers"][0]["execution_route_hint"] = "alpha_extract"
         preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
 
-        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba, targeted_repair, or result_refinement"):
+        with self.assertRaisesRegex(ValueError, "only valid for codex_rgba, codex_rgba_repair, targeted_repair, or result_refinement"):
             MODULE.prepare_canvas(self.job_id, "title-one", jobs_root=self.root)
 
     def test_rejects_cross_platform_unsafe_layer_ids_before_writing_files(self):

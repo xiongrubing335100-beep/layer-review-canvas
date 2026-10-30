@@ -186,6 +186,12 @@ export function reducePenEditor(state, action = {}) {
         ? { ...current, selection: { pathId: action.pathId, anchorIndex: action.anchorIndex } }
         : current;
 
+    case 'set-path-requirements': {
+      const path = current.paths.find(candidate => candidate.id === action.pathId);
+      if (!path?.closed || typeof action.value !== 'string' || (path.requirements ?? '') === action.value) return current;
+      return withHistory(current, { paths: replacePath(current.paths, path.id, { ...path, requirements: action.value }) });
+    }
+
     case 'move-anchor': {
       const path = current.paths.find((candidate) => candidate.id === action.pathId);
       if (!path || !action.point) return current;

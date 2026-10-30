@@ -57,6 +57,24 @@ test('clicks append anchors and clicking the first anchor closes the draft', () 
   assert.equal(state.draft, null);
 });
 
+test('local requirements stay on their path through selection, movement, deletion and undo', () => {
+  const first = { ...closedFixture(), id: 'first' };
+  const second = { ...closedFixture(), id: 'second' };
+  let state = createPenEditorState([first, second]);
+  state = reducePenEditor(state, { type: 'set-path-requirements', pathId: 'first', value: '移除昵称，补全底板' });
+  state = reducePenEditor(state, { type: 'select-path', pathId: 'second' });
+  state = reducePenEditor(state, { type: 'set-path-requirements', pathId: 'second', value: '保留数字和金色描边' });
+  state = reducePenEditor(state, { type: 'move-anchor', pathId: 'first', anchorIndex: 0, point: { x: .2, y: .2 } });
+  assert.equal(state.paths[0].requirements, '移除昵称，补全底板');
+  assert.equal(state.paths[1].requirements, '保留数字和金色描边');
+  const deleted = reducePenEditor(state, { type: 'delete-path', pathId: 'first' });
+  assert.deepEqual(deleted.paths.map(path => path.id), ['second']);
+  assert.equal(reducePenEditor(deleted, { type: 'undo' }).paths[0].requirements, '移除昵称，补全底板');
+  const edited = reducePenEditor(state, { type: 'set-path-requirements', pathId: 'second', value: '移除数字' });
+  assert.equal(reducePenEditor(edited, { type: 'undo' }).paths[1].requirements, '保留数字和金色描边');
+  assert.equal(reducePenEditor(reducePenEditor(edited, { type: 'undo' }), { type: 'redo' }).paths[1].requirements, '移除数字');
+});
+
 test('escape discards only the open draft and undo restores the previous closed path state', () => {
   const drafted = addClick(createPenEditorState([closedFixture()]), .2, .2);
   const cancelled = reducePenEditor(drafted, { type: 'cancel-draft' });

@@ -105,7 +105,7 @@ export function importLegacyDocument({ legacyDocument, verifiedAssets, newDocume
     }
   }
   if (results.length && !history.length) warnings.push('旧版有候选结果，但当前选择的项目记录未包含可核验结果元数据；候选文件保留在旧项目中。');
-  if (history.length) warnings.push('旧版候选不会自动采用；请逐项重新拆分或人工复核后再导出 PSD。');
+  if (history.length) warnings.push('旧版候选仅保留为历史记录；重新拆分后的合格结果将自动用于 PSD。');
   // A migration creates one new document revision, regardless of its layer count.
   document = validateDocument({ ...document, revision: 1 });
   return { document, history, warnings };

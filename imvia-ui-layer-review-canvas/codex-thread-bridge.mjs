@@ -1,3 +1,4 @@
+// Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
 import { spawn } from 'node:child_process';
 import { access, readdir, stat } from 'node:fs/promises';
 import net from 'node:net';
@@ -270,7 +271,7 @@ async function startBridge() {
     const socket = await connectWebSocket(`ws://127.0.0.1:${port}`);
     const client = new RpcClient(socket);
     await client.request('initialize', {
-      clientInfo: { name: 'ui-layer-review-canvas', title: 'Imvia Layer', version: '0.5.0' },
+      clientInfo: { name: 'imvia-ui-layer-review-canvas', title: 'Imvia Layer', version: '0.5.0' },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     client.notify('initialized');
@@ -303,8 +304,9 @@ export function buildWorkbenchPrompt({
   plan,
   requireForegroundConfirmation = true,
   platform = process.platform,
+  environment = process.env,
 }) {
-  const pythonInvocation = resolvePythonInvocation(process.env, platform);
+  const pythonInvocation = resolvePythonInvocation(environment, platform);
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const projectRoot = pathApi.resolve(
     pathApi.dirname(jobPath),

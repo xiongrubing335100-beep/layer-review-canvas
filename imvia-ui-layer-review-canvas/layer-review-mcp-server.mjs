@@ -1,5 +1,5 @@
+// Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
@@ -31,9 +31,6 @@ import {
   releaseForegroundDispatchClaim,
   readForegroundQueueSummaryFromRoots,
 } from './src/foreground-dispatch.js';
-import { withDirectoryLock } from './src/file-lock.js';
-import { resetPosterDispatchesForOpen } from './src/poster-dispatch-control.js';
-import { resetWorkbenchForOpen } from './src/workbench-lifecycle-store.js';
 import { isExecutionFeatureEnabled } from './src/execution-features.js';
 import { registerV2BridgeTools } from './src/v2/bridge-tools.mjs';
 
@@ -171,12 +168,18 @@ const posterDispatchToolMeta = {
 export function createLayerReviewBridgeServer({
   environment = process.env,
   requestWorkbenchJsonImpl = requestWorkbenchJson,
+  v2BridgeRoot = path.join(outputDirectory, 'workbench-v2', 'bridge-requests'),
+  ensureWorkbenchRunningImpl = ensureWorkbenchRunning,
 } = {}) {
   const server = new McpServer({
     name: 'layer-review-workbench',
     version: '1.0.0',
   });
-  registerV2BridgeTools(server, { root: path.join(outputDirectory, 'workbench-v2', 'bridge-requests') });
+  const v2Opening = registerV2BridgeTools(server, {
+    root: v2BridgeRoot,
+    workbenchOrigin,
+    ensureWorkbenchRunning: ensureWorkbenchRunningImpl,
+  });
 
   registerAppResource(
     server,
@@ -230,57 +233,8 @@ export function createLayerReviewBridgeServer({
     }),
   );
 
-  const toolDefinition = {
-    title: '打开 Imvia Layer 右侧工作台',
-    description: 'Use this when the user asks to open or use Imvia Layer. Return the workbench URL and mount the lightweight conversation bridge. The host must open the URL with codex_app__open_in_codex using placement right and target type browser. Do not render the full workbench as an inline or fullscreen MCP App. Split actions must appear in the current Codex conversation before execution.',
-    inputSchema: {},
-    outputSchema: {
-      state: z.literal('ready'),
-      workbenchUrl: z.string(),
-      workbenchSessionId: z.string(),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      openWorldHint: false,
-      idempotentHint: false,
-    },
-    _meta: {
-      ui: {
-        resourceUri: bridgeWidgetUri,
-        visibility: ['model', 'app'],
-      },
-      'ui/resourceUri': bridgeWidgetUri,
-      'openai/outputTemplate': bridgeWidgetUri,
-      'openai/widgetAccessible': true,
-      'openai/toolInvocation/invoking': '正在打开 Imvia Layer 右侧工作台…',
-      'openai/toolInvocation/invoked': 'Imvia Layer 右侧工作台已打开',
-    },
-  };
-  const toolHandler = async () => {
-    const reopenedAt = new Date().toISOString();
-    await withDirectoryLock(
-      path.join(outputDirectory, 'workbench-runtime', '.submission.lock'),
-      async () => {
-        await resetWorkbenchForOpen(outputDirectory, reopenedAt);
-        await resetPosterDispatchesForOpen(posterJobsDirectory, reopenedAt);
-      },
-      { timeoutMs: 10_000 },
-    );
-    const session = await requestWorkbenchJson('/api/layer-review/workbench-session');
-    return {
-      content: [{
-        type: 'text',
-        text: 'Imvia Layer 右侧工作台已就绪。请在当前任务中打开返回的工作台地址；提交拆分后，请在桥接卡片点击“发送到 Codex”并确认。',
-      }],
-      structuredContent: {
-        state: 'ready',
-        workbenchUrl: `${workbenchOrigin}/?open=${encodeURIComponent(randomUUID())}`,
-        workbenchSessionId: session.workbench_session_id,
-      },
-    };
-  };
-
+  const toolDefinition = { ...v2Opening.openDefinition, inputSchema: {} };
+  const toolHandler = () => v2Opening.openWorkbench();
   registerAppTool(server, 'connect_layer_review_workbench', toolDefinition, toolHandler);
   registerAppTool(server, 'open_layer_review_workbench', toolDefinition, toolHandler);
   registerAppTool(server, 'register_layer_review_conversation_bridge', {
@@ -731,7 +685,9 @@ export function createLayerReviewBridgeServer({
     };
   });
 
-  const posterJobSchema = z.record(z.unknown());
+  // MCP output schemas must be object schemas. Keep every persisted job field
+  // while allowing the SDK to validate a successful structured response.
+  const posterJobSchema = z.object({}).catchall(z.unknown());
   // Existing poster roots are still claimable by the generic bridge while the
   // entry flag is off, so their owner must retain read and release controls.
   registerAppTool(server, 'get_poster_layer_job', {
@@ -927,7 +883,8 @@ const httpServer = createServer(async (request, response) => {
   response.writeHead(404).end('Not Found');
 });
 
-if (process.env.IMVIA_LAYER_MCP_TEST_MODE !== '1') {
+const isEntrypoint = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntrypoint && process.env.IMVIA_LAYER_MCP_TEST_MODE !== '1') {
   if (process.argv.includes('--stdio')) {
     const server = createLayerReviewBridgeServer();
     const transport = new StdioServerTransport();

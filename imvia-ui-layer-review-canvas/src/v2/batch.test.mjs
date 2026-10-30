@@ -40,6 +40,19 @@ test('pending omits same-revision active, review, adopted, failed, and cancelled
   assert.equal(batch.items.length, 0);
 });
 
+test('explicit all and single submissions include previous results and preserve the saved document', () => {
+  const document = documentFixture();
+  document.layers.two.acceptedVersionId = 'kept-version';
+  const before = structuredClone(document);
+  const attempts = [attempt('one', 'failed'), attempt('two', 'suggested')];
+  const all = createBatch({ document, attempts, submissionKey: 'all-click', mode: 'retry', layerIds: document.layerOrder });
+  const single = createBatch({ document, attempts, submissionKey: 'single-click', mode: 'retry', layerIds: ['two'] });
+  assert.deepEqual(all.items.map(item => item.layerId), ['one', 'two']);
+  assert.deepEqual(single.items.map(item => item.layerId), ['two']);
+  assert.notEqual(all.items[1].attempt.attemptId, single.items[0].attempt.attemptId);
+  assert.deepEqual(document, before);
+});
+
 test('attempt events are idempotent and cancellation remains terminal after late events', () => {
   const queued = attempt('one', 'queued', { delivery: 'pending', eventIds: [] });
   const sent = applyAttemptEvent(queued, { eventId: 'e1', attemptId: queued.attemptId, dispatchId: queued.dispatchId, type: 'sent', timestamp: '2026-09-27T00:00:00Z' });

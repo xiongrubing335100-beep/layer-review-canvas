@@ -4,10 +4,14 @@ export function buildBatchPrompt(record) {
   const binding = { batchId: record.batchId, requestId: record.requestId,
     receipt: { workbenchSessionId: record.workbenchSessionId, envelopeSha256: record.envelopeSha256 } };
   const probe = record.envelope.mode === 'confirmation_probe';
+  const directExecution = record.envelope.executionPolicy?.trigger === 'workbench_user_click'
+    && record.envelope.executionPolicy.startAfterVisibleReceipt === true
+    && record.envelope.executionPolicy.additionalUserConfirmation === false;
   return [probe ? 'Imvia Layer V2 会话桥验证。仅确认消息，不生成、不调用 ImageGen/RMBG，不读取其他任务。' : 'Imvia Layer V2 可见批次任务。仅处理冻结清单，不自动重试或采用结果。',
     `请先调用 confirm_workbench_v2_batch，参数：${JSON.stringify(binding)}`,
+    directExecution ? '本批次由用户在 V2 工作台点击“拆分”提交，工作台点击已授权执行。消息可见并确认 receipt 后，不要再次询问用户，立即调用 claim_workbench_v2_batch_item 开始处理。' : null,
     probe ? '确认成功后仅回复“已收到 V2 测试批次”，然后停止。' : `冻结批次记录：${record.envelope.manifestPath}；调度信封 SHA-256：${record.envelopeSha256}（不是清单文件哈希）。确认工具会返回 receipt。之后先调用 claim_workbench_v2_batch_item，传 batchId 和该 receipt；一次只处理返回的一项。完成后调用 record_workbench_v2_attempt_event，再领取下一项，直到返回 done。严格按 V2 批次适配器；不处理清单以外内容。`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function createBatchBridge({ store, host }) {

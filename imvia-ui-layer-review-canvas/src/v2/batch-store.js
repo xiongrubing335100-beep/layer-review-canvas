@@ -55,6 +55,7 @@ export function createBatchStore({ root, getDocument, readConfirmation, cancelCo
         const manifestPath = path.join(batchesRoot, `${proposed.batchId}.json`);
         const envelope = { mode: 'layer_batch', workbenchSessionId: document.workbenchSessionId, documentId,
           documentRevision: document.revision, sourceFingerprint: document.source.fingerprint,
+          executionPolicy: { trigger: 'workbench_user_click', startAfterVisibleReceipt: true, additionalUserConfirmation: false },
           manifestPath,
           itemCount: proposed.items.length, items: proposed.items.map(item => ({ layerId: item.layerId,
             layerRevision: item.layerRevision, snapshotId: item.snapshot.snapshotId, attemptId: item.attempt.attemptId })) };

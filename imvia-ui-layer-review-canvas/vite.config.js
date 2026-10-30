@@ -67,6 +67,8 @@ import {
   writeLifecycleRecord,
 } from './src/workbench-lifecycle-store.js';
 
+const IMVIA_COPYRIGHT_BANNER = '/*! Imvia Layer © 2026 青木 — Personal non-commercial use only; commercial license required. */';
+
 const repositoryRoot = path.dirname(fileURLToPath(import.meta.url));
 const splitSkillPath = path.resolve(
   process.env.IMVIA_LAYER_SKILL_PATH
@@ -1224,6 +1226,14 @@ export function layerReviewQueue() {
 
 export default defineConfig({
   plugins: [react(), layerReviewQueue()],
+  build: {
+    rollupOptions: {
+      output: {
+        banner: IMVIA_COPYRIGHT_BANNER,
+        comments: { legal: true },
+      },
+    },
+  },
   define: {
     __IMVIA_POSTER_LAYERING_MODE_ENABLED__: JSON.stringify(isExecutionFeatureEnabled('poster_layering_mode')),
   },

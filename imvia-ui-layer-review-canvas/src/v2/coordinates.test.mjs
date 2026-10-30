@@ -1,6 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fitViewport, toScreen, toSource, quantizeBounds } from './coordinates.js';
+import * as coordinates from './coordinates.js';
+
+test('all eight resize handles preserve opposite edges in source pixels', () => {
+  const b = { x: 100, y: 200, width: 80, height: 60 };
+  const limit = { x: 0, y: 0, width: 400, height: 500 };
+  const expected = {
+    nw: [110, 215, 70, 45], n: [100, 215, 80, 45], ne: [100, 215, 90, 45],
+    e: [100, 200, 90, 60], se: [100, 200, 90, 75], s: [100, 200, 80, 75],
+    sw: [110, 200, 70, 75], w: [110, 200, 70, 60],
+  };
+  for (const [handle, result] of Object.entries(expected)) {
+    assert.deepEqual(Object.values(coordinates.resizeRegionBounds(b, handle, { x: 10, y: 15 }, limit)), result);
+  }
+  assert.deepEqual(b, { x: 100, y: 200, width: 80, height: 60 });
+});
+
+test('resize clamps to entry crop, never flips or collapses, and converts scaled pointer distance', () => {
+  const b = { x: 123, y: 1535, width: 278, height: 84 };
+  assert.deepEqual(coordinates.resizeRegionBounds(b, 'se', { x: 1000, y: 1000 }, b), b);
+  assert.deepEqual(coordinates.resizeRegionBounds(b, 'nw', { x: 1000, y: 1000 }, b), { x: 400, y: 1618, width: 1, height: 1 });
+  const t = fitViewport(b, { width: 600, height: 400 });
+  const start = toSource({ x: 300, y: 200 }, t);
+  const end = toSource({ x: 300 - 20*t.scale, y: 200 - 10*t.scale }, t);
+  assert.deepEqual(coordinates.resizeRegionBounds(b, 'se', { x: end.x-start.x, y: end.y-start.y }, b), { ...b, width: 258, height: 74 });
+});
 
 test('fit preserves the whole tall image inside viewport and padding', () => {
   const t = fitViewport({ x: 0, y: 0, width: 1562, height: 3396 }, { width: 640, height: 480 });

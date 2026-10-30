@@ -23,6 +23,11 @@ test('submission is idempotent across refresh and no attempt can be claimed befo
     const first = await store.submitBatch({ documentId: document.documentId, expectedRevision: document.revision, submissionKey: 'submit-one' });
     const refreshed = await store.submitBatch({ documentId: document.documentId, expectedRevision: document.revision, submissionKey: 'submit-one' });
     assert.equal(first.batchId, refreshed.batchId);
+    assert.deepEqual(first.confirmation.envelope.executionPolicy, {
+      trigger: 'workbench_user_click',
+      startAfterVisibleReceipt: true,
+      additionalUserConfirmation: false,
+    });
     await assert.rejects(() => store.claimNextBatchItem({ batchId: first.batchId, receipt: null }), /BATCH_CONFIRMATION_REQUIRED/);
     assert.deepEqual(calls, []);
     const confirmation = { status: 'sent', workbenchSessionId: document.workbenchSessionId, envelopeSha256: first.confirmation.envelopeSha256 };

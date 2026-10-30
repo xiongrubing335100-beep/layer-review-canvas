@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createLayerReviewBridgeServer } from '../layer-review-mcp-server.mjs';
 
 const source = await readFile(new URL('./main.jsx', import.meta.url), 'utf8');
 const styles = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
@@ -8,17 +18,55 @@ const attributionSource = await readFile(new URL('./attribution.js', import.meta
 const penOverlay = await readFile(new URL('./PenPathOverlay.jsx', import.meta.url), 'utf8');
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const bridgeWidget = await readFile(new URL('../public/layer-review-bridge-widget.js', import.meta.url), 'utf8');
-const bridgeServer = await readFile(new URL('../layer-review-mcp-server.mjs', import.meta.url), 'utf8');
 const viteConfig = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
 const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 
-test('the user-visible workbench brand is Imvia Layer', () => {
+test('the active workbench renders IMVIA Studio · Layer and the open tool returns its V2 page with a relay', async t => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia-brand-contract-'));
+  let vite;
+  let server;
+  let client;
+  t.after(async () => {
+    await client?.close(); await server?.close(); await vite?.close();
+    await rm(temporaryRoot, { recursive: true, force: true });
+  });
+  vite = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)), configFile: false, plugins: [react()],
+    cacheDir: path.join(temporaryRoot, 'vite-cache'),
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
+  });
+  server = createLayerReviewBridgeServer({
+    v2BridgeRoot: path.join(temporaryRoot, 'bridge-requests'), ensureWorkbenchRunningImpl: async () => {},
+  });
+  client = new Client({ name: 'workbench-brand-test', version: '1' });
+  const { WorkbenchV2 } = await vite.ssrLoadModule('/src/v2/WorkbenchV2.jsx');
+  const markup = renderToStaticMarkup(createElement(WorkbenchV2, { api: {} }));
+  assert.match(markup, /<strong>IMVIA Studio · Layer<\/strong>/);
+  assert.match(markup, /class="v2-brand"/);
+  assert.doesNotMatch(markup, /<strong>Layer Review<\/strong>/);
+
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const { tools } = await client.listTools();
+  const openTool = tools.find(tool => tool.name === 'open_layer_review_workbench');
+  assert.ok(openTool);
+  assert.equal(openTool._meta.ui.resourceUri, 'ui://imvia-layer/v2-conversation-relay.html');
+  const result = await client.callTool({ name: openTool.name, arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.state, 'ready');
+  const url = new URL(result.structuredContent.workbenchUrl);
+  assert.equal(url.searchParams.get('workbench'), 'v2');
+  assert.equal(url.searchParams.get('workbenchSessionId'), result.structuredContent.workbenchSessionId);
+  assert.match(result.content.map(item => item.text || '').join('\n'), /open_in_codex/);
+});
+
+test('the retained legacy entry keeps its Imvia title and bridge status indicator', () => {
   assert.match(source, /<strong>Imvia Layer<\/strong>/);
   assert.doesNotMatch(source, /<strong>Layer Review<\/strong>/);
   assert.match(html, /<title>Imvia Layer<\/title>/);
   assert.match(bridgeWidget, /data-bridge-status/);
-  assert.match(bridgeServer, /title:\s*'打开 Imvia Layer 右侧工作台'/);
-  assert.match(bridgeServer, /codex_app__open_in_codex/);
 });
 
 test('the browser workbench always opens in guided mode', () => {

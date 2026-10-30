@@ -1,3 +1,4 @@
+// Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -6175,6 +6176,5 @@ const root = window.__layerReviewRoot ?? createRoot(container);
 window.__layerReviewRoot = root;
 const params = new URLSearchParams(window.location.search);
 if (params.get('workbench') === 'v2') {
-  const openLegacy = () => { const url = new URL(window.location.href); url.searchParams.delete('workbench'); window.location.assign(url); };
-  import('./v2/WorkbenchV2.jsx').then(({ WorkbenchV2 }) => root.render(<WorkbenchV2 onOpenLegacy={openLegacy} onOpenOverview={openLegacy} />));
+  import('./v2/WorkbenchV2.jsx').then(({ WorkbenchV2 }) => root.render(<WorkbenchV2 />));
 } else root.render(<App />);
