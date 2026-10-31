@@ -1,0 +1,159 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;font:13px/1.6 -apple-system,"PingFang SC",sans-serif;color:#dce9e8;background:transparent}.card{padding:16px 18px;border:1px solid #2a3a3b;border-radius:12px;background:#101617}header{display:flex;gap:10px;align-items:center;font-weight:600}.dot{width:8px;height:8px;border-radius:50%;background:#c9a075}.dot.online{background:#65dac2}p{margin:8px 0 0;color:#a6b8b8;overflow-wrap:anywhere}small{display:block;color:#91a2a3;font-size:11px;margin-top:6px}button{margin-top:12px;border:1px solid #448b80;border-radius:8px;padding:8px 14px;background:#193a35;color:#a2f0df;cursor:pointer}button:disabled{opacity:.5}[hidden]{display:none!important}
+</style></head><body><section class="card"><header><span id="dot" class="dot"></span>IMVIA · V2 会话桥</header><small id="binding"></small><small id="connection">等待连接回执</small><p id="state" role="status">正在绑定当前工作台…</p><button id="send" hidden>重新请求发送确认</button></section><script>
+(() => {
+  const app = globalThis.__IMVIA_MCP_APP__;
+  const state = document.getElementById('state'), send = document.getElementById('send');
+  const bridgeId = crypto.randomUUID();
+  let binding, current, polling = false, checkingReceipt = false, started = false, epoch = 0, manualRecovery = false, lastSendAt = 0, leaseActive = false;
+  let heartbeatFailures = 0, reconnectAt = 0, reconnectAttempts = 0, sending = false;
+  let displayRequested = false;
+  const expandConnectedBridge = () => {
+    if (displayRequested) return;
+    const context = app.getHostContext?.();
+    if (context?.displayMode === 'fullscreen') { displayRequested = true; return; }
+    if (!context?.availableDisplayModes?.includes('fullscreen') || !app.requestDisplayMode) return;
+    displayRequested = true;
+    // Presentation must not hold the heartbeat lock or reopen a panel the user closed.
+    Promise.resolve().then(() => app.requestDisplayMode({mode:'fullscreen'}, {timeout:8000})).catch(() => {});
+  };
+  const setConnection = (text, online = false) => {
+    const node = document.getElementById('connection'), dot = document.getElementById('dot');
+    if (node) node.textContent = text;
+    if (dot) dot.className = online ? 'dot online' : 'dot';
+  };
+  const showBinding = () => {
+    const node = document.getElementById('binding');
+    if (node) node.textContent = binding.documentId ? '文档 ' + binding.documentId + ' · 桥 v2' : '全新工作台 · 等待上传图片';
+  };
+  const deadline = (promise, ms) => new Promise((resolve,reject) => {
+    const timer = setTimeout(() => reject(new Error('请求超时，结果未确认')), ms);
+    Promise.resolve(promise).then(resolve,reject).finally(() => clearTimeout(timer));
+  });
+  const call = async (name, args) => {
+    const result = await deadline(app.callServerTool({name,arguments:args}), 8000);
+    if (result.isError) throw new Error(result.content?.find(x=>x.type==='text')?.text || '会话桥调用失败');
+    return result.structuredContent;
+  };
+  const requestSend = () => {
+    if (!current || send.disabled || !leaseActive) return;
+    const request = current, generation = epoch;
+    manualRecovery = false; lastSendAt = Date.now();
+    sending = true;
+    send.disabled = true; send.hidden = true;
+    state.textContent = '请在 Codex 弹窗中确认发送；尚未确认消息送达。';
+    deadline(new Promise(resolve => resolve(app.sendMessage({role:'user',content:[{type:'text',text:request.prompt}]}))), 60000).then(result => {
+      if(result?.isError) throw new Error('宿主未接受消息请求');
+    }).catch(error => {
+      if (generation !== epoch || current !== request) return;
+      manualRecovery = true;
+      state.textContent = '尚无送达回执：' + error.message + '。请先检查是否已有确认弹窗；需要时可手动重新请求。';
+      send.hidden = false; send.disabled = !leaseActive;
+    }).finally(() => { sending = false; });
+  };
+  send.onclick = requestSend;
+  async function checkReceipt() {
+    if (!current || checkingReceipt) return;
+    checkingReceipt = true;
+    const request = current, generation = epoch;
+    try {
+      const record = await call('get_workbench_v2_confirmation',{requestId:request.requestId});
+      if (generation !== epoch || current !== request) return;
+      if (['sent','cancelled'].includes(record.status)) {
+        state.textContent = record.status === 'sent' ? 'Codex 已确认收到本批次。' : '本批次已取消，未继续发送。';
+        current = null; epoch++; manualRecovery = false; send.hidden = true;
+      } else if (!manualRecovery && lastSendAt && Date.now() - lastSendAt > 60000) {
+        manualRecovery = true; send.hidden = false; send.disabled = !leaseActive;
+        state.textContent = '宿主发送请求尚无送达回执。请先检查已有消息和弹窗；不会自动重复发送，可手动重新请求确认。';
+      }
+    } catch(error) {
+      if (generation !== epoch || current !== request) return;
+      state.textContent = '送达回执暂时无法查询，将继续检查；不会重复发送。';
+    } finally { checkingReceipt = false; }
+  }
+  async function poll(heartbeatOnly = false) {
+    if (!binding || polling) return;
+    polling = true;
+    try {
+      // Heartbeats have their own lock; receipt latency must not expire the lease.
+      let result;
+      try {
+        result = await call('poll_workbench_v2_relay',{...binding,bridgeId,claim:!heartbeatOnly && !current});
+        heartbeatFailures = 0; reconnectAttempts = 0;
+      } catch(error) {
+        heartbeatFailures++;
+        if (heartbeatFailures >= 3 && !sending && Date.now() >= reconnectAt && app.close && app.connect) {
+          leaseActive = false; send.disabled = true;
+          setConnection('正在恢复宿主通信');
+          reconnectAt = Date.now() + Math.min(5000 * 2 ** Math.min(reconnectAttempts++, 3), 30000);
+          // Reinitialize only the transport, never repeat an uncertain message send.
+          // SDK timeout cancels the handshake; an outer Promise race would leave it running.
+          await app.close();
+          await app.connect(undefined, {timeout:8000});
+          heartbeatFailures = 0;
+          return;
+        }
+        throw error;
+      }
+      const emptyWorkspace = result.waitingForDocument === true && result.binding?.documentId === null && Boolean(binding.workspaceId);
+      if ((!result.binding?.documentId && !emptyWorkspace) || !result.binding?.workbenchSessionId || (binding.workspaceId && result.binding.workspaceId !== binding.workspaceId)) {
+        send.disabled = true;
+        throw new Error('会话桥后台版本不匹配，尚未确认当前文档连接。请重新加载 Imvia MCP 后台并重新挂载 V2 卡片。');
+      }
+      if (!result.active) { leaseActive = false; setConnection('另一张卡片正在监听此文档'); send.disabled = true; return; }
+      leaseActive = true;
+      expandConnectedBridge();
+      if (emptyWorkspace) {
+        epoch++; binding = result.binding; current = null; manualRecovery = false; send.hidden = true; send.disabled = true;
+        showBinding(); setConnection('新工作台会话桥已连接', true);
+        state.textContent = '请在右侧全新工作台上传图片，尚无拆分任务。';
+        return;
+      }
+      if (result.binding && (result.switched || result.binding.documentId !== binding.documentId || result.binding.workbenchSessionId !== binding.workbenchSessionId)) {
+        epoch++; binding = result.binding; current = null; manualRecovery = false; send.hidden = true; send.disabled = false;
+        state.textContent = '已切换到当前文档。未重发、取消或执行旧任务。';
+        showBinding(); setConnection('当前文档已连接', true); return;
+      }
+      setConnection('当前文档已连接', true);
+      if (heartbeatOnly) return;
+      if (current && manualRecovery) send.disabled = false;
+      if (current) {
+        // Return without await so finally releases the heartbeat lock immediately.
+        return checkReceipt();
+      } else if (result.request) {
+        current = result.request; send.disabled = false; requestSend();
+      } else if (result.recoverableRequest) {
+        current = result.recoverableRequest; manualRecovery = true; send.hidden = false; send.disabled = false;
+        state.textContent = '本批次已请求过发送，但尚无送达回执。不会自动重发；请先检查已有弹窗，再决定是否重新请求确认。';
+      } else if (result.reconnected) state.textContent = '当前文档已重新连接。未重新发送旧任务。';
+    } catch(error) { leaseActive = false; send.disabled = true; setConnection('连接暂时不可用，正在重新检查'); state.textContent = error.message; }
+    finally { polling = false; }
+  }
+  async function bind(result) {
+    const value = result?.structuredContent;
+    if (!value?.workbenchSessionId || started) return;
+    started = true;
+    binding = { workbenchSessionId:value.workbenchSessionId,documentId:value.documentId,workspaceId:value.workspaceId,bindingRevision:value.bindingRevision };
+    showBinding();
+    try {
+      await globalThis.__IMVIA_MCP_APP_READY__;
+    } catch(error) {
+      // The initial SDK handshake can fail before polling exists. Keep the
+      // recovery loop alive; poll owns transport reinitialization and backoff.
+      setConnection('首次连接未成功，正在恢复宿主通信');
+      state.textContent = error.message;
+    }
+    state.textContent = '等待当前文档的连接回执；连接后可从工作台发送批次。';
+    await poll(); setInterval(poll,1200);
+  }
+  if (!app) { state.textContent = '当前宿主没有加载 MCP App 消息接口。'; return; }
+  // A suspended card cannot run timers. On resume only renew the lease; never replay a send.
+  const wake = () => { if (document.visibilityState !== 'hidden') void poll(true); };
+  window.addEventListener('pageshow', wake);
+  window.addEventListener('focus', wake);
+  document.addEventListener?.('visibilitychange', wake);
+  window.addEventListener('imvia:tool-result', event => { void bind(event.detail); });
+  if (globalThis.__IMVIA_MCP_TOOL_RESULT__) void bind(globalThis.__IMVIA_MCP_TOOL_RESULT__);
+  if (window.openai?.toolOutput) void bind({structuredContent:window.openai.toolOutput});
+})();
+</script></body></html>

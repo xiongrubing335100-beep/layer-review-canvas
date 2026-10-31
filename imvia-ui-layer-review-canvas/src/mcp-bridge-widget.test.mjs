@@ -43,15 +43,15 @@ test('the bridge reads the queue through an app-only MCP tool', () => {
   });
 });
 
-test('the bridge writes a visible ui/message even when the host exposes a follow-up helper', async () => {
+test('the bridge prefers the host-bound follow-up helper for the current Codex task', async () => {
   const requests = [];
   const notifications = [];
-  let followUpCalls = 0;
+  const followUpMessages = [];
   const previousWindow = globalThis.window;
   globalThis.window = {
     openai: {
-      async sendFollowUpMessage() {
-        followUpCalls += 1;
+      async sendFollowUpMessage(message) {
+        followUpMessages.push(message);
         return {};
       },
     },
@@ -70,23 +70,55 @@ test('the bridge writes a visible ui/message even when the host exposes a follow
     );
     await sendForegroundMessage({
       prompt: 'split this layer',
+      presentation: {
+        preview: {
+          mimeType: 'image/png',
+          data: 'cHJldmlldw==',
+        },
+      },
     }, connection);
-    assert.equal(connection.mode, 'ui_message');
+    assert.equal(connection.mode, 'follow_up_message');
   } finally {
     globalThis.window = previousWindow;
   }
 
-  assert.deepEqual(requests.map(({ method }) => method), ['ui/initialize', 'ui/message']);
-  assert.equal(requests[1].params.role, 'user');
-  assert.deepEqual(requests[1].params.content, [
-    { type: 'text', text: 'split this layer' },
-  ]);
-  assert.deepEqual(notifications, [{
-    jsonrpc: '2.0',
-    method: 'ui/notifications/initialized',
-    params: {},
+  assert.deepEqual(requests, []);
+  assert.deepEqual(notifications, []);
+  assert.deepEqual(followUpMessages, [{
+    prompt: 'split this layer',
+    title: '确认发送拆分任务到 Codex',
+    scrollToBottom: true,
   }]);
-  assert.equal(followUpCalls, 0);
+});
+
+test('the bridge sends text and preview through ui/message when no host follow-up helper exists', async () => {
+  const requests = [];
+  const notifications = [];
+  const previousWindow = globalThis.window;
+  globalThis.window = { openai: {} };
+  try {
+    const connection = await connectHost(async (request) => {
+      requests.push(request);
+      return {};
+    }, (notification) => notifications.push(notification));
+    await sendForegroundMessage({
+      prompt: '  split this layer  ',
+      presentation: { preview: { mimeType: 'image/png', data: 'cHJldmlldw==' } },
+    }, connection);
+
+    assert.equal(connection.mode, 'ui_message');
+    assert.deepEqual(requests.map(({ method }) => method), ['ui/initialize', 'ui/message']);
+    assert.deepEqual(notifications.map(({ method }) => method), ['ui/notifications/initialized']);
+    assert.deepEqual(requests[1].params, {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'split this layer' },
+        { type: 'image', mimeType: 'image/png', data: 'cHJldmlldw==' },
+      ],
+    });
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
 
 test('the bridge fails closed when the visible conversation message route is unavailable', async () => {
@@ -255,7 +287,7 @@ test('the conversation listener does not retry when the host lacks a current-tas
   assert.equal(statuses.at(-1)[0], '当前任务消息通道不可用');
 });
 
-test('polling automatically sends a foreground job to the current conversation', async () => {
+test('polling waits for an explicit user action before sending a foreground job', async () => {
   assert.equal(typeof bridgeWidget.createForegroundDispatcher, 'function');
   let sends = 0;
   let delivered = 0;
@@ -281,9 +313,14 @@ test('polling automatically sends a foreground job to the current conversation',
   await dispatcher.poll();
   await dispatcher.poll();
 
+  assert.equal(sends, 0);
+  assert.equal(delivered, 0);
+  assert.equal(pending.at(-1).jobId, 'layer-job-1');
+
+  await dispatcher.sendPendingFromUserGesture();
+
   assert.equal(sends, 1);
   assert.equal(delivered, 1);
-  assert.equal(pending.at(-1).jobId, 'layer-job-1');
 });
 
 test('the conversation bridge shows queued work instead of an empty ready state', async () => {
@@ -303,7 +340,7 @@ test('the conversation bridge shows queued work instead of an empty ready state'
 
   assert.deepEqual(statuses.at(-1), [
     '队列中有 2 个任务',
-    '当前任务完成后，会话会按提交顺序自动发送下一项。',
+    '当前任务完成后，此卡片会显示下一项的发送按钮。',
   ]);
 });
 
@@ -318,6 +355,7 @@ test('the listener keeps polling and sends the next queued task after the active
   const sent = [];
   const dispatcher = bridgeWidget.createForegroundDispatcher({
     bridgeId: 'bridge-current',
+    autoSendPending: true,
     readDispatch: async () => dispatches.shift() ?? null,
     sendMessage: async (dispatch) => sent.push(dispatch.jobId),
     markDelivered: async () => {},
@@ -345,6 +383,7 @@ test('the listener refreshes only after the current task actually confirms the d
   ];
   const dispatcher = bridgeWidget.createForegroundDispatcher({
     bridgeId: 'bridge-current',
+    autoSendPending: true,
     readDispatch: async () => dispatches.shift() ?? null,
     sendMessage: async () => ({}),
     markDelivered: async () => {},
@@ -366,7 +405,7 @@ test('the listener refreshes only after the current task actually confirms the d
   assert.equal(dispatcher.getPendingDispatch(), null);
 });
 
-test('the delivered bridge card keeps a manual confirmation action available', async () => {
+test('the bridge card cannot mark delivery confirmed from a second user click', async () => {
   let confirms = 0;
   const states = [];
   const dispatcher = bridgeWidget.createForegroundDispatcher({
@@ -387,20 +426,19 @@ test('the delivered bridge card keeps a manual confirmation action available', a
   });
 
   await dispatcher.poll();
+  await dispatcher.sendPendingFromUserGesture();
   assert.equal(states.includes('awaiting_confirmation'), true);
-  assert.equal(await dispatcher.confirmPendingFromUserGesture(), true);
-  assert.equal(await dispatcher.confirmPendingFromUserGesture(), false);
-  assert.equal(confirms, 1);
-  assert.equal(states.at(-1), 'requested');
+  assert.equal(await dispatcher.handlePendingAction(), false);
+  assert.equal(confirms, 0);
+  assert.equal(states.at(-1), 'awaiting_confirmation');
 });
 
-test('manual confirmation remains available as an opt-out compatibility path', async () => {
+test('explicit user sending is the default delivery path', async () => {
   let sends = 0;
   let delivered = 0;
   const statuses = [];
   const dispatcher = bridgeWidget.createForegroundDispatcher({
     bridgeId: 'bridge-current',
-    autoSendPending: false,
     readDispatch: async () => ({
       jobId: 'layer-job-1',
       prompt: 'split this layer',

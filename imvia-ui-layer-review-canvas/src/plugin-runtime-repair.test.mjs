@@ -6,6 +6,12 @@ import test from 'node:test';
 
 const helperUrl = new URL('../plugin-template/imvia-layer/scripts/runtime-config.mjs', import.meta.url);
 
+test('plugin startup uses the verified runtime resolver instead of reading unverified JSON directly', async () => {
+  const source = await readFile(new URL('../plugin-template/imvia-layer/scripts/start-mcp.mjs', import.meta.url), 'utf8');
+  assert.match(source, /resolveVerifiedRuntimeConfig/);
+  assert.doesNotMatch(source, /JSON\.parse\(await readFile\(runtimeConfigPath/);
+});
+
 async function loadHelper() {
   try {
     return await import(`${helperUrl.href}?test=${Date.now()}-${Math.random()}`);
@@ -25,6 +31,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
   const runtimePath = path.join(pluginRoot, 'imvia-layer-runtime.json');
   const brokenConfig = {
     workbenchRoot: repositoryRoot,
+    marketplacePath: path.join(temporaryRoot, 'custom-marketplace.json'),
     python: { command: path.join(pluginRoot, '.python-runtime', 'bin', 'python'), args: [] },
   };
   const repairedConfig = {
@@ -68,6 +75,10 @@ test('broken installed Python triggers repo installer repair and reloads verifie
   assert.deepEqual(calls[1].args, [path.join(repositoryRoot, 'scripts', 'install-codex-plugin.mjs')]);
   assert.equal(calls[1].options.cwd, repositoryRoot);
   assert.equal(calls[1].options.stdio, 'pipe');
+  assert.equal(calls[1].options.env.IMVIA_LAYER_PLUGIN_DIRECTORY, pluginRoot);
+  assert.equal(calls[1].options.env.IMVIA_LAYER_MARKETPLACE_PATH, brokenConfig.marketplacePath);
+  assert.equal(calls[0].options.env.NUMBA_DISABLE_JIT, '1');
+  assert.equal(calls[2].options.env.NUMBA_DISABLE_JIT, '1');
   assert.equal(forwardedDiagnostics, 'installer status on stdout\ninstaller detail on stderr\n');
 });
 

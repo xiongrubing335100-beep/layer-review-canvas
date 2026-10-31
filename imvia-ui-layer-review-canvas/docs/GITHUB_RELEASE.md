@@ -16,11 +16,11 @@ npm run build
 - `.env`、日志、本地 RMBG 模型缓存；
 - 任何用户路径、访问令牌或 Codex 对话内容。
 
-## 合并、发布与仓库改名
+## 合并与发布
 
 1. 在当前 `layer-review-canvas` 仓库完成发布 PR 的审阅并合并到 `main`。
-2. 合并发布 PR 后，再在 GitHub 将仓库名称切换为 `imvia-layer-review-canvas`，最终地址为 `https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas`。
-3. 仓库改名后更新本地 `origin`，并确认根目录 [README.md](../../README.md) 的克隆地址和应用目录 `imvia-ui-layer-review-canvas` 都指向最终仓库。
+2. 合并发布 PR 后，保留仓库名称 `layer-review-canvas`，公开地址保持为 `https://github.com/xiongrubing335100-beep/layer-review-canvas`。
+3. 将 `main` 设为默认分支，并确认根目录 [README.md](../../README.md) 的克隆地址和 ZIP 安装说明均使用默认分支，应用目录为 `imvia-ui-layer-review-canvas`。
 4. 在仓库 About 中说明：这是需要 Codex Desktop、Node.js 和 Python 的本地 UI 拆图工作台。
 5. 以根目录 [LICENSE](../../LICENSE) 的 Imvia Layer Personal & Commercial License 发布；本项目为 source-available，个人非商业使用免费，商业使用必须事先取得付费书面授权（prior written paid authorization）。不得以发布操作覆盖第三方组件或 BRIA RMBG 2.0 的 third-party license。
 6. 商业授权请通过 [青木](https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b) 联系。
@@ -30,8 +30,8 @@ npm run build
 用户克隆或下载 ZIP 后，进入应用目录运行：
 
 ```sh
-git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
-cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
+git clone https://github.com/xiongrubing335100-beep/layer-review-canvas.git
+cd layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
 

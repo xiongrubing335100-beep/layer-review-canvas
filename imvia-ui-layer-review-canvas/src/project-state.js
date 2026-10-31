@@ -1,9 +1,23 @@
+import { normalizeDocumentMode } from './poster-mode.js';
+
 const PROJECT_VERSION = 1;
+const WORKBENCH_OPEN_TOKEN_KEY = 'imvia-layer-workbench-open-token';
 
 function cleanSize(size) {
   return {
     width: Number.isFinite(size?.width) ? size.width : 0,
     height: Number.isFinite(size?.height) ? size.height : 0,
+  };
+}
+
+function normalizeStoredImageDocument(image) {
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return image;
+  return {
+    ...image,
+    documentMode: normalizeDocumentMode(image.documentMode),
+    posterJobId: typeof image.posterJobId === 'string' ? image.posterJobId : '',
+    posterDispatchId: typeof image.posterDispatchId === 'string' ? image.posterDispatchId : '',
+    posterPlanVersion: Number.isInteger(image.posterPlanVersion) ? image.posterPlanVersion : 0,
   };
 }
 
@@ -25,6 +39,10 @@ export function createImageDocument({
   sourceSize = { width: 0, height: 0 },
   sourceFingerprint = '',
   sourceRevision = 1,
+  documentMode = 'ui',
+  posterJobId = '',
+  posterDispatchId = '',
+  posterPlanVersion = 0,
   nodes = [],
   selectedId = '',
   sourceNodePosition = { x: 110, y: 240 },
@@ -42,6 +60,10 @@ export function createImageDocument({
     sourceSize: cleanSize(sourceSize),
     sourceFingerprint,
     sourceRevision,
+    documentMode: normalizeDocumentMode(documentMode),
+    posterJobId: typeof posterJobId === 'string' ? posterJobId : '',
+    posterDispatchId: typeof posterDispatchId === 'string' ? posterDispatchId : '',
+    posterPlanVersion: Number.isInteger(posterPlanVersion) ? posterPlanVersion : 0,
     nodes,
     selectedId,
     sourceNodePosition,
@@ -97,6 +119,31 @@ export function serializeProject(project) {
   return JSON.parse(JSON.stringify(project || createProjectState()));
 }
 
+function lightweightStoredImageDocument(image) {
+  const document = normalizeStoredImageDocument(image);
+  if (!document || typeof document !== 'object' || Array.isArray(document)) return document;
+  const sourceImage = typeof document.sourceImage === 'string'
+    && !/^(?:data|blob):/i.test(document.sourceImage)
+    ? document.sourceImage
+    : '';
+  return {
+    ...document,
+    sourceImage,
+    sourceDataUrl: '',
+  };
+}
+
+function projectForStorage(project) {
+  const serialized = serializeProject(project);
+  return {
+    ...serialized,
+    images: Object.fromEntries(Object.entries(serialized.images || {}).map(([imageId, image]) => [
+      imageId,
+      lightweightStoredImageDocument(image),
+    ])),
+  };
+}
+
 export function readStoredProjectState(storage = globalThis.localStorage) {
   try {
     const raw = storage?.getItem('imvia-layer-project');
@@ -105,9 +152,16 @@ export function readStoredProjectState(storage = globalThis.localStorage) {
     if (!parsed?.projectId || !parsed?.images || typeof parsed.images !== 'object') {
       return createProjectState();
     }
+    const images = Object.fromEntries(
+      Object.entries(parsed.images).map(([imageId, image]) => [
+        imageId,
+        normalizeStoredImageDocument(image),
+      ]),
+    );
     return {
       ...createProjectState({ projectId: parsed.projectId, activeImageId: parsed.activeImageId || '' }),
       ...parsed,
+      images,
     };
   } catch {
     return createProjectState();
@@ -116,14 +170,35 @@ export function readStoredProjectState(storage = globalThis.localStorage) {
 
 export function writeStoredProjectState(project, storage = globalThis.localStorage) {
   try {
-    storage?.setItem('imvia-layer-project', JSON.stringify(serializeProject(project)));
+    storage?.setItem('imvia-layer-project', JSON.stringify(projectForStorage(project)));
   } catch {
     // Storage quota and private-mode failures should not block editing.
   }
 }
 
-export function clearStoredProjectImages(storage = globalThis.localStorage) {
+export function clearStoredProjectImages(
+  storage = globalThis.localStorage,
+  { preservePosterBindings = true } = {},
+) {
   const project = readStoredProjectState(storage);
+  const recoverablePosterImages = preservePosterBindings
+    ? Object.fromEntries(Object.entries(project.images || {})
+      .filter(([, image]) => normalizeDocumentMode(image?.documentMode) === 'poster'
+        && typeof image?.posterJobId === 'string' && image.posterJobId.length > 0)
+      .map(([imageId, image]) => [imageId, lightweightStoredImageDocument(image)]))
+    : {};
+  const recoverableIds = Object.keys(recoverablePosterImages);
+  if (recoverableIds.length > 0) {
+    const recovered = {
+      ...project,
+      activeImageId: recoverablePosterImages[project.activeImageId]
+        ? project.activeImageId
+        : recoverableIds[0],
+      images: recoverablePosterImages,
+    };
+    writeStoredProjectState(recovered, storage);
+    return recovered;
+  }
   if (!Object.keys(project.images || {}).length && !project.activeImageId) return project;
   const cleared = {
     ...project,
@@ -132,4 +207,24 @@ export function clearStoredProjectImages(storage = globalThis.localStorage) {
   };
   writeStoredProjectState(cleared, storage);
   return cleared;
+}
+
+export function seedStoredProjectForWorkbenchOpen({
+  storage = globalThis.localStorage,
+  sessionStorage = globalThis.sessionStorage,
+  search = globalThis.location?.search || '',
+} = {}) {
+  const openToken = new URLSearchParams(search).get('open') || '';
+  if (!openToken) return clearStoredProjectImages(storage);
+
+  let previousOpenToken = '';
+  try {
+    previousOpenToken = sessionStorage?.getItem(WORKBENCH_OPEN_TOKEN_KEY) || '';
+    sessionStorage?.setItem(WORKBENCH_OPEN_TOKEN_KEY, openToken);
+  } catch {
+    // A fresh launch should still fail safe to the empty workbench state.
+  }
+  return clearStoredProjectImages(storage, {
+    preservePosterBindings: previousOpenToken === openToken,
+  });
 }

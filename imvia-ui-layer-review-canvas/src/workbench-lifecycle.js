@@ -53,6 +53,10 @@ export function isStartedPlanStatus(status) {
   return startedPlanStatuses.has(status);
 }
 
+export function isAbandonablePlanStatus(status) {
+  return startedPlanStatuses.has(status);
+}
+
 export function isTerminalExecutionReport(status) {
   return terminalReportStatuses.has(status);
 }

@@ -1,8 +1,40 @@
+<p align="center">
+  <img src="imvia-ui-layer-review-canvas/public/imvia-logo.png" alt="Imvia Layer Logo" width="128" height="128">
+</p>
+
 # Imvia Layer
 
-Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆图工作台。它将拆分请求作为当前 Codex 对话中的可见消息提交，并把透明 PNG 结果回传到画布；不会为此添加水印、遥测、设备指纹、隐藏许可检查或联网停用机制。
+Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆图与海报分层工作台。它将拆分请求作为当前 Codex 对话中的可见消息提交，并把透明 PNG 结果回传到画布；不会为此添加水印、遥测、设备指纹、隐藏许可检查或联网停用机制。
 
-主要能力包括：多图无限画布、框选与贝塞尔钢笔标注、可见任务队列、透明 PNG 回传与预览，以及基于 BRIA RMBG 2.0 的高分辨率去背景和 PNG 二次编辑。
+当前 V2 提供框选拆分、贝塞尔钢笔选区、画布总览、同文档会话桥、透明 PNG 预览与原位栅格 PSD 导出。它已经是 **Codex Desktop 本地插件**（插件标识 `imvia-layer`），不是独立云端网站，也不代表已上架官方插件商店。
+
+## V2 界面与使用步骤
+
+以下为 2026-10-30 从本地 V2 实际页面拍摄的截图，示例使用已保存的拆分任务；截图不是所有图片均能成功拆分的承诺。
+
+### 1. 打开工作台并上传
+
+![V2 上传入口](docs/screenshots/v2-start.jpg)
+
+安装后，在 Codex 对话中选择 Imvia Layer 插件并发送“打开工作台”。选择“上传海报原图拆分”或“上传 H5 原图拆分”，上传需要处理的图片。
+
+### 2. 添加类别并框选
+
+![V2 原图、选区和图层列表](docs/screenshots/v2-workbench.jpg)
+
+点击图层列表的加号添加拆分项，选择类别，在原图上框选完整主体。需要精细控制时打开编辑器，使用钢笔路径并填写处理要求。替换原图会保留类别与要求，旧图结果不会混入新图导出。
+
+### 3. 提交并查看结果
+
+确认会话桥显示“已连接”，点击单项“拆分”或“全部拆分”。如 Codex 宿主出现发送确认弹窗，确认一次即可；消息到达当前对话后执行，无需再输入“执行”。不要在生成过程中重复提交。
+
+![V2 拆分结果预览](docs/screenshots/v2-result.jpg)
+
+完成后打开结果查看透明背景、细边和镂空，下载 PNG。全部当前拆分项完成后可下载 PSD。PSD 为按原图位置放置的栅格图层，不是可编辑文字或矢量图层。已有结果下载不要求会话桥在线，截图中的“未连接”表示当前没有在线桥。
+
+### 当前发布范围
+
+这是 V2 预览版源码更新。复杂主体可能出现形状变化或原图对齐失败，未通过当前校验的结果不会作为原位 PSD 图层交付；尚不保证所有拆分任务成功。原始生成素材独立返回的统一机制仍待完善。会话桥被宿主关闭后，可能需要在原对话中重新打开；短暂断线与卡片关闭不是同一种情况。
 
 ## 前置条件
 
@@ -18,8 +50,8 @@ Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆�
 在 macOS Terminal 或 Windows PowerShell 中运行：
 
 ```sh
-git clone https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git
-cd imvia-layer-review-canvas/imvia-ui-layer-review-canvas
+git clone https://github.com/xiongrubing335100-beep/layer-review-canvas.git
+cd layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
 
@@ -27,7 +59,7 @@ npm run setup
 
 ### 使用 ZIP（macOS / Windows）
 
-下载并解压仓库 ZIP，进入解压目录中的 `imvia-ui-layer-review-canvas`，然后运行：
+在仓库首页点击 **Code → Download ZIP**，下载并解压默认分支的 ZIP，进入解压目录中的 `imvia-ui-layer-review-canvas`，然后运行：
 
 ```sh
 npm run setup

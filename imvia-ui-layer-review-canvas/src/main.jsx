@@ -47,16 +47,20 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { zipSync } from 'fflate';
-import { elapsedEnd, jobMatchesSource, jobsForPolling } from './job-state.js';
+import { elapsedEnd, jobMatchesSource, jobsForPolling, posterCandidateViewModel } from './job-state.js';
 import {
   createImageDocument,
   createImageId,
   createProjectId,
-  clearStoredProjectImages,
+  seedStoredProjectForWorkbenchOpen,
   writeStoredProjectState,
 } from './project-state.js';
-import { PAGE_HEARTBEAT_INTERVAL_MS } from './workbench-lifecycle.js';
 import {
+  isAbandonablePlanStatus,
+  PAGE_HEARTBEAT_INTERVAL_MS,
+} from './workbench-lifecycle.js';
+import {
+  abandonRunningSplit,
   cancelQueuedSplit,
   getLayerReviewJob,
   markLayerReviewMessageFailed,
@@ -112,8 +116,57 @@ import {
 } from './result-refinement-ui.js';
 import { resolveNodeResultState } from './result-version-state.js';
 import { ResultVersionGallery } from './result-version-gallery.js';
-import { DeveloperAttribution } from './attribution.js';
+import { PosterModePicker } from './PosterModePicker.jsx';
+import { PosterPlanReview } from './PosterPlanReview.jsx';
+import { PosterCandidateReview } from './PosterCandidateReview.jsx';
+import { PosterFastWorkbench } from './PosterFastWorkbench.jsx';
+import { createPosterPlan, updatePosterLayer, validatePosterPlan } from './poster-plan.js';
+import {
+  buildFastLayerSnapshot,
+  createFastPosterPlan,
+  removeFastPosterLayer,
+  suggestPosterFastLayers,
+} from './poster-fast-plan.js';
+import { posterFastCandidateDownloadPath, posterFastCandidatePreviewPath } from './poster-fast-workbench-model.js';
+import {
+  confirmPosterPlan as confirmPosterPlanRequest,
+  cancelPosterJob,
+  abandonPosterJob,
+  getPosterJobWithDispatch,
+  acceptPosterCandidate as acceptPosterCandidateRequest,
+  authorizePosterRetry as authorizePosterRetryRequest,
+  reprocessPosterFastCandidate as reprocessPosterFastCandidateRequest,
+  reauthorizePosterAuditLayer as reauthorizePosterAuditLayerRequest,
+  posterExportUrl,
+  runPosterAudit as runPosterAuditRequest,
+  submitPosterCandidate,
+  submitPosterFastJob,
+  submitPosterTargetedCandidate,
+  submitPosterAnalysis,
+  updatePosterPlan as updatePosterPlanRequest,
+} from './poster-workbench-host.js';
+import { posterAuditUiState } from './poster-recomposition.js';
+import { materializePosterSource, uploadPosterSource } from './poster-source-handoff.js';
+import { validatePosterMerge } from './poster-plan-merge.js';
+import {
+  createPosterPlanningRunGuard,
+  posterFastCandidateAuthorizationId,
+  posterWorkbenchView,
+  runPosterFastPlanningPipeline,
+} from './poster-workbench-state.js';
+import { documentNavigationItems } from './document-navigation.js';
+import { applyPosterJobResult } from './poster-job-binding.js';
+import { finishPosterBusy as removePosterBusy, isPosterBusy, startPosterBusy as addPosterBusy } from './poster-busy-state.js';
+import { mergePosterJobUpdate } from './poster-job-ui-state.js';
+import {
+  executePosterTaskControl,
+  PosterTaskControl,
+  posterTaskControlView,
+} from './poster-task-control.js';
+import { workbenchShellStructure } from './workbench-shell-structure.js';
 import './styles.css';
+
+const posterLayeringModeEnabled = __IMVIA_POSTER_LAYERING_MODE_ENABLED__;
 
 const categoryMeta = {
   kvTitle: {
@@ -555,13 +608,26 @@ function normalizeStoredReviewMark(mark) {
 const FROZEN_THEME = 'dark';
 
 function App() {
-  const [projectSeed] = useState(() => clearStoredProjectImages());
+  const [projectSeed] = useState(() => seedStoredProjectForWorkbenchOpen());
   const [projectId] = useState(() => projectSeed.projectId || createProjectId());
   const [activeImageId, setActiveImageId] = useState(projectSeed.activeImageId || '');
   const [imageDocuments, setImageDocuments] = useState(() => Object.values(projectSeed.images || {}));
   const [sourceImage, setSourceImage] = useState(initialWorkbenchState.sourceImage);
   const [sourceDataUrl, setSourceDataUrl] = useState(initialWorkbenchState.sourceDataUrl);
   const [sourceName, setSourceName] = useState(initialWorkbenchState.sourceName);
+  const [pendingDocumentMode, setPendingDocumentMode] = useState('ui');
+  const [pendingPosterPlanningMode, setPendingPosterPlanningMode] = useState('targeted_fast');
+  const [posterJob, setPosterJob] = useState(null);
+  const [posterJobImageId, setPosterJobImageId] = useState('');
+  const posterJobRef = useRef(null);
+  const posterJobImageIdRef = useRef('');
+  const fastPosterMutationChainRef = useRef(Promise.resolve());
+  const [posterBusyImageIds, setPosterBusyImageIds] = useState(() => new Set());
+  const [selectedPosterFastLayerIndex, setSelectedPosterFastLayerIndex] = useState(null);
+  const [fastPosterPenLayerIndex, setFastPosterPenLayerIndex] = useState(null);
+  const [fastPosterPenTool, setFastPosterPenTool] = useState('foreground');
+  const [fastPosterPenDraft, setFastPosterPenDraft] = useState(null);
+  const [fastPosterPenSelectedMarkId, setFastPosterPenSelectedMarkId] = useState(null);
   const [sourceSize, setSourceSize] = useState(initialWorkbenchState.sourceSize);
   const [nodes, setNodes] = useState(initialWorkbenchState.nodes);
   const [selectedId, setSelectedId] = useState(initialWorkbenchState.selectedId);
@@ -650,6 +716,7 @@ function App() {
   const spacePanRef = useRef(false);
   const runningNodeIdsRef = useRef(new Set());
   const imageDocumentsRef = useRef(new Map(Object.values(projectSeed.images || {}).map((document) => [document.imageId, document])));
+  const activeImageIdRef = useRef(projectSeed.activeImageId || '');
   const projectHydrationRef = useRef(false);
   const canvasLayoutSignatureRef = useRef('');
 
@@ -668,6 +735,10 @@ function App() {
       sourceSize,
       sourceFingerprint: currentSourceFingerprint,
       sourceRevision: currentSourceRevision,
+      documentMode: currentDocument?.documentMode || 'ui',
+      posterJobId: posterJobImageId === activeImageId ? posterJob?.job_id || '' : currentDocument?.posterJobId || '',
+      posterDispatchId: posterJobImageId === activeImageId ? posterJob?.dispatch_id || posterJob?.dispatch?.dispatch_id || '' : currentDocument?.posterDispatchId || '',
+      posterPlanVersion: posterJobImageId === activeImageId ? posterJob?.plan?.plan_version || 0 : currentDocument?.posterPlanVersion || 0,
       nodes,
       selectedId,
       sourceNodePosition,
@@ -684,6 +755,7 @@ function App() {
     reviewPenPathsRef.current.clear();
     setReviewPenSelections(new Map());
     setReviewPenFeedbackTokens(new Map());
+    activeImageIdRef.current = document?.imageId || '';
     setActiveImageId(document?.imageId || '');
     setSourceImage(document?.sourceDataUrl || document?.sourceImage || '');
     setSourceDataUrl(document?.sourceDataUrl || '');
@@ -697,6 +769,10 @@ function App() {
     setManualResultNodes(document?.manualResultNodes || []);
     setManualEdges(document?.manualEdges || []);
     setMarks((document?.marks || []).map(normalizeStoredReviewMark));
+    posterJobRef.current = null;
+    posterJobImageIdRef.current = '';
+    setPosterJob(null);
+    setPosterJobImageId('');
   };
 
   const activateImageDocument = (imageId) => {
@@ -712,11 +788,13 @@ function App() {
     return true;
   };
 
+  const currentDocument = imageDocumentsRef.current.get(activeImageId);
+  const documentMode = currentDocument?.documentMode || 'ui';
   const hasSelectedLayer = nodes.some((node) => node.id === selectedId);
   const hasSource = Boolean(sourceImage && sourceSize.width && sourceSize.height);
   const panelVisibility = resolvePanelVisibility({
     reviewMode,
-    hasSource,
+    hasSource: documentMode === 'ui' && hasSource,
     hasSelectedLayer,
     hasCanvasInspectorSelection: canvasSelectedKeys.length === 1,
     isLeftOpen,
@@ -731,7 +809,6 @@ function App() {
   const candidateSelectionBounds = boundsInsideContext(selected.bounds, visibleCandidateContext);
   const acceptedCount = nodes.filter((node) => node.status === 'accepted').length;
   const repairCount = nodes.filter((node) => node.status === 'needs-repair').length;
-  const currentDocument = imageDocumentsRef.current.get(activeImageId);
   const currentSourceFingerprint = currentDocument?.sourceFingerprint || '';
   const currentSourceRevision = currentDocument?.sourceRevision || 1;
   const currentSource = useMemo(() => ({
@@ -743,6 +820,65 @@ function App() {
     width: sourceSize.width,
     height: sourceSize.height,
   }), [activeImageId, currentSourceFingerprint, currentSourceRevision, projectId, sourceName, sourceSize.height, sourceSize.width]);
+  const visiblePosterJob = posterJobImageId === activeImageId ? posterJob : null;
+  const posterBusy = isPosterBusy(posterBusyImageIds, activeImageId);
+  const isFastPosterPlan = visiblePosterJob?.plan?.planning_mode === 'targeted_fast';
+  const posterFastLayers = isFastPosterPlan ? visiblePosterJob.plan.layers || [] : [];
+  const activePosterFastLayerIndex = posterFastLayers.some((layer) => layer.layer_index === selectedPosterFastLayerIndex)
+    ? selectedPosterFastLayerIndex
+    : posterFastLayers[0]?.layer_index ?? null;
+  const shellStructure = workbenchShellStructure(imageDocuments.length);
+  const activePosterView = posterWorkbenchView({
+    ...visiblePosterJob,
+    status: visiblePosterJob?.dispatch?.status || visiblePosterJob?.status,
+  });
+  const posterCandidateViews = useMemo(() => {
+    if (!visiblePosterJob?.plan || (!isFastPosterPlan && visiblePosterJob.plan.status !== 'PLAN_CONFIRMED')) return [];
+    return (visiblePosterJob.plan.layers || []).map((layer) => posterCandidateViewModel(
+      visiblePosterJob,
+      layer.layer_index,
+    ));
+  }, [isFastPosterPlan, visiblePosterJob]);
+  const activePosterFastCandidate = posterCandidateViews.find((candidate) => (
+    candidate.layerIndex === activePosterFastLayerIndex
+  )) || null;
+  const activePosterFastLayer = posterFastLayers.find((layer) => (
+    layer.layer_index === activePosterFastLayerIndex
+  )) || null;
+  const fastDispatchLayerIndex = visiblePosterJob?.dispatch?.layer_index ?? visiblePosterJob?.dispatch?.layerIndex;
+  const displayPosterFastCandidate = activePosterFastLayer?.confirmed_snapshot || activePosterFastLayer?.status === 'ACCEPTED'
+    ? activePosterFastCandidate || (fastDispatchLayerIndex === activePosterFastLayerIndex ? { status: 'GENERATING' } : null)
+    : null;
+  const posterFastPreviewPath = displayPosterFastCandidate && posterFastCandidatePreviewPath({
+      jobId: visiblePosterJob?.job_id,
+      layerIndex: activePosterFastLayerIndex,
+      candidate: displayPosterFastCandidate,
+    });
+  const posterFastDownloadPath = displayPosterFastCandidate && posterFastCandidateDownloadPath({
+    jobId: visiblePosterJob?.job_id,
+    layerIndex: activePosterFastLayerIndex,
+    candidate: displayPosterFastCandidate,
+  });
+  const displayPosterFastCandidateWithPreview = posterFastPreviewPath ? {
+    ...displayPosterFastCandidate,
+    candidateUrl: resolveWorkbenchUrl(posterFastPreviewPath),
+  } : displayPosterFastCandidate;
+  const posterAuditState = useMemo(
+    () => posterAuditUiState(visiblePosterJob),
+    [visiblePosterJob],
+  );
+  const posterTaskControl = posterTaskControlView(visiblePosterJob);
+
+  useEffect(() => {
+    activeImageIdRef.current = activeImageId;
+  }, [activeImageId]);
+
+  useEffect(() => {
+    if (!isFastPosterPlan || activePosterFastLayerIndex == null) return;
+    if (selectedPosterFastLayerIndex !== activePosterFastLayerIndex) {
+      setSelectedPosterFastLayerIndex(activePosterFastLayerIndex);
+    }
+  }, [activePosterFastLayerIndex, isFastPosterPlan, selectedPosterFastLayerIndex]);
 
   useEffect(() => {
     if (activeImageId) {
@@ -763,6 +899,10 @@ function App() {
       sourceSize,
       sourceFingerprint: currentSourceFingerprint,
       sourceRevision: currentSourceRevision,
+      documentMode,
+      posterJobId: posterJobImageId === activeImageId ? posterJob?.job_id || '' : currentDocument?.posterJobId || '',
+      posterDispatchId: posterJobImageId === activeImageId ? posterJob?.dispatch_id || posterJob?.dispatch?.dispatch_id || '' : currentDocument?.posterDispatchId || '',
+      posterPlanVersion: posterJobImageId === activeImageId ? posterJob?.plan?.plan_version || 0 : currentDocument?.posterPlanVersion || 0,
       nodes,
       selectedId,
       sourceNodePosition,
@@ -778,7 +918,24 @@ function App() {
       activeImageId,
       images: Object.fromEntries(imageDocumentsRef.current.entries()),
     });
-  }, [activeImageId, canvasLayoutVersion, currentSourceFingerprint, currentSourceRevision, manualEdges, manualResultNodes, marks, nodes, projectId, resultNodePositions, selectedId, sourceDataUrl, sourceImage, sourceName, sourceSize]);
+  }, [activeImageId, canvasLayoutVersion, currentDocument?.posterJobId, currentDocument?.posterPlanVersion, currentSourceFingerprint, currentSourceRevision, documentMode, manualEdges, manualResultNodes, marks, nodes, posterJob?.job_id, posterJob?.plan?.plan_version, posterJobImageId, projectId, resultNodePositions, selectedId, sourceDataUrl, sourceImage, sourceName, sourceSize]);
+
+  useEffect(() => {
+    if (documentMode !== 'poster' || !currentDocument?.posterJobId) return undefined;
+    const imageId = currentDocument.imageId;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const job = await getPosterJobWithDispatch(currentDocument.posterJobId, currentDocument.posterDispatchId);
+        if (!cancelled && job) savePosterJob(job, imageId);
+      } catch {
+        if (!cancelled && activeImageIdRef.current === imageId) setToast('无法读取海报任务状态，请稍后重试');
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 3500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [currentDocument?.posterDispatchId, currentDocument?.posterJobId, documentMode]);
   const jobsForCurrentSource = useMemo(
     () => jobs.filter((job) => jobMatchesSource(job, currentSource)),
     [currentSource, jobs],
@@ -799,6 +956,21 @@ function App() {
     [selectedMarks],
   );
   const selectedPenPaths = reviewPenPathsRef.current.get(selectedId) ?? storedSelectedPenPaths;
+  const fastPosterPenKey = activePosterFastLayerIndex == null ? '' : `poster-fast-${activePosterFastLayerIndex}`;
+  const fastPosterMarks = useMemo(
+    () => fastPosterPenKey ? marks.filter((mark) => mark.layer_id === fastPosterPenKey) : [],
+    [fastPosterPenKey, marks],
+  );
+  const storedFastPosterPenPaths = useMemo(
+    () => fastPosterMarks.filter((mark) => mark.shape === 'bezier_path'),
+    [fastPosterMarks],
+  );
+  const fastPosterPenPaths = reviewPenPathsRef.current.get(fastPosterPenKey) ?? storedFastPosterPenPaths;
+  const fastPosterPenSelection = useMemo(
+    () => selectionForPenOverlay(reviewPenSelections, fastPosterPenKey, fastPosterPenSelectedMarkId, fastPosterPenPaths),
+    [fastPosterPenKey, fastPosterPenPaths, fastPosterPenSelectedMarkId, reviewPenSelections],
+  );
+  const fastPosterPenFeedbackToken = reviewPenFeedbackTokens.get(fastPosterPenKey) ?? null;
   const selectedLegacyMarks = useMemo(
     () => selectedMarks.filter((mark) => mark.shape !== 'bezier_path'),
     [selectedMarks],
@@ -1606,6 +1778,7 @@ function App() {
     if (activeImageId) {
       imageDocumentsRef.current.delete(activeImageId);
       setImageDocuments([...imageDocumentsRef.current.values()]);
+      activeImageIdRef.current = '';
       setActiveImageId('');
     }
     if (sourceImage.startsWith('blob:')) URL.revokeObjectURL(sourceImage);
@@ -1639,6 +1812,16 @@ function App() {
     setToast('原始画布已删除');
   };
 
+  const deleteDocumentFromSwitcher = (imageId) => {
+    if (imageId === activeImageId) {
+      deleteOriginalCanvas();
+      return;
+    }
+    if (!window.confirm('删除这张图片及其本地工作台记录？')) return;
+    imageDocumentsRef.current.delete(imageId);
+    setImageDocuments([...imageDocumentsRef.current.values()]);
+  };
+
   const dismissJob = (job) => {
     setJobs((current) => current.filter((item) => item.id !== job.id));
     setLocalSubmissions((current) => Object.fromEntries(
@@ -1669,6 +1852,37 @@ function App() {
       setToast('待接收任务已取消');
     } catch (error) {
       setToast(`取消失败：${error.message}`);
+    } finally {
+      setCancellingJobId(null);
+    }
+  };
+
+  const abandonRunningJob = async (job) => {
+    if (!isAbandonablePlanStatus(job.status) || cancellingJobId) return;
+    const confirmed = window.confirm(
+      '这会放弃工作台中的当前任务并释放后续队列，但不能停止 Codex 已经开始的生成。迟到结果将被忽略。是否继续？',
+    );
+    if (!confirmed) return;
+    setCancellingJobId(job.id);
+    try {
+      await abandonRunningSplit(job.id);
+      const cancelledAt = Date.now();
+      setJobs((current) => current.map((item) => (
+        item.id === job.id
+          ? {
+              ...item,
+              status: 'cancelled',
+              statusDetail: '已放弃当前任务并释放队列；Codex 中的旧任务可能仍会继续',
+              completedAt: cancelledAt,
+              images: [],
+            }
+          : item
+      )));
+      (job.nodeIds || []).forEach((nodeId) => runningNodeIdsRef.current.delete(nodeId));
+      addActivity('已放弃当前拆分任务并释放队列');
+      setToast('队列已释放；如 Codex 仍在生成，请在对话中手动停止');
+    } catch (error) {
+      setToast(`放弃任务失败：${error.message}`);
     } finally {
       setCancellingJobId(null);
     }
@@ -2745,6 +2959,24 @@ function App() {
     setSelectedMarkId(selection?.pathId ?? null);
   };
 
+  const updateFastPosterPenPaths = ({ paths: nextPaths, draft, selection, feedbackToken }) => {
+    if (!fastPosterPenKey) return;
+    reviewPenPathsRef.current.set(fastPosterPenKey, nextPaths);
+    updateReviewPenSelection(fastPosterPenKey, selection);
+    updateReviewPenFeedbackToken(fastPosterPenKey, feedbackToken);
+    const persistedPaths = nextPaths.map((path) => ({
+      ...path,
+      layer_id: fastPosterPenKey,
+      kind: path.kind === 'brush' ? 'boundary' : path.kind,
+    }));
+    setMarks((current) => [
+      ...current.filter((mark) => mark.layer_id !== fastPosterPenKey || mark.shape !== 'bezier_path'),
+      ...persistedPaths,
+    ]);
+    setFastPosterPenDraft(draft);
+    setFastPosterPenSelectedMarkId(selection?.pathId ?? null);
+  };
+
   const undoLastMark = () => {
     if (invokePenOverlayCommand(reviewPenOverlayRef.current, 'undo')) {
       setToast('已撤销上一步标注');
@@ -3051,6 +3283,8 @@ function App() {
     pendingSourceInsertRef.current = null;
     const sourceNodePositionForDocument = pendingInsert?.position || options.position || { x: 110, y: 240 };
     const keepCanvas = pendingInsert?.keepCanvas ?? options.keepCanvas ?? false;
+    const nextDocumentMode = pendingDocumentMode;
+    const nextPosterPlanningMode = options.posterPlanningMode || pendingPosterPlanningMode;
     snapshotActiveImage();
     const nextImageId = createImageId();
     const runId = categoryAnalysisRunRef.current + 1;
@@ -3058,11 +3292,13 @@ function App() {
     const nextDocument = createImageDocument({
       imageId: nextImageId,
       sourceName: file.name,
+      documentMode: nextDocumentMode,
       sourceNodePosition: sourceNodePositionForDocument,
       sourceRevision: 1,
     });
     imageDocumentsRef.current.set(nextImageId, nextDocument);
     setImageDocuments([...imageDocumentsRef.current.values()]);
+    activeImageIdRef.current = nextImageId;
     setActiveImageId(nextImageId);
     setSourceName(file.name);
     setNodes([]);
@@ -3080,7 +3316,7 @@ function App() {
     setReviewMode(keepCanvas ? 'canvas' : defaultReviewMode());
     setIsLeftOpen(false);
     setIsRightOpen(false);
-    setCategoryAnalysisStage('active');
+    setCategoryAnalysisStage(nextDocumentMode === 'poster' && nextPosterPlanningMode === 'targeted_fast' ? 'active' : nextDocumentMode === 'poster' ? 'idle' : 'active');
     try {
       const [dataUrl, previewUrl] = await Promise.all([
         blobToDataUrl(file),
@@ -3093,6 +3329,7 @@ function App() {
         sourceImage: imageSource,
         sourceDataUrl: dataUrl,
         sourceName: file.name,
+        documentMode: nextDocumentMode,
         sourceNodePosition: sourceNodePositionForDocument,
         sourceFingerprint,
         sourceRevision: 1,
@@ -3110,7 +3347,19 @@ function App() {
           sourceSize: nextSize,
         }));
         setImageDocuments([...imageDocumentsRef.current.values()]);
-        runFastCategoryAnalysis(image, runId);
+        if (nextDocumentMode === 'poster' && nextPosterPlanningMode === 'targeted_fast') {
+          startPosterFastPlanning({
+            image,
+            imageId: nextImageId,
+            imageSource,
+            sourceSize: nextSize,
+            runId,
+          });
+        } else if (nextDocumentMode === 'poster') {
+          setCategoryAnalysisStage('idle');
+        } else {
+          runFastCategoryAnalysis(image, runId);
+        }
       };
       image.onerror = () => {
         if (categoryAnalysisRunRef.current !== runId) return;
@@ -3125,7 +3374,9 @@ function App() {
       setToast('图片读取失败，请重新上传');
     }
     addActivity(`已载入 ${file.name}`);
-    setToast('原图已载入，正在本地快速识别');
+    setToast(nextDocumentMode === 'poster'
+      ? nextPosterPlanningMode === 'targeted_fast' ? '海报已载入，正在生成快速定向计划' : '海报已载入，等待高质量分析'
+      : '原图已载入，正在本地快速识别');
   };
 
   const handleFile = (event) => {
@@ -3133,6 +3384,542 @@ function App() {
     if (!file) return;
     loadSourceFile(file);
     event.target.value = '';
+  };
+
+  const savePosterJob = (job, imageId) => {
+    if (!job?.job_id) return;
+    const targetImageId = imageId || activeImageIdRef.current;
+    if (!imageDocumentsRef.current.has(targetImageId)) return;
+    const nextJob = targetImageId === posterJobImageIdRef.current
+      ? mergePosterJobUpdate(posterJobRef.current, job)
+      : job;
+    const update = applyPosterJobResult({
+      documents: [...imageDocumentsRef.current.values()],
+      activeImageId: activeImageIdRef.current,
+      visibleJob: null,
+    }, targetImageId, nextJob);
+    imageDocumentsRef.current = new Map(update.documents.map((document) => [document.imageId, createImageDocument(document)]));
+    setImageDocuments([...imageDocumentsRef.current.values()]);
+    writeStoredProjectState({
+      version: 1,
+      projectId,
+      activeImageId: activeImageIdRef.current,
+      images: Object.fromEntries(imageDocumentsRef.current.entries()),
+    });
+    if (update.visibleUpdated) {
+      posterJobRef.current = update.visibleJob;
+      posterJobImageIdRef.current = targetImageId;
+      setPosterJob(update.visibleJob);
+      setPosterJobImageId(targetImageId);
+    }
+  };
+
+  const setPosterToast = (imageId, message) => {
+    if (activeImageIdRef.current === imageId) setToast(message);
+  };
+
+  const beginPosterBusy = (imageId) => {
+    setPosterBusyImageIds((imageIds) => addPosterBusy(imageIds, imageId));
+  };
+
+  const finishPosterBusy = (imageId) => {
+    setPosterBusyImageIds((imageIds) => removePosterBusy(imageIds, imageId));
+  };
+
+  const startPosterFastPlanning = async ({ image, imageId, imageSource, sourceSize: loadedSize, runId } = {}) => {
+    if (!posterLayeringModeEnabled || !image || !imageSource || !imageId || posterBusy) return;
+    const planningGuard = createPosterPlanningRunGuard(runId, () => categoryAnalysisRunRef.current);
+    if (!planningGuard.isCurrent()) return;
+    const size = {
+      width: Number(loadedSize?.width || image.naturalWidth || image.width),
+      height: Number(loadedSize?.height || image.naturalHeight || image.height),
+    };
+    if (!Number.isInteger(size.width) || !Number.isInteger(size.height) || size.width < 1 || size.height < 1) {
+      setCategoryAnalysisStage('cancelled');
+      setPosterToast(imageId, '海报尺寸读取失败，请重新上传');
+      return;
+    }
+    beginPosterBusy(imageId);
+    try {
+      // Use the same local category analyzer as the H5 workbench on a bounded
+      // sample.  The returned percentage bounds are then projected back to
+      // the complete source canvas before the fast plan is persisted.
+      const sampleScale = Math.min(1, 160 / Math.max(size.width, size.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(2, Math.round(size.width * sampleScale));
+      canvas.height = Math.max(2, Math.round(size.height * sampleScale));
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) throw new Error('当前浏览器无法读取海报像素');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const roughLayers = suggestPosterFastLayers({
+        data: context.getImageData(0, 0, canvas.width, canvas.height),
+        width: canvas.width,
+        height: canvas.height,
+      });
+      const layers = roughLayers.map((layer) => {
+        const percentage = layer.bounds?.percentage || layer.bounds || { x: 0, y: 0, width: 100, height: 100 };
+        const x = Math.round((Number(percentage.x) || 0) * size.width / 100);
+        const y = Math.round((Number(percentage.y) || 0) * size.height / 100);
+        const right = Math.round(((Number(percentage.x) || 0) + (Number(percentage.width) || 0)) * size.width / 100);
+        const bottom = Math.round(((Number(percentage.y) || 0) + (Number(percentage.height) || 0)) * size.height / 100);
+        return {
+          ...layer,
+          bounds: {
+            ...layer.bounds,
+            source_pixels: {
+              x: Math.max(0, Math.min(size.width, x)),
+              y: Math.max(0, Math.min(size.height, y)),
+              width: Math.max(0, Math.min(size.width, right) - Math.max(0, Math.min(size.width, x))),
+              height: Math.max(0, Math.min(size.height, bottom) - Math.max(0, Math.min(size.height, y))),
+            },
+          },
+        };
+      });
+      const jobId = `poster-${imageId || 'image'}-${Date.now()}`.replace(/[^a-zA-Z0-9._-]/g, '-');
+      const pipeline = await runPosterFastPlanningPipeline({
+        runGuard: planningGuard,
+        materializeSource: () => materializePosterSource(imageSource),
+        uploadSource: (source) => uploadPosterSource(source.blob, source.size),
+        createPlan: (storedSource) => createFastPosterPlan({
+          job_id: jobId,
+          project_id: projectId,
+          image_id: imageId,
+          source: {
+            path: storedSource.sourcePath,
+            width: size.width,
+            height: size.height,
+            aspect_ratio: size.width / size.height,
+            target_2x: false,
+          },
+          document_mode: 'poster',
+          status: 'PLAN_REVIEW',
+          output_directory: `output/poster-jobs/${jobId}`,
+          layers,
+        }),
+        submitJob: (plan) => submitPosterFastJob(plan),
+        persist: ({ plan: nextPlan, submitted }) => {
+          const savedPlan = submitted.plan || { ...nextPlan, job_id: submitted.job_id || jobId };
+          savePosterJob({ ...submitted, job_id: submitted.job_id || jobId, plan: savedPlan }, imageId);
+        },
+        onStage: () => setCategoryAnalysisStage('complete'),
+      });
+      if (pipeline.status === 'stale') return;
+      setPosterToast(imageId, '快速定向计划已生成，可直接选择项目并拆分');
+    } catch (error) {
+      if (planningGuard.isCurrent()) {
+        setCategoryAnalysisStage('cancelled');
+        setPosterToast(imageId, error.message || '快速海报计划生成失败，请重试');
+      }
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const startPosterAnalysis = async () => {
+    if (!posterLayeringModeEnabled) {
+      setToast('海报分层功能当前已关闭');
+      return;
+    }
+    if (!hasSource || posterBusy) return;
+    const imageId = activeImageId;
+    const imageSource = sourceImage;
+    beginPosterBusy(imageId);
+    try {
+      const jobId = `poster-${imageId || 'image'}-${Date.now()}`.replace(/[^a-zA-Z0-9._-]/g, '-');
+      const materialized = await materializePosterSource(imageSource);
+      const storedSource = await uploadPosterSource(materialized.blob, materialized.size);
+      const plan = createPosterPlan({
+        job_id: jobId,
+        project_id: projectId,
+        image_id: imageId,
+        source: {
+          path: storedSource.sourcePath,
+          width: storedSource.size.width,
+          height: storedSource.size.height,
+          aspect_ratio: storedSource.size.width / storedSource.size.height,
+          target_2x: false,
+        },
+        document_mode: 'poster',
+        status: 'PLAN_REVIEW',
+        output_directory: `output/poster-jobs/${jobId}`,
+      });
+      const submitted = await submitPosterAnalysis(plan);
+      savePosterJob({ ...submitted, plan: { ...plan, job_id: submitted.job_id, status: 'ANALYZING' } }, imageId);
+      setPosterToast(imageId, '海报层级分析已提交到当前 Codex 会话');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '海报分析提交失败');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const controlActivePosterTask = async () => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.job_id || posterBusy || posterTaskControl.action === 'none') return;
+    beginPosterBusy(imageId);
+    try {
+      const refreshed = await executePosterTaskControl(job, {
+        cancel: cancelPosterJob,
+        abandon: abandonPosterJob,
+        refresh: getPosterJobWithDispatch,
+        confirmAbandon: (warning) => window.confirm(warning),
+      });
+      if (!refreshed) return;
+      savePosterJob(refreshed, imageId);
+      setPosterToast(imageId, posterTaskControl.action === 'cancel'
+        ? '待接收海报任务已取消，队列已释放，可以提交新任务'
+        : '海报任务已放弃，队列已释放；当前 active Codex turn 可能仍会继续');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '海报任务队列控制失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const savePosterPlan = async (nextPlan, imageId = activeImageId, job = visiblePosterJob) => {
+    if (!job?.job_id || posterBusy) return null;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await updatePosterPlanRequest(
+        job.job_id,
+        nextPlan,
+        job.manifest_revision,
+      );
+      savePosterJob(saved, imageId);
+      return saved;
+    } catch (error) {
+      setPosterToast(imageId, error.message || '海报计划保存失败，请刷新后重试');
+      return null;
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const changePosterLayer = (layerIndex, patch) => {
+    if (!visiblePosterJob?.plan) return;
+    savePosterPlan(updatePosterLayer(visiblePosterJob.plan, layerIndex, patch), activeImageId, visiblePosterJob);
+  };
+
+  const changeFastPosterLayer = (layerIndex, patch) => {
+    const imageId = activeImageId;
+    const queued = fastPosterMutationChainRef.current.catch(() => null).then(async () => {
+      const job = posterJobRef.current;
+      if (posterJobImageIdRef.current !== imageId
+        || !job?.plan
+        || job.plan.planning_mode !== 'targeted_fast') return null;
+      const invalidatesSnapshot = ['bounds', 'prompt', 'processing_category', 'layer_name', 'remove_background']
+        .some((key) => Object.hasOwn(patch, key));
+      let nextPlan = updatePosterLayer(job.plan, layerIndex, patch);
+      if (invalidatesSnapshot) {
+        nextPlan = {
+          ...nextPlan,
+          layers: nextPlan.layers.map((layer) => {
+            if (layer.layer_index !== layerIndex) return layer;
+            const {
+              snapshot_id, snapshot_plan_version, snapshot_user_confirmed, confirmed_snapshot,
+              ...unsnapshotted
+            } = layer;
+            void snapshot_id; void snapshot_plan_version; void snapshot_user_confirmed; void confirmed_snapshot;
+            return { ...unsnapshotted, user_confirmed: false, state: 'SUGGESTED' };
+          }),
+        };
+      }
+      beginPosterBusy(imageId);
+      try {
+        const saved = await updatePosterPlanRequest(job.job_id, nextPlan, job.manifest_revision);
+        savePosterJob(saved, imageId);
+        return saved;
+      } catch (error) {
+        setPosterToast(imageId, error.message || '海报计划保存失败，请刷新后重试');
+        return null;
+      } finally {
+        finishPosterBusy(imageId);
+      }
+    });
+    fastPosterMutationChainRef.current = queued;
+  };
+
+  const addFastPosterLayer = async (category) => {
+    const imageId = activeImageId;
+    await fastPosterMutationChainRef.current.catch(() => null);
+    const job = posterJobImageIdRef.current === imageId ? posterJobRef.current : null;
+    if (!job?.plan || job.plan.planning_mode !== 'targeted_fast' || posterBusy) return;
+    const siblings = job.plan.layers.filter((layer) => layer.processing_category === category);
+    const template = siblings[0];
+    if (!template) return;
+    const layerIndex = Math.max(0, ...job.plan.layers.map((layer) => layer.layer_index || 0)) + 1;
+    const {
+      snapshot_id, snapshot_plan_version, snapshot_user_confirmed, confirmed_snapshot,
+      ...newLayerBase
+    } = template;
+    void snapshot_id; void snapshot_plan_version; void snapshot_user_confirmed; void confirmed_snapshot;
+    const nextPlan = {
+      ...job.plan,
+      layers: [...job.plan.layers, {
+        ...newLayerBase,
+        layer_index: layerIndex,
+        z_order: layerIndex,
+        layer_name: `${template.layer_name || '新项目'} ${siblings.length + 1}`,
+        user_confirmed: false,
+        state: 'SUGGESTED',
+      }],
+    };
+    const saved = await savePosterPlan(nextPlan, imageId, job);
+    if (saved) setSelectedPosterFastLayerIndex(layerIndex);
+  };
+
+  const deleteFastPosterLayer = async (layerIndex) => {
+    const imageId = activeImageId;
+    await fastPosterMutationChainRef.current.catch(() => null);
+    const job = posterJobImageIdRef.current === imageId ? posterJobRef.current : null;
+    if (!job?.plan || job.plan.planning_mode !== 'targeted_fast' || posterBusy) return;
+    try {
+      const result = removeFastPosterLayer(job.plan, layerIndex);
+      setSelectedPosterFastLayerIndex(result.selectedLayerIndex);
+      await savePosterPlan(result.plan, imageId, job);
+    } catch (error) {
+      setPosterToast(imageId, error.message || '当前项目无法删除');
+    }
+  };
+
+  const splitFastPosterLayer = async (layerIndex) => {
+    const imageId = activeImageId;
+    await fastPosterMutationChainRef.current.catch(() => null);
+    const job = posterJobImageIdRef.current === imageId ? posterJobRef.current : null;
+    if (!job?.job_id || job.plan?.planning_mode !== 'targeted_fast' || posterBusy) return;
+    beginPosterBusy(imageId);
+    try {
+      const { snapshot, plan } = buildFastLayerSnapshot(job.plan, layerIndex);
+      const saved = await updatePosterPlanRequest(job.job_id, plan, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      const authorizationId = posterFastCandidateAuthorizationId(
+        job.job_id,
+        plan.plan_version,
+        layerIndex,
+        { candidates: saved.manifest?.candidates || job.manifest?.candidates || [] },
+      );
+      const submitted = await submitPosterTargetedCandidate(job.job_id, layerIndex, {
+        snapshot,
+        authorizationId,
+        expectedManifestRevision: saved.manifest_revision,
+        planVersion: plan.plan_version,
+      });
+      savePosterJob({ ...saved, dispatch: { ...submitted, layer_index: submitted.layer_index ?? layerIndex, status: submitted.status || 'queued' } }, imageId);
+      setPosterToast(imageId, '当前项目已提交，候选 PNG 将回传到此项目。');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '当前项目提交失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const acceptFastPosterCandidate = async (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const candidate = posterCandidateViewModel(job, layerIndex);
+    if (!job?.job_id || posterBusy || candidate.status !== 'NEEDS_USER_REVIEW' || !candidate.candidateId) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await acceptPosterCandidateRequest(job.job_id, layerIndex, candidate.candidateId, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, '候选已接受并写入正式图层');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '接受候选失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const retryFastPosterCandidate = async (layerIndex, recoveryKind = 'regenerate') => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const candidate = posterCandidateViewModel(job, layerIndex);
+    if (!job?.job_id || posterBusy || !['NEEDS_USER_REVIEW', 'HARD_REJECTED'].includes(candidate.status)) return;
+    beginPosterBusy(imageId);
+    try {
+      if (recoveryKind === 'postprocess_only') {
+        const saved = await reprocessPosterFastCandidateRequest(job.job_id, layerIndex, job.manifest_revision);
+        savePosterJob(saved, imageId);
+        setPosterToast(imageId, '原始 PNG 已重新完成去背景和全画布归位。');
+        return;
+      }
+      const saved = await authorizePosterRetryRequest(job.job_id, layerIndex, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, '已重新授权；请点击“拆分当前项目”生成一张新候选。');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '重试授权失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const reorderPosterLayer = (layerIndex, direction) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const layers = [...(job?.plan?.layers || [])].sort((left, right) => left.layer_index - right.layer_index);
+    const currentIndex = layers.findIndex((layer) => layer.layer_index === layerIndex);
+    const nextIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= layers.length) return;
+    [layers[currentIndex], layers[nextIndex]] = [layers[nextIndex], layers[currentIndex]];
+    savePosterPlan({
+      ...job.plan,
+      layers: layers.map((layer, index) => ({ ...layer, layer_index: index + 1, z_order: index + 1 })),
+    }, imageId, job);
+  };
+
+  const deletePosterLayer = (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.plan || !window.confirm('删除该海报图层？此操作会使未接受候选失效。')) return;
+    const layers = job.plan.layers.filter((layer) => layer.layer_index !== layerIndex)
+      .map((layer, index) => ({ ...layer, layer_index: index + 1, z_order: index + 1 }));
+    savePosterPlan({ ...job.plan, layers }, imageId, job);
+  };
+
+  const mergePosterLayers = (firstIndex, secondIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.plan) return;
+    const first = job.plan.layers.find((layer) => layer.layer_index === firstIndex);
+    const second = job.plan.layers.find((layer) => layer.layer_index === secondIndex);
+    const mergeValidation = validatePosterMerge(first, second);
+    if (!mergeValidation.valid) {
+      setToast(mergeValidation.message);
+      return;
+    }
+    if (!first || !second || !window.confirm(`合并“${first.layer_name}”与“${second.layer_name}”？`)) return;
+    const merged = {
+      ...first,
+      layer_name: `${first.layer_name} + ${second.layer_name}`,
+      visible_content: [...(first.visible_content || []), ...(second.visible_content || [])],
+      included_content: [...(first.included_content || []), ...(second.included_content || [])],
+      source_evidence: [...(first.source_evidence || []), ...(second.source_evidence || [])],
+      support_components: [...(first.support_components || []), ...(second.support_components || [])],
+      occludes: [...new Set([...(first.occludes || []), ...(second.occludes || [])])],
+      occluded_by: [...new Set([...(first.occluded_by || []), ...(second.occluded_by || [])])],
+      separation_reason: `${first.separation_reason || ''}；合并 ${second.layer_name}`,
+    };
+    const layers = job.plan.layers
+      .filter((layer) => layer.layer_index !== secondIndex)
+      .map((layer) => layer.layer_index === firstIndex ? merged : layer)
+      .sort((left, right) => left.layer_index - right.layer_index)
+      .map((layer, index) => ({ ...layer, layer_index: index + 1, z_order: index + 1 }));
+    savePosterPlan({ ...job.plan, layers }, imageId, job);
+  };
+
+  const confirmPosterPlan = async () => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.plan || !validatePosterPlan(job.plan).valid || posterBusy) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await confirmPosterPlanRequest(job.job_id, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, '海报计划已确认，可以逐层生成候选');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '海报计划确认失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const generatePosterCandidate = async (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const candidate = posterCandidateViewModel(job, layerIndex);
+    if (!job?.job_id || posterBusy || !candidate.canGenerate) return;
+    beginPosterBusy(imageId);
+    try {
+      const submitted = await submitPosterCandidate(job.job_id, layerIndex, {
+        explicitAuthorization: true,
+        expectedManifestRevision: job.manifest_revision,
+        planVersion: job.plan?.plan_version,
+      });
+      savePosterJob({ ...job, dispatch: { ...submitted, status: submitted.status || 'queued' } }, imageId);
+      setPosterToast(imageId, '已明确授权并提交这一层的一张候选生成');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '候选生成提交失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const acceptPosterLayerCandidate = async (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const candidate = posterCandidateViewModel(job, layerIndex);
+    if (!job?.job_id || posterBusy || !candidate.canAccept || !candidate.candidateId) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await acceptPosterCandidateRequest(job.job_id, layerIndex, candidate.candidateId, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, '候选已接受并规范化为正式图层');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '接受候选失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const retryPosterLayerCandidate = async (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    const candidate = posterCandidateViewModel(job, layerIndex);
+    if (!job?.job_id || posterBusy || !candidate.canRetry) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await authorizePosterRetryRequest(job.job_id, layerIndex, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, '已授权重试；请再次点击“生成候选”提交这一层。');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '重试授权失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const runPosterRecompositionAudit = async () => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.job_id || posterBusy || !posterAuditState.canAudit) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await runPosterAuditRequest(job.job_id, job.manifest_revision);
+      savePosterJob(saved, imageId);
+      const nextAudit = posterAuditUiState(saved);
+      setPosterToast(imageId, nextAudit.status === 'passed'
+        ? '重组审计通过，可以下载海报分层包'
+        : '重组审计未通过，请返回冲突图层审核');
+    } catch (error) {
+      setPosterToast(imageId, error.message || '重组审计失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const reauthorizePosterAuditLayer = async (layerIndex) => {
+    const job = visiblePosterJob;
+    const imageId = activeImageId;
+    if (!job?.job_id || posterBusy || !posterAuditState.conflictLayers.includes(layerIndex)) return;
+    beginPosterBusy(imageId);
+    try {
+      const saved = await reauthorizePosterAuditLayerRequest(
+        job.job_id, layerIndex, job.manifest_revision,
+      );
+      savePosterJob(saved, imageId);
+      setPosterToast(imageId, `第 ${layerIndex} 层的旧正式文件已归档；已创建新授权，请手动生成候选。`);
+    } catch (error) {
+      setPosterToast(imageId, error.message || '审计修复授权失败，请刷新后重试');
+    } finally {
+      finishPosterBusy(imageId);
+    }
+  };
+
+  const focusPosterAuditConflict = () => {
+    const layerIndex = posterAuditState.conflictLayers[0];
+    if (!layerIndex) return;
+    document.getElementById(`poster-layer-${layerIndex}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   const handleSourceDragEnter = (event) => {
@@ -3250,6 +4037,20 @@ function App() {
     </>
   );
 
+  const renderFastPosterPenOverlay = (layer) => {
+    if (layer?.layer_index !== fastPosterPenLayerIndex) return null;
+    return <PenPathOverlay
+      paths={fastPosterPenPaths}
+      draft={fastPosterPenDraft}
+      selection={fastPosterPenSelection}
+      feedbackToken={fastPosterPenFeedbackToken}
+      activeKind={fastPosterPenTool}
+      disabled={posterBusy}
+      onChange={updateFastPosterPenPaths}
+      ariaLabel="当前海报项目钢笔边界精修"
+    />;
+  };
+
   const renderRequestPanel = () => {
     if (!hasSource) {
       return (
@@ -3317,12 +4118,22 @@ function App() {
                 <button
                   type="button"
                   className="job-strip__dismiss"
-                  aria-label={cancelableDeliveryStatuses.has(activeSelectedJob.status) ? '取消待接收任务' : '移除当前任务状态'}
-                  data-tooltip={cancelableDeliveryStatuses.has(activeSelectedJob.status) ? '取消待接收任务' : '移除当前任务状态'}
+                  aria-label={cancelableDeliveryStatuses.has(activeSelectedJob.status)
+                    ? '取消待接收任务'
+                    : isAbandonablePlanStatus(activeSelectedJob.status)
+                      ? '放弃任务并释放队列'
+                      : '移除当前任务状态'}
+                  data-tooltip={cancelableDeliveryStatuses.has(activeSelectedJob.status)
+                    ? '取消待接收任务'
+                    : isAbandonablePlanStatus(activeSelectedJob.status)
+                      ? '放弃任务并释放队列'
+                      : '移除当前任务状态'}
                   onClick={() => (
                     cancelableDeliveryStatuses.has(activeSelectedJob.status)
                       ? cancelPendingJob(activeSelectedJob)
-                      : dismissJob(activeSelectedJob)
+                      : isAbandonablePlanStatus(activeSelectedJob.status)
+                        ? abandonRunningJob(activeSelectedJob)
+                        : dismissJob(activeSelectedJob)
                   )}
                   disabled={cancellingJobId === activeSelectedJob.id}
                 >
@@ -3790,7 +4601,25 @@ function App() {
         </div>
       </header>
 
+      {shellStructure.switcher ? (
+        <nav className="document-switcher" aria-label="项目图片">
+          {documentNavigationItems(imageDocuments, activeImageId).map((document) => (
+            <div key={document.imageId} className={`document-switcher__item ${document.active ? 'document-switcher__item--active' : ''}`}>
+              <button
+                type="button"
+                aria-current={document.active ? 'page' : undefined}
+                onClick={() => activateImageDocument(document.imageId)}
+              >
+                <span>{document.label}</span><small>{document.mode === 'poster' ? '海报分层' : 'UI/运营图'}</small>
+              </button>
+              <button type="button" aria-label={`删除 ${document.label}`} onClick={() => deleteDocumentFromSwitcher(document.imageId)}><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </nav>
+      ) : null}
+
       <section
+        data-shell-grid-row={shellStructure.workspace.gridRow}
         className={[
           'workspace',
           `workspace--${reviewMode}`,
@@ -3798,6 +4627,154 @@ function App() {
           !panelVisibility.right ? 'workspace--right-collapsed' : '',
         ].filter(Boolean).join(' ')}
       >
+        {documentMode === 'poster' ? (
+          <section className={`poster-workbench ${isFastPosterPlan && activePosterView.kind === 'fast' ? 'poster-workbench--fast' : ''}`} aria-label="海报分层工作台">
+            {!isFastPosterPlan ? <PosterTaskControl
+              view={posterTaskControl}
+              busy={posterBusy}
+              onControl={controlActivePosterTask}
+            /> : null}
+            {!visiblePosterJob ? (
+              <div className="poster-workbench__empty poster-workbench__empty--fast-loading">
+                <LoaderCircle size={34} className="spin" />
+                <small>海报快速分层</small>
+                <h2>正在准备快速定向工作台</h2>
+                <p>正在生成类别和可编辑框选，完成后直接进入当前项目拆分。</p>
+              </div>
+            ) : isFastPosterPlan && activePosterView.kind === 'fast' ? (
+              <PosterFastWorkbench
+                sourceUrl={sourceDataUrl || sourceImage}
+                sourceName={sourceName}
+                sourceSize={sourceSize}
+                plan={visiblePosterJob.plan}
+                selectedLayerIndex={activePosterFastLayerIndex}
+                candidate={displayPosterFastCandidateWithPreview}
+                busy={posterBusy}
+                clockNow={clockNow}
+                taskControl={posterTaskControl}
+                onTaskControl={controlActivePosterTask}
+                downloadUrl={posterFastDownloadPath ? resolveWorkbenchUrl(posterFastDownloadPath) : null}
+                onDeleteSource={deleteOriginalCanvas}
+                onSelectLayer={(layerIndex) => {
+                  setSelectedPosterFastLayerIndex(layerIndex);
+                  setFastPosterPenLayerIndex(null);
+                  setFastPosterPenTool('foreground');
+                  setFastPosterPenDraft(null);
+                  setFastPosterPenSelectedMarkId(null);
+                }}
+                onAddLayer={addFastPosterLayer}
+                onDeleteLayer={deleteFastPosterLayer}
+                onUpdateLayer={changeFastPosterLayer}
+                onOpenPen={(layerIndex, tool = 'foreground') => {
+                  setSelectedPosterFastLayerIndex(layerIndex);
+                  setFastPosterPenTool(tool || 'foreground');
+                  setFastPosterPenLayerIndex(tool ? layerIndex : null);
+                }}
+                onSplit={splitFastPosterLayer}
+                onAccept={acceptFastPosterCandidate}
+                onRetry={retryFastPosterCandidate}
+                renderPenOverlay={renderFastPosterPenOverlay}
+              />
+            ) : activePosterView.kind === 'review' ? (
+              <PosterPlanReview
+                plan={visiblePosterJob.plan}
+                validation={validatePosterPlan(visiblePosterJob.plan)}
+                busy={posterBusy}
+                onLayerChange={changePosterLayer}
+                onReorder={reorderPosterLayer}
+                onDelete={deletePosterLayer}
+                onMerge={mergePosterLayers}
+                onConfirm={confirmPosterPlan}
+              />
+            ) : activePosterView.kind === 'confirmed' ? (
+              <div className="poster-candidate-workbench">
+                <header className="poster-candidate-workbench__intro">
+                  <CheckCircle2 size={26} />
+                  <div><small>计划已确认</small><h2>逐层生成并审核候选</h2>
+                    <p>每次只提交一层的一张候选。原始绿幕/黑底 PNG 是唯一正式候选；透明视图仅用于比较。</p></div>
+                </header>
+                <section className={`poster-completion poster-completion--${posterAuditState.status}`} aria-label="海报重组审计与导出">
+                  <div>
+                    <small>最终交付</small>
+                    <h3>{posterAuditState.status === 'passed' ? '重组审计已通过' : '重组审计'}</h3>
+                    {posterAuditState.status === 'failed' ? (
+                      <p>冲突图层：{posterAuditState.conflictLayers.length ? posterAuditState.conflictLayers.join('、') : '未定位'}；失败码：{posterAuditState.failureCodes.join('、') || 'AUDIT_FAILED'}。已接受文件保持不变。</p>
+                    ) : posterAuditState.status === 'stale' ? (
+                      <p>计划或清单已变化，之前的审计不能用于导出，请重新运行。</p>
+                    ) : posterAuditState.status === 'passed' ? (
+                      <p>审计已绑定当前计划、清单版本、合成顺序和正式图层摘要。</p>
+                    ) : (
+                      <p>全部计划图层接受后，可按从背景到前景的确定顺序运行审计。</p>
+                    )}
+                  </div>
+                  <div className="poster-completion__actions">
+                    {posterAuditState.status === 'failed' && posterAuditState.conflictLayers.length ? (
+                      <>
+                        <button type="button" className="command-button" onClick={focusPosterAuditConflict}>返回相关图层审核</button>
+                        {posterAuditState.conflictLayers.map((layerIndex) => (
+                          <button
+                            key={`audit-remediation-${layerIndex}`}
+                            type="button"
+                            className="command-button"
+                            onClick={() => reauthorizePosterAuditLayer(layerIndex)}
+                            disabled={posterBusy}
+                          >
+                            归档并重新授权第 {layerIndex} 层
+                          </button>
+                        ))}
+                      </>
+                    ) : null}
+                    <button type="button" className="command-button" onClick={runPosterRecompositionAudit} disabled={posterBusy || !posterAuditState.canAudit}>
+                      {posterBusy ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} 运行重组审计
+                    </button>
+                    {posterAuditState.canExport ? (
+                      <a className="command-button command-button--primary" href={posterExportUrl(visiblePosterJob.job_id)}>
+                        <Download size={15} /> 下载海报分层包
+                      </a>
+                    ) : null}
+                  </div>
+                </section>
+                {posterCandidateViews.map((candidate) => (
+                  <div key={candidate.layerIndex} id={`poster-layer-${candidate.layerIndex}`}>
+                    <PosterCandidateReview
+                      sourceUrl={sourceDataUrl || sourceImage}
+                      candidateUrl={candidate.candidateUrl || (candidate.candidateId
+                        ? resolveWorkbenchUrl(`/api/poster-layer/jobs/${encodeURIComponent(visiblePosterJob.job_id)}/layers/${candidate.layerIndex}/candidate-preview`)
+                        : null)}
+                      layer={candidate.layer}
+                      review={{ ...candidate.review, canGenerate: candidate.canGenerate, canAccept: candidate.canAccept, canRetry: candidate.canRetry, busy: posterBusy }}
+                      onGenerate={() => generatePosterCandidate(candidate.layerIndex)}
+                      onAccept={() => acceptPosterLayerCandidate(candidate.layerIndex)}
+                      onRetry={() => retryPosterLayerCandidate(candidate.layerIndex)}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : activePosterView.kind === 'failed' ? (
+              <div className="poster-workbench__empty poster-workbench__empty--failed">
+                <CircleX size={34} />
+                <h2>海报分析未完成</h2>
+                <p>保留原图不变；请检查任务消息后重新分析。</p>
+                <button type="button" className="command-button" onClick={startPosterAnalysis} disabled={posterBusy}>重新分析</button>
+              </div>
+            ) : activePosterView.kind === 'queued' ? (
+              <div className="poster-workbench__empty" aria-busy="true">
+                <LoaderCircle size={34} className="spin" />
+                <small>海报层级分析</small>
+                <h2>分析任务正在排队</h2>
+                <p>等待当前 Codex 任务结束后，海报分析会发送到同一会话。</p>
+              </div>
+            ) : (
+              <div className="poster-workbench__empty" aria-busy="true">
+                <LoaderCircle size={34} className="spin" />
+                <small>分析海报层级</small>
+                <h2>正在发送到当前 Codex 会话并分析</h2>
+                <p>任务进入队列后会显示处理进度；分析阶段不会调用候选生成。</p>
+              </div>
+            )}
+          </section>
+        ) : (
+          <>
         <aside className={`sidebar sidebar--left ${!panelVisibility.left ? 'sidebar--collapsed' : ''}`}>
           <div className="panel-title-row">
             <span className="eyebrow">拆分栏目</span>
@@ -3887,7 +4864,6 @@ function App() {
               </div>
             </>
           ) : null}
-          <DeveloperAttribution />
         </aside>
 
         {reviewMode === 'guided' ? (
@@ -4038,6 +5014,19 @@ function App() {
                             ? <LoaderCircle size={14} className="spin" />
                             : <X size={14} />}
                           <span>{cancellingJobId === activeSelectedJob.id ? '取消中' : '取消发送'}</span>
+                        </button>
+                      ) : isAbandonablePlanStatus(activeSelectedJob.status) ? (
+                        <button
+                          type="button"
+                          className="guided-result-panel__cancel"
+                          onClick={() => abandonRunningJob(activeSelectedJob)}
+                          disabled={cancellingJobId === activeSelectedJob.id}
+                          title="只释放工作台队列，不能停止 Codex 当前生成"
+                        >
+                          {cancellingJobId === activeSelectedJob.id
+                            ? <LoaderCircle size={14} className="spin" />
+                            : <CircleX size={14} />}
+                          <span>{cancellingJobId === activeSelectedJob.id ? '放弃中' : '放弃任务并释放队列'}</span>
                         </button>
                       ) : null}
                       <div className={`guided-result-panel__status guided-result-panel__status--${jobStatus(activeSelectedJob.status).tone}`}>
@@ -4372,8 +5361,16 @@ function App() {
               ) : (
                 <div className={`guided-empty-state guided-upload-state ${sourceDropActive ? 'guided-upload-state--drop-active' : ''}`}>
                   <ImagePlus size={28} />
-                  <strong>上传一张 UI 图片开始拆分</strong>
+                  <strong>选择图片用途后开始处理</strong>
                   <span>{sourceDropActive ? '松开鼠标即可载入图片' : '选择图片，或将图片拖到这里'}</span>
+                  <PosterModePicker
+                    value={pendingDocumentMode}
+                    onChange={setPendingDocumentMode}
+                    posterPlanningMode={pendingPosterPlanningMode}
+                    onPosterPlanningModeChange={setPendingPosterPlanningMode}
+                    disabled={sourceDropActive}
+                    includePoster={posterLayeringModeEnabled}
+                  />
                   <label className="guided-empty-state__upload" onClick={openSourceFilePicker}>
                     <Upload size={16} /> 选择图片
                   </label>
@@ -5111,6 +6108,8 @@ function App() {
           </div>
           {reviewMode === 'canvas' ? renderCanvasSummary() : renderRequestPanel()}
         </aside>
+          </>
+        )}
       </section>
 
       {resultViewer ? (
@@ -5175,4 +6174,7 @@ function App() {
 const container = document.getElementById('root');
 const root = window.__layerReviewRoot ?? createRoot(container);
 window.__layerReviewRoot = root;
-root.render(<App />);
+const params = new URLSearchParams(window.location.search);
+if (params.get('workbench') === 'v2') {
+  import('./v2/WorkbenchV2.jsx').then(({ WorkbenchV2 }) => root.render(<WorkbenchV2 />));
+} else root.render(<App />);

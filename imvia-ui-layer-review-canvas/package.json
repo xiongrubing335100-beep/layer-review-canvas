@@ -6,10 +6,10 @@
     "name": "青木",
     "url": "https://www.xiaohongshu.com/user/profile/5cdb80ac000000001601466b"
   },
-  "homepage": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas#readme",
+  "homepage": "https://github.com/xiongrubing335100-beep/layer-review-canvas#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git"
+    "url": "https://github.com/xiongrubing335100-beep/layer-review-canvas.git"
   },
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
@@ -32,6 +32,7 @@
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@vitejs/plugin-react": "latest",
+    "ag-psd": "31.0.2",
     "fflate": "^0.8.3",
     "lucide-react": "latest",
     "proper-lockfile": "^4.1.2",

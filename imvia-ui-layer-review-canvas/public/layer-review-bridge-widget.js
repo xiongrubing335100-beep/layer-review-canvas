@@ -1,4 +1,5 @@
 let requestId = 1;
+const workbenchSessionStorageKey = 'imvia-layer-workbench-session-id';
 
 function normalizeDispatch(value) {
   return typeof value === 'string'
@@ -80,6 +81,17 @@ export async function connectHost(
   request = requestHost,
   notify = (message) => window.parent.postMessage(message, '*'),
 ) {
+  const sendFollowUpMessage = globalThis.window?.openai?.sendFollowUpMessage;
+  if (typeof sendFollowUpMessage === 'function') {
+    return {
+      mode: 'follow_up_message',
+      sendMessage: (value) => sendFollowUpMessage({
+        prompt: requireDispatchPrompt(normalizeDispatch(value)),
+        title: '确认发送拆分任务到 Codex',
+        scrollToBottom: true,
+      }),
+    };
+  }
   try {
     await request(buildUiInitializeRequest());
     notify({
@@ -149,6 +161,7 @@ function setPendingPanel(dispatch, state = 'ready') {
   const layer = document.querySelector('[data-bridge-layer]');
   const meta = document.querySelector('[data-bridge-meta]');
   const summary = document.querySelector('[data-bridge-summary]');
+  const send = document.querySelector('[data-bridge-send]');
   if (!action || !job) return;
   action.hidden = !dispatch;
   job.textContent = dispatch?.jobId || '';
@@ -176,6 +189,14 @@ function setPendingPanel(dispatch, state = 'ready') {
     summary.textContent = dispatch?.presentation?.promptSummary || '';
     summary.hidden = !summary.textContent;
   }
+  if (send) {
+    const awaitingConfirmation = state === 'awaiting_confirmation' || state === 'requested';
+    const busy = state === 'requesting' || state === 'confirming';
+    send.disabled = !dispatch || awaitingConfirmation || busy;
+    send.textContent = awaitingConfirmation
+      ? '等待 Codex 确认'
+      : (busy ? '发送中…' : '发送到 Codex');
+  }
 }
 
 function bindSendAction(handler) {
@@ -189,9 +210,56 @@ export function createConversationBridgeId() {
 }
 
 export function readWorkbenchSessionId() {
-  return globalThis.window?.openai?.toolOutput?.workbenchSessionId
-    || globalThis.window?.openai?.toolOutput?.workbench_session_id
+  const windowRef = globalThis.window;
+  const current = windowRef?.openai?.toolOutput?.workbenchSessionId
+    || windowRef?.openai?.toolOutput?.workbench_session_id
     || null;
+  if (current) {
+    try {
+      windowRef?.sessionStorage?.setItem(workbenchSessionStorageKey, current);
+    } catch {
+      // Storage can be unavailable in a restricted widget sandbox.
+    }
+    return current;
+  }
+  try {
+    return windowRef?.sessionStorage?.getItem(workbenchSessionStorageKey) || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveWorkbenchSessionId({
+  getCurrent = readWorkbenchSessionId,
+  fetchSession = globalThis.fetch,
+} = {}) {
+  const current = getCurrent();
+  if (current) return current;
+  if (typeof fetchSession !== 'function') return null;
+  try {
+    const response = await fetchSession(
+      'http://127.0.0.1:4173/api/layer-review/workbench-session',
+      { cache: 'no-store' },
+    );
+    if (!response?.ok) return null;
+    const payload = await response.json();
+    const recovered = payload?.workbenchSessionId
+      || payload?.workbench_session_id
+      || null;
+    if (recovered) {
+      try {
+        globalThis.window?.sessionStorage?.setItem(
+          workbenchSessionStorageKey,
+          recovered,
+        );
+      } catch {
+        // Recovery still succeeds when storage is unavailable.
+      }
+    }
+    return recovered;
+  } catch {
+    return null;
+  }
 }
 
 export function createForegroundDispatcher({
@@ -202,22 +270,31 @@ export function createForegroundDispatcher({
     { bridgeId, workbenchSessionId },
   ),
   sendMessage = sendForegroundMessage,
-  autoSendPending = true,
+  autoSendPending = false,
   markDelivered = async (dispatch) => callBridgeTool(
     'mark_layer_review_foreground_dispatch_delivered',
     {
       jobId: dispatch.jobId,
+      dispatchId: dispatch.dispatchId,
+      rootKind: dispatch.rootKind,
       bridgeId,
       workbenchSessionId,
       claimToken: dispatch.claimToken,
     },
   ),
   confirmDispatch = async (dispatch) => callBridgeTool(
-    'confirm_layer_review_foreground_dispatch',
-    { jobId: dispatch.jobId },
+    dispatch.rootKind === 'poster'
+      ? 'confirm_poster_foreground_dispatch'
+      : 'confirm_layer_review_foreground_dispatch',
+    { jobId: dispatch.jobId, dispatchId: dispatch.dispatchId, rootKind: dispatch.rootKind },
   ),
   readJob = async (dispatch) => {
-    const result = await callBridgeTool('get_layer_review_job', { jobId: dispatch.jobId });
+    const result = await callBridgeTool(
+      dispatch.rootKind === 'poster' ? 'get_poster_layer_job' : 'get_layer_review_job',
+      dispatch.rootKind === 'poster'
+        ? { jobId: dispatch.jobId, dispatchId: dispatch.dispatchId }
+        : { jobId: dispatch.jobId },
+    );
     return result?.job || null;
   },
   onDispatchConfirmed = () => {},
@@ -225,11 +302,19 @@ export function createForegroundDispatcher({
     'release_layer_review_foreground_dispatch_claim',
     {
       jobId: dispatch.jobId,
+      dispatchId: dispatch.dispatchId,
+      rootKind: dispatch.rootKind,
       bridgeId,
       workbenchSessionId,
       claimToken: dispatch.claimToken,
       error: error?.message || String(error),
     },
+  ),
+  cancelDispatch = async (dispatch) => callBridgeTool(
+    dispatch.rootKind === 'poster' ? 'cancel_poster_layer_job' : 'cancel_layer_review_job',
+    dispatch.rootKind === 'poster'
+      ? { jobId: dispatch.jobId, dispatchId: dispatch.dispatchId, rootKind: dispatch.rootKind }
+      : { jobId: dispatch.jobId },
   ),
   setBridgeStatus = setStatus,
   setPendingDispatch = setPendingPanel,
@@ -253,7 +338,7 @@ export function createForegroundDispatcher({
 
   function sameDispatch(left, right) {
     return Boolean(left && right)
-      && left.jobId === right.jobId
+      && left.dispatchId === right.dispatchId
       && left.claimToken === right.claimToken;
   }
 
@@ -286,8 +371,18 @@ export function createForegroundDispatcher({
         if (pendingDispatch) void sendPendingDispatch();
         return false;
       }
-      await sendMessage(dispatch);
-      await markDelivered(dispatch);
+      // Open the native confirmation dialog under the click's user gesture,
+      // then persist the delivery receipt while that dialog is still open.
+      // Waiting for sendMessage first lets the new Codex turn race ahead of
+      // markDelivered and causes its first confirmation tool call to fail.
+      const visibleSend = Promise.resolve(sendMessage(dispatch));
+      const deliveryReceipt = Promise.resolve(markDelivered(dispatch));
+      const [sendResult, deliveryResult] = await Promise.allSettled([
+        visibleSend,
+        deliveryReceipt,
+      ]);
+      if (sendResult.status === 'rejected') throw sendResult.reason;
+      if (deliveryResult.status === 'rejected') throw deliveryResult.reason;
       messageDelivered = true;
       confirmationRequested = true;
       setPendingDispatch(dispatch, 'awaiting_confirmation');
@@ -298,13 +393,17 @@ export function createForegroundDispatcher({
       );
       return true;
     } catch (error) {
-      await releaseClaim(dispatch, error);
+      const released = await releaseClaim(dispatch, error);
+      // Older MCP processes can only rewind a `claimed` dispatch. If the
+      // concurrent receipt already reached `delivered`, cancel the request so
+      // closing the native dialog cannot leave a ghost task blocking the queue.
+      if (released?.ok === false) await cancelDispatch(dispatch);
       pendingDispatch = null;
       confirmationRequested = false;
       messageDelivered = false;
       confirmationComplete = false;
       setPendingDispatch(null);
-      setBridgeStatus('自动发送失败，可重试', error.message, 'error');
+      setBridgeStatus('发送失败，可重试', error.message, 'error');
       return false;
     } finally {
       requestInFlight = false;
@@ -339,9 +438,8 @@ export function createForegroundDispatcher({
   }
 
   async function handlePendingAction() {
-    return messageDelivered
-      ? confirmPendingDispatch()
-      : sendPendingDispatch();
+    if (messageDelivered) return false;
+    return sendPendingDispatch();
   }
 
   return {
@@ -377,7 +475,7 @@ export function createForegroundDispatcher({
         if (!dispatch) {
           if (confirmationRequested && pendingDispatch) {
             const job = await readJob(pendingDispatch);
-            if (!['sent_to_codex', 'processing', 'partial', 'finalizing', 'completed', 'failed', 'needs_confirmation']
+            if (!['sent', 'sent_to_codex', 'processing', 'partial', 'finalizing', 'completed', 'failed', 'needs_confirmation']
               .includes(job?.status)) return;
             const confirmedDispatch = pendingDispatch;
             pendingDispatch = null;
@@ -395,11 +493,11 @@ export function createForegroundDispatcher({
           if (queue.count > 0) {
             setBridgeStatus(
               `队列中有 ${queue.count} 个任务`,
-              '当前任务完成后，会话会按提交顺序自动发送下一项。',
+              '当前任务完成后，此卡片会显示下一项的发送按钮。',
               'sending',
             );
           } else {
-            setBridgeStatus('会话桥接已就绪', '在工作台点击“拆分”，消息会自动发送到最近的当前对话。');
+            setBridgeStatus('会话桥接已就绪', '在工作台提交后，请在此卡片确认发送到 Codex。');
           }
           return;
         }
@@ -408,10 +506,10 @@ export function createForegroundDispatcher({
         messageDelivered = false;
         confirmationComplete = false;
         pendingDispatch = dispatch;
-        setPendingDispatch(dispatch, 'requesting');
+        setPendingDispatch(dispatch, 'ready_to_send');
         setBridgeStatus(
-          '正在发送可见会话消息',
-          '已发现工作台任务，正在把拆分提示词写入当前 Codex 对话。',
+          '有待发送的拆分任务',
+          '点击“发送到 Codex”，由当前任务明确接收。',
           'sending',
         );
         if (autoSendPending) await sendPendingDispatch();
@@ -432,7 +530,7 @@ export async function startConversationBridge({
   bridgeId = activeBridgeId,
   connectedAt = activeBridgeConnectedAt,
   workbenchSessionId = null,
-  getWorkbenchSessionId = readWorkbenchSessionId,
+  getWorkbenchSessionId = resolveWorkbenchSessionId,
   connect = connectHost,
   registerBridge = async (
     currentBridgeId,
@@ -466,7 +564,7 @@ export async function startConversationBridge({
   let stopBridge = null;
   try {
     const connection = await connect();
-    const resolvedWorkbenchSessionId = workbenchSessionId || getWorkbenchSessionId();
+    const resolvedWorkbenchSessionId = workbenchSessionId || await getWorkbenchSessionId();
     if (!resolvedWorkbenchSessionId) {
       throw new Error('工作台会话尚未绑定');
     }
@@ -547,7 +645,7 @@ export async function startConversationBridge({
       });
     }
     const activePollOnce = pollOnce || (() => dispatcher.poll());
-    setBridgeStatus('会话桥接已就绪', '监听会持续在线；工作台点击“拆分”后会自动发送到最近的当前对话。');
+    setBridgeStatus('会话桥接已就绪', '工作台提交后，此卡片会显示明确的发送按钮。');
     await activePollOnce();
     pollTimer = schedulePoll(activePollOnce);
     return true;

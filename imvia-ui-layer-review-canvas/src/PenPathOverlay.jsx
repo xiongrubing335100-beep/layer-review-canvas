@@ -139,8 +139,10 @@ export const PenPathOverlay = forwardRef(function PenPathOverlay({
   onChange,
   ariaLabel,
   feedbackToken = null,
+  initialHistory = [],
+  initialFuture = [],
 }, ref) {
-  const initialState = () => ({ ...createPenEditorState(paths), draft, selection });
+  const initialState = () => ({ ...createPenEditorState(paths), draft, selection, history: initialHistory, future: initialFuture });
   const [editorState, setEditorState] = useState(initialState);
   const stateRef = useRef(editorState);
   const emittedRef = useRef([]);
@@ -217,6 +219,8 @@ export const PenPathOverlay = forwardRef(function PenPathOverlay({
     deleteSelection: () => apply({ type: 'delete-selection' }),
     cancelDraft: () => apply({ type: 'cancel-draft' }),
     clear: () => apply({ type: 'clear' }),
+    selectPath: pathId => apply({ type: 'select-path', pathId }),
+    setPathRequirements: (pathId, value) => apply({ type: 'set-path-requirements', pathId, value }),
     get canUndo() { return stateRef.current.history.length > 0; },
     get canRedo() { return stateRef.current.future.length > 0; },
     get canDeleteSelection() { return Boolean(stateRef.current.selection?.pathId); },

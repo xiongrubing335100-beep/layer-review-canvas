@@ -23,9 +23,10 @@ test('all MCP workbench submissions post directly to the current conversation', 
   assert.match(clientSource, /sendFollowUpMessage/);
   assert.doesNotMatch(bridgeSource, /turn\/start/);
   assert.doesNotMatch(bridgeSource, /sendPlanToCurrentThread/);
+  assert.match(widgetSource, /sendFollowUpMessage/);
+  assert.match(widgetSource, /mode: 'follow_up_message'/);
   assert.match(widgetSource, /method: 'ui\/message'/);
   assert.match(widgetSource, /mode: 'ui_message'/);
-  assert.doesNotMatch(widgetSource, /sendFollowUpMessage/);
 
   assert.match(viteSource, /enqueueForegroundDispatch/);
   assert.match(viteSource, /directConversation/);

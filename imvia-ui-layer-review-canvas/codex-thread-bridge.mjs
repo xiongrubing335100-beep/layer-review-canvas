@@ -306,8 +306,8 @@ export function buildWorkbenchPrompt({
   platform = process.platform,
   environment = process.env,
 }) {
-  const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const pythonInvocation = resolvePythonInvocation(environment, platform);
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const projectRoot = pathApi.resolve(
     pathApi.dirname(jobPath),
     '..',

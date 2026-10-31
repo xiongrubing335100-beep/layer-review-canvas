@@ -126,3 +126,20 @@ test('test setup may skip only model prewarm while retaining locked registration
   assert.equal(warmCount, 0);
   assert.equal(installCount, 1);
 });
+
+test('setup registers the requested plugin and marketplace destinations together', async () => {
+  const pluginRoot = path.join(os.tmpdir(), 'imvia explicit plugin');
+  const marketplacePath = path.join(os.tmpdir(), 'imvia explicit marketplace', 'marketplace.json');
+  let registration;
+  const { setupImviaLayer } = await import('../scripts/setup-imvia-layer.mjs');
+  await setupImviaLayer({
+    pluginRoot, marketplacePath,
+    ensurePythonLockedImpl: async () => ({ command: 'fixture-python', args: [], version: '3.12' }),
+    installLockedImpl: async (options) => { registration = options; },
+    withLockImpl: async ({ task }) => task(),
+    writeOutput: () => {},
+    skipModelPrewarm: true,
+  });
+  assert.equal(registration.pluginRoot, pluginRoot);
+  assert.equal(registration.marketplacePath, marketplacePath);
+});

@@ -111,6 +111,15 @@ UI 组件允许用户继续添加、删除和重命名。不同图片的拆分�
 
 ## 5. 已实现功能
 
+### V2 同页原位分层（开发分支）
+
+- 工作分支：`codex/workbench-v2-in-place-psd`；开发基线：`a873ee1`；Task 10 PSD 快照：`7a23f70`；Task 11 迁移与自动整链提交：`6f7491e`。各阶段均为本地提交，不自动推送或合并。
+- V2 组件与 API 在 `src/v2/`，导出是保持原位坐标、透明背景的栅格 PSD；不承诺原生文字/矢量图层。
+- 空状态“导入旧版项目”须由用户点击后才读取 `imvia-layer-project`，再选择项目和匹配原始文件；不遍历其他 localStorage key 或本机文件。旧百分比框选变成像素框选，旧 `ui` 变成 H5。来源不匹配会中止，不创建迁移文档。
+- V1 项目对象若包含旧结果元数据，仅留在 `history` 的待人工复核记录，不自动注册为 V2 候选或采用；只含旧版“已确认”状态而没有 PNG 的，明确作为无资产状态标记。旧钢笔标注不迁入。拆分候选需要通过 V2 当前 attempt/修订与用户审核后，才可采用并导出。
+- PSD 名称、顺序、放置和 RGBA 像素已由自动回读验证；真实 Photoshop 打开检查仍待完成。浏览器交互/截图验收、真实模型生成和真实 Codex 宿主完整流程分别见 `docs/superpowers/evidence/v2-workflow-acceptance.md`，不可把本地测试通过写成这些人工门槛已通过。
+- 回到 PSD 阶段快照：在没有未保存改动后 `git switch --detach 7a23f70`；继续开发：`git switch codex/workbench-v2-in-place-psd`。不得用 reset 覆盖用户改动。
+
 主要入口：
 
 ```text

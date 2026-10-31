@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import test from 'node:test';
+import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createLayerReviewBridgeServer } from '../layer-review-mcp-server.mjs';
 
 const source = await readFile(new URL('./main.jsx', import.meta.url), 'utf8');
 const styles = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
@@ -10,43 +18,55 @@ const attributionSource = await readFile(new URL('./attribution.js', import.meta
 const penOverlay = await readFile(new URL('./PenPathOverlay.jsx', import.meta.url), 'utf8');
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const bridgeWidget = await readFile(new URL('../public/layer-review-bridge-widget.js', import.meta.url), 'utf8');
-const bridgeServer = await readFile(new URL('../layer-review-mcp-server.mjs', import.meta.url), 'utf8');
 const viteConfig = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8');
 const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 
-let DeveloperAttribution = null;
-try {
-  ({ DeveloperAttribution } = await import('./attribution.js'));
-} catch {
-  // RED state: the renderable attribution component does not exist yet.
-}
+test('the active workbench renders IMVIA Studio · Layer and the open tool returns its V2 page with a relay', async t => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia-brand-contract-'));
+  let vite;
+  let server;
+  let client;
+  t.after(async () => {
+    await client?.close(); await server?.close(); await vite?.close();
+    await rm(temporaryRoot, { recursive: true, force: true });
+  });
+  vite = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)), configFile: false, plugins: [react()],
+    cacheDir: path.join(temporaryRoot, 'vite-cache'),
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
+  });
+  server = createLayerReviewBridgeServer({
+    v2BridgeRoot: path.join(temporaryRoot, 'bridge-requests'), ensureWorkbenchRunningImpl: async () => {},
+  });
+  client = new Client({ name: 'workbench-brand-test', version: '1' });
+  const { WorkbenchV2 } = await vite.ssrLoadModule('/src/v2/WorkbenchV2.jsx');
+  const markup = renderToStaticMarkup(createElement(WorkbenchV2, { api: {} }));
+  assert.match(markup, /<strong>IMVIA Studio · Layer<\/strong>/);
+  assert.match(markup, /class="v2-brand"/);
+  assert.doesNotMatch(markup, /<strong>Layer Review<\/strong>/);
 
-function relativeLuminance(hex) {
-  const channels = hex.match(/[\da-f]{2}/gi).map((channel) => Number.parseInt(channel, 16) / 255);
-  const linear = channels.map((channel) => (
-    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
-  ));
-  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
-}
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const { tools } = await client.listTools();
+  const openTool = tools.find(tool => tool.name === 'open_layer_review_workbench');
+  assert.ok(openTool);
+  assert.equal(openTool._meta.ui.resourceUri, 'ui://imvia-layer/v2-conversation-relay.html');
+  const result = await client.callTool({ name: openTool.name, arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.state, 'ready');
+  const url = new URL(result.structuredContent.workbenchUrl);
+  assert.equal(url.searchParams.get('workbench'), 'v2');
+  assert.equal(url.searchParams.get('workbenchSessionId'), result.structuredContent.workbenchSessionId);
+  assert.match(result.content.map(item => item.text || '').join('\n'), /open_in_codex/);
+});
 
-function contrastRatio(foreground, background) {
-  const [light, dark] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
-  return (light + 0.05) / (dark + 0.05);
-}
-
-function cssCustomColor(name) {
-  const match = styles.match(new RegExp(`(?:^|\\n)\\s*${name}:\\s*(#[\\da-fA-F]{6});`));
-  assert.ok(match, `styles should define ${name} as a hex color token`);
-  return match[1];
-}
-
-test('the user-visible workbench brand is Imvia Layer', () => {
+test('the retained legacy entry keeps its Imvia title and bridge status indicator', () => {
   assert.match(source, /<strong>Imvia Layer<\/strong>/);
   assert.doesNotMatch(source, /<strong>Layer Review<\/strong>/);
   assert.match(html, /<title>Imvia Layer<\/title>/);
   assert.match(bridgeWidget, /data-bridge-status/);
-  assert.match(bridgeServer, /title:\s*'打开 Imvia Layer 右侧工作台'/);
-  assert.match(bridgeServer, /codex_app__open_in_codex/);
 });
 
 test('the browser workbench always opens in guided mode', () => {
@@ -602,25 +622,12 @@ test('primary workbench chrome uses monochrome emphasis while live status stays 
   assert.match(styles, /\.conversation-bridge-indicator--online \.conversation-bridge-indicator__dot\s*\{[\s\S]*background:\s*#62d99b/);
 });
 
-test('the left sidebar ends with a safe, accessible Qingmu attribution link', () => {
-  const Attribution = DeveloperAttribution || (() => null);
-  const markup = renderToStaticMarkup(createElement(Attribution));
+test('the left sidebar has no visible developer attribution block', () => {
   const leftSidebarStart = source.indexOf('<aside className={`sidebar sidebar--left');
   const leftSidebar = source.slice(leftSidebarStart, source.indexOf('</aside>', leftSidebarStart) + '</aside>'.length);
-  const anchor = markup.match(/^<a\s+([^>]+)>/);
-  const attributeNames = [...(anchor?.[1] ?? '').matchAll(/(?:^|\s)([^\s=]+)=/g)].map((match) => match[1]);
 
-  assert.match(leftSidebar, /<DeveloperAttribution\s*\/>\s*<\/aside>/);
-  assert.equal((source.match(/<DeveloperAttribution\b/g) || []).length, 1);
-  assert.match(markup, new RegExp(`^<a class="developer-attribution" href="https://www\\.xiaohongshu\\.com/user/profile/5cdb80ac000000001601466b" target="_blank" rel="noopener noreferrer" aria-label="访问开发者青木的小红书主页">`));
-  assert.deepEqual(attributeNames, ['class', 'href', 'target', 'rel', 'aria-label']);
-  assert.equal(markup.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(), '开发者 · 青木');
-  assert.match(attributionSource, /const ariaLabel = `访问开发者\$\{IMVIA_AUTHOR_NAME\}的小红书主页`;/);
-  assert.doesNotMatch(attributionSource, /\bon[A-Z][A-Za-z]*\s*:/);
-  assert.match(styles, /\.developer-attribution\s*\{[\s\S]*position:\s*sticky;[\s\S]*bottom:\s*0;/);
-  assert.match(styles, /\.developer-attribution:focus-visible/);
-  assert.match(styles, /:root\[data-theme='light'\] \.developer-attribution\s*\{[\s\S]*color:/);
-  assert.match(styles, /@media \(max-width: 860px\)\s*\{[\s\S]*\.developer-attribution\s*\{[\s\S]*position:\s*static;/);
-  assert.ok(contrastRatio(cssCustomColor('--developer-attribution-color'), '#202020') >= 4.5);
-  assert.ok(contrastRatio(cssCustomColor('--developer-attribution-focus-color'), '#202020') >= 4.5);
+  assert.doesNotMatch(leftSidebar, /DeveloperAttribution|developer-attribution|开发者\s*·\s*青木|xiaohongshu/i);
+  assert.doesNotMatch(source, /import\s*\{\s*DeveloperAttribution\s*\}|<DeveloperAttribution\b/);
+  assert.doesNotMatch(styles, /developer-attribution/);
+  assert.doesNotMatch(attributionSource, /createElement|function\s+DeveloperAttribution/);
 });

@@ -68,6 +68,11 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def pixel_data(image):
+    get_flattened_data = getattr(image, "get_flattened_data", None)
+    return get_flattened_data() if get_flattened_data else image.getdata()
+
+
 def atomic_json(path, value):
     temporary = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -363,7 +368,7 @@ def validate_transparent_structure(rgba, label):
     alpha_min, alpha_max = alpha.getextrema()
     if alpha_min != 0 or alpha_max == 0:
         raise ValueError(f"{label} must contain real transparent and visible pixels")
-    visible_pixels = sum(1 for value in alpha.get_flattened_data() if value > 8)
+    visible_pixels = sum(1 for value in pixel_data(alpha) if value > 8)
     if visible_pixels < max(1, rgba.width * rgba.height // 200):
         raise ValueError(f"{label} contains only transparent residue")
 
@@ -372,8 +377,8 @@ def validate_source_rgb_fidelity(candidate, source_crop):
     compared = 0
     preserved = 0
     for candidate_pixel, source_pixel in zip(
-        candidate.get_flattened_data(),
-        source_crop.get_flattened_data(),
+        pixel_data(candidate),
+        pixel_data(source_crop),
     ):
         if candidate_pixel[3] <= 8:
             continue
@@ -387,9 +392,9 @@ def validate_source_rgb_fidelity(candidate, source_crop):
 def validate_source_rgb_fidelity_outside(candidate, source_crop, repair_mask):
     compared = 0
     for candidate_pixel, source_pixel, mask_value in zip(
-        candidate.get_flattened_data(),
-        source_crop.get_flattened_data(),
-        repair_mask.get_flattened_data(),
+        pixel_data(candidate),
+        pixel_data(source_crop),
+        pixel_data(repair_mask),
     ):
         if mask_value > 8 or candidate_pixel[3] <= 8:
             continue
@@ -405,9 +410,9 @@ def validate_repair_materiality(repair_content, source_crop, repair_mask):
     compared = 0
     changed = 0
     for repair_pixel, source_pixel, mask_value in zip(
-        repair_content.get_flattened_data(),
-        source_crop.get_flattened_data(),
-        repair_mask.get_flattened_data(),
+        pixel_data(repair_content),
+        pixel_data(source_crop),
+        pixel_data(repair_mask),
     ):
         if mask_value <= 128:
             continue
@@ -581,7 +586,7 @@ def validate_repair_matte_shape(repair_mask):
     bbox = repair_mask.getbbox()
     if bbox is None:
         raise ValueError("ImageGen repair matte contains no approved hidden-region repair")
-    foreground = sum(repair_mask.crop(bbox).point(lambda value: 1 if value > 128 else 0).get_flattened_data())
+    foreground = sum(pixel_data(repair_mask.crop(bbox).point(lambda value: 1 if value > 128 else 0)))
     bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
     if bbox_area > 0 and foreground / bbox_area >= 0.98:
         raise ValueError("ImageGen repair matte is a solid rectangle instead of repaired subject structure")
@@ -590,12 +595,12 @@ def validate_repair_matte_shape(repair_mask):
 def reconcile_repair_alpha(repair_mask, alpha):
     repair_binary = repair_mask.point(lambda value: 255 if value > 128 else 0)
     alpha_binary = alpha.point(lambda value: 255 if value > 128 else 0)
-    repair_pixels = sum(value > 128 for value in repair_binary.get_flattened_data())
+    repair_pixels = sum(value > 128 for value in pixel_data(repair_binary))
     overlap_pixels = sum(
         repair_value > 128 and alpha_value > 128
         for repair_value, alpha_value in zip(
-            repair_binary.get_flattened_data(),
-            alpha_binary.get_flattened_data(),
+            pixel_data(repair_binary),
+            pixel_data(alpha_binary),
         )
     )
     if repair_pixels == 0 or overlap_pixels / repair_pixels < MIN_REPAIR_ALPHA_OVERLAP:

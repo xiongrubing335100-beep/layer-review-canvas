@@ -210,6 +210,21 @@ async function recoverNodeRuntime({ pluginRoot, runtimeRoot, fileSystem, pathApi
   }
 }
 
+export async function verifyInstalledNodeRuntime({pluginRoot, platform = process.platform,
+  architecture = process.arch, fileSystem = realFileSystem, runCommandImpl = runCommand} = {}) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const root = pathApi.join(pluginRoot, '.node-runtime');
+  const marker = await readMarker(pathApi.join(root, '.imvia-layer-node.json'), fileSystem);
+  if (!marker) throw new Error('Node runtime not installed');
+  if (marker.platform !== platform || marker.architecture !== architecture
+    || marker.licenseSource !== officialLicenseUrl(marker.nodeVersion)) throw new Error('installed Node marker mismatch');
+  const command = runtimeNodePath(root, platform);
+  await verifyNode(command, {cwd:pluginRoot, runCommandImpl, fileSystem,
+    expectedSha256:marker.sourceSha256, expectedNodeVersion:marker.nodeVersion});
+  if (await hashFile(pathApi.join(root, 'LICENSE'), fileSystem) !== marker.licenseSha256) throw new Error('installed Node LICENSE hash mismatch');
+  return {command, ...marker};
+}
+
 export async function ensurePersistentNodeLauncherLocked({
   pluginRoot,
   nodeExecutable = process.execPath,

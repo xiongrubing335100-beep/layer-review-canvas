@@ -1,0 +1,79 @@
+import os from 'node:os';
+import { initializeCanvas, writePsdUint8Array, readPsd } from 'ag-psd';
+import { assertPixelImage, assertPlacedImage } from './pixels.js';
+
+initializeCanvas(() => { throw new Error('CANVAS_DISABLED_USE_RGBA'); },
+  (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }));
+
+// Process-available memory includes reclaimable pages and respects process limits;
+// os.freemem alone fluctuates with the filesystem cache on macOS.
+export function availablePsdMemory() {
+  return typeof process.availableMemory === 'function' ? process.availableMemory() : os.freemem();
+}
+
+export function checkPsdBudget({ width, height, layers, availableMemory = availablePsdMemory() }) {
+  if (![width, height].every(n => Number.isSafeInteger(n) && n > 0 && n <= 30000)) throw new Error('PSD_SIZE_LIMIT');
+  if (width * height > 40000000) throw new Error('PSD_PIXEL_LIMIT');
+  if (layers.length > 100) throw new Error('PSD_LAYER_LIMIT');
+  const regionPixels = layers.reduce((sum, { image }) => {
+    if (![image.width, image.height].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error('INVALID_RGBA_SIZE');
+    return sum + image.width * image.height;
+  }, 0);
+  const estimatedBytes = 24 * width * height + 12 * regionPixels + 64 * 1024 ** 2;
+  const budgetBytes = Math.min(1024 ** 3, availableMemory / 4);
+  if (!Number.isFinite(budgetBytes) || budgetBytes <= 0 || estimatedBytes > budgetBytes) throw new Error(`PSD_MEMORY_LIMIT: estimated=${estimatedBytes}, budget=${budgetBytes}`);
+  return { estimatedBytes, budgetBytes };
+}
+
+export function encodePsd({ width, height, layers, composite, availableMemory = availablePsdMemory() }) {
+  checkPsdBudget({ width, height, layers, availableMemory });
+  assertPixelImage(composite);
+  if (composite.width !== width || composite.height !== height) throw new Error('COMPOSITE_SIZE_MISMATCH');
+  if (!layers.length) throw new Error('PSD_NO_LAYERS');
+  for (const layer of layers) {
+    assertPlacedImage(layer, width, height);
+    if (typeof layer.name !== 'string' || !layer.name.trim()) throw new Error('INVALID_LAYER_NAME');
+    if (layer.blendMode && layer.blendMode !== 'normal') throw new Error('UNSUPPORTED_BLEND_MODE');
+  }
+  return writePsdUint8Array({ width, height, bitsPerChannel: 8, imageData: composite,
+    children: layers.map(layer => ({ name: layer.name, left: layer.placement.x, top: layer.placement.y,
+      blendMode: 'normal', opacity: 1, imageData: layer.image })) },
+  { trimImageData: false, generateThumbnail: false, noBackground: true });
+}
+
+/**
+ * ag-psd's 8-bit merged preview stores partially transparent RGB against white:
+ * the writer truncates to Uint8, then the reader unmattes into Uint8Clamped.
+ * That round-trip is quantized, unlike the lossless layer channels. Compare its
+ * exact expected representation, not a blanket tolerance or a recomposed image.
+ */
+export function assertPsdCompositeReadback(expected, actual) {
+  assertPixelImage(expected);
+  assertPixelImage(actual);
+  if (actual.width !== expected.width || actual.height !== expected.height) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+  const decoded = new Uint8ClampedArray(3);
+  for (let i = 0; i < expected.data.length; i += 4) {
+    const alpha = expected.data[i + 3];
+    if (actual.data[i + 3] !== alpha) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = expected.data[i + channel];
+      if (alpha > 0 && alpha < 255) {
+        const a = alpha / 255;
+        const matted = Math.trunc(value * a + 255 * (1 - a));
+        decoded[channel] = matted * (1 / a) + 255 * (1 - 1 / a);
+      } else decoded[channel] = value;
+      if (actual.data[i + channel] !== decoded[channel]) throw new Error('PSD_COMPOSITE_READBACK_MISMATCH');
+    }
+  }
+}
+
+/** Only read bounded files produced by this service; not an arbitrary PSD importer. */
+export function inspectPsd(bytes, { availableMemory = availablePsdMemory() } = {}) {
+  const structural = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
+  checkPsdBudget({ width: structural.width, height: structural.height,
+    layers: (structural.children ?? []).map(layer => ({ image: { width: layer.right - layer.left, height: layer.bottom - layer.top } })), availableMemory });
+  const psd = readPsd(bytes, { useImageData: true, skipThumbnail: true, totalMemoryLimit: Math.min(1024 ** 3, availableMemory / 4) });
+  return { width: psd.width, height: psd.height, composite: psd.imageData,
+    layers: (psd.children ?? []).map(layer => ({ name: layer.name, image: layer.imageData,
+      placement: { x: layer.left, y: layer.top } })) };
+}

@@ -92,6 +92,26 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .send {
+        grid-column: 1 / -1;
+        width: 100%;
+        padding: 9px 12px;
+        border: 1px solid rgba(97, 219, 164, .55);
+        border-radius: 10px;
+        background: rgba(97, 219, 164, .13);
+        color: #7ce8b7;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .send:hover:not(:disabled) { background: rgba(97, 219, 164, .2); }
+      .send:disabled {
+        border-color: var(--color-border-primary, #3a3a3a);
+        background: transparent;
+        color: var(--color-text-secondary, #a7a7a7);
+        cursor: default;
+      }
       @media (max-width: 520px) {
         .action {
           grid-template-columns: 52px minmax(0, 1fr);
@@ -117,6 +137,7 @@
             <div class="summary" data-bridge-summary hidden></div>
             <div class="job" data-bridge-job></div>
           </div>
+          <button class="send" type="button" data-bridge-send>发送到 Codex</button>
         </div>
       </div>
     </section>

@@ -8,13 +8,14 @@ test('the MCP tool returns a right-panel browser URL and mounts the conversation
     path.resolve(import.meta.dirname, '..', 'layer-review-mcp-server.mjs'),
     'utf8',
   );
+  const v2Source = await readFile(path.resolve(import.meta.dirname, 'v2', 'bridge-tools.mjs'), 'utf8');
 
   assert.match(serverSource, /ui:\/\/imvia-layer\/workbench-v1\.html/);
   assert.match(serverSource, /buildBridgeWidgetHtml/);
   assert.match(serverSource, /buildWorkbenchWidgetHtml/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'dist', 'index\.html'\)/);
   assert.match(serverSource, /widgetResourceDomains = \[workbenchDomain, 'data:', 'blob:'\]/);
-  assert.match(serverSource, /ui:\/\/imvia-layer\/conversation-bridge-v20\.html/);
+  assert.match(serverSource, /ui:\/\/imvia-layer\/conversation-bridge-v\d+\.html/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'public', 'layer-review-bridge-widget\.html'\)/);
   assert.match(serverSource, /path\.join\(rootDirectory, 'public', 'layer-review-bridge-widget\.js'\)/);
   assert.doesNotMatch(serverSource, /frameDomains:/);
@@ -30,15 +31,17 @@ test('the MCP tool returns a right-panel browser URL and mounts the conversation
   assert.match(serverSource, /mark_layer_review_foreground_dispatch_delivered/);
   assert.match(serverSource, /release_layer_review_foreground_dispatch_claim/);
   assert.match(serverSource, /resourceUri: bridgeWidgetUri/);
-  assert.match(serverSource, /openai\/outputTemplate.*bridgeWidgetUri/s);
-  assert.match(serverSource, /workbenchUrl: z\.string/);
-  assert.match(serverSource, /workbenchUrl: `\$\{workbenchOrigin\}\/\?open=/);
-  assert.match(serverSource, /resetWorkbenchForOpen/);
+  assert.match(serverSource, /toolDefinition = \{ \.\.\.v2Opening\.openDefinition/);
+  assert.match(serverSource, /toolHandler = \(\) => v2Opening\.openWorkbench\(\)/);
+  assert.match(v2Source, /resourceUri: relayUri/);
+  assert.match(v2Source, /workbenchUrl: z\.string/);
+  assert.match(v2Source, /mode: z\.enum\(\['new', 'resume'\]\)\.default\('new'\)/);
+  assert.doesNotMatch(serverSource, /resetWorkbenchForOpen/);
   assert.doesNotMatch(serverSource, /mode: z\.literal\('native_canvas'\)/);
   assert.doesNotMatch(serverSource, /rendering: z\.literal\('native_widget'\)/);
-  assert.match(serverSource, /codex_app__open_in_codex/);
+  assert.match(v2Source, /open_in_codex/);
   assert.match(serverSource, /workbenchSessionId/);
-  assert.match(serverSource, /\/api\/layer-review\/workbench-session/);
+  assert.match(v2Source, /store\.bindWorkspace/);
   assert.match(serverSource, /visibility: \['model', 'app'\]/);
   assert.match(serverSource, /visibility: \['app'\]/);
   assert.match(serverSource, /acknowledgeForegroundDispatch/);

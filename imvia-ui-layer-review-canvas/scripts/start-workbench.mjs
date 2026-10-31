@@ -29,11 +29,13 @@ import {
   cancelDirectConversationJob,
   cancelForegroundDispatch,
 } from '../src/foreground-dispatch.js';
+import { resetPosterDispatchesForOpen } from '../src/poster-dispatch-control.js';
 
 const managerVersion = 3;
 const pollIntervalMs = 5_000;
 const rootDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = path.join(rootDirectory, 'output');
+const posterJobsDirectory = path.join(outputDirectory, 'poster-jobs');
 const runtimeDirectory = path.join(outputDirectory, 'workbench-runtime');
 const ownerPath = path.join(runtimeDirectory, 'manager-owner.json');
 const sessionPath = path.join(runtimeDirectory, 'workbench-session.json');
@@ -134,7 +136,10 @@ await writeFile(sessionPath, JSON.stringify({
 }, null, 2));
 
 async function clearInterruptedJobsOnStartup(now) {
-  return resetWorkbenchForOpen(outputDirectory, new Date(now).toISOString());
+  const reopenedAt = new Date(now).toISOString();
+  const ui = await resetWorkbenchForOpen(outputDirectory, reopenedAt);
+  const poster = await resetPosterDispatchesForOpen(posterJobsDirectory, reopenedAt);
+  return { ui, poster };
 }
 
 await clearInterruptedJobsOnStartup(Date.now());

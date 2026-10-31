@@ -1,0 +1,5 @@
+interface:
+  display_name: "海报快速定向分层"
+  short_description: "按已确认快照只生成一个类别的一层候选"
+  default_prompt: "使用 $imvia-poster-layering-workbench-targeted-v1 执行已确认快照的单层快速候选；不得全局分析、重试或接受候选。"
+  auto_retry: false
