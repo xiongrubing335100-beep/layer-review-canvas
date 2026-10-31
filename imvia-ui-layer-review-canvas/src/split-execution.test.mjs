@@ -39,11 +39,13 @@ test('isNodeRunning blocks only local or pending work for the same node', () => 
     { nodeIds: ['bridge-node'], status: 'awaiting_codex_message' },
     { nodeIds: ['host-node'], status: 'host_accepted' },
     { nodeIds: ['legacy-host-node'], status: 'submitted_to_conversation' },
+    { nodeIds: ['repair-node'], status: 'repair_rgb' },
     { nodeIds: ['completed-node'], status: 'completed' },
   ];
 
   assert.equal(isNodeRunning('local-node', { 'local-node': { status: 'sending_to_codex' } }, jobs), true);
   assert.equal(isNodeRunning('pending-node', {}, jobs), true);
+  assert.equal(isNodeRunning('repair-node', {}, jobs), true);
   assert.equal(isNodeRunning('bridge-node', {}, jobs), true);
   assert.equal(isNodeRunning('host-node', {}, jobs), true);
   assert.equal(isNodeRunning('legacy-host-node', {}, jobs), true);
@@ -257,6 +259,31 @@ test('buildRouteMetadata gives text alpha one conditional ImageGen retry', () =>
       original_source_y: 12,
     },
   });
+});
+
+test('buildRouteMetadata reserves one retry after the two required fast transparent repair stages', () => {
+  const metadata = buildRouteMetadata({
+    category: 'kvTitle',
+    executionMode: 'fast',
+    executionRoute: 'codex_rgba_repair',
+    removeBackground: true,
+    sourceRegionPixels: { x: 8, y: 12, width: 588, height: 91 },
+  });
+  assert.equal(metadata.maximum_imagegen_calls, 3);
+  assert.equal(metadata.requires_global_context, true);
+  assert.equal(metadata.imagegen_input_kind, 'codex_rgba_repair_bundle');
+  assert.equal(metadata.structure_validation_required, true);
+});
+
+test('quality transparent repair allows one retry for each of its two stages', () => {
+  const metadata = buildRouteMetadata({
+    category: 'kvTitle',
+    executionMode: 'quality',
+    executionRoute: 'codex_rgba_repair',
+    removeBackground: true,
+    sourceRegionPixels: { x: 8, y: 12, width: 588, height: 91 },
+  });
+  assert.equal(metadata.maximum_imagegen_calls, 4);
 });
 
 test('buildRouteMetadata uses crop-only context and one conditional retry for simple text repair', () => {

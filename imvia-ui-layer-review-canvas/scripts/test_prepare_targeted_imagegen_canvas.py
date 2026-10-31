@@ -95,6 +95,38 @@ class PrepareTargetedImagegenCanvasTests(unittest.TestCase):
         with Image.open(mapping["reference_path"]) as image:
             self.assertEqual(image.size, (1536, 1024))
 
+    def test_codex_rgba_repair_prepares_a_mapped_scope_mask_and_sequential_stage_policy(self):
+        preflight_path = self.job / "preflight.json"
+        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+        preflight["layers"][0].update({
+            "execution_route_hint": "codex_rgba_repair",
+            "expected_output": {"width": 588, "height": 91},
+            "repair_regions": [{"shape": "rect", "x": 50, "y": 10, "width": 100, "height": 20}],
+            "repair_region_source": "submitted_annotation",
+        })
+        preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+
+        mapping_path, mapping = MODULE.prepare_canvas(
+            self.job_id,
+            "title-one",
+            jobs_root=self.root,
+        )
+
+        self.assertTrue(mapping_path.is_file())
+        scope_path = Path(mapping["repair_scope_path"])
+        self.assertTrue(scope_path.is_file())
+        self.assertEqual(mapping["stage_reference_policy"], {
+            "repair_rgb": ["reference_path", "repair_scope_path"],
+            "alpha_matte": ["accepted_repair_rgb_path"],
+        })
+        region = mapping["content_region"]
+        expected_x = region["x"] + round(50 * region["width"] / 588)
+        expected_y = region["y"] + round(10 * region["height"] / 91)
+        with Image.open(scope_path) as scope:
+            self.assertEqual(scope.size, (1536, 1024))
+            self.assertGreater(scope.convert("L").getpixel((expected_x + 5, expected_y + 5)), 239)
+            self.assertLess(scope.convert("L").getpixel((0, 0)), 16)
+
     def test_result_refinement_reference_preserves_transparent_rgba(self):
         preflight_path = self.job / "preflight.json"
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))

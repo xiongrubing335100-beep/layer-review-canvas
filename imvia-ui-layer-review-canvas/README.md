@@ -4,7 +4,7 @@
 
 Imvia Layer 是一个运行在 Codex Desktop 右侧浏览器面板中的 UI 拆图与海报分层工作台。它把每次拆分请求作为可见消息提交到当前 Codex 对话，由 Codex 生成并返回 PNG 结果。
 
-仓库首页提供 macOS 与 Windows 的完整安装、启动、重连、更新、卸载和故障排除说明：[imvia-layer-review-canvas](../README.md)。本目录是应用目录 `imvia-ui-layer-review-canvas`。
+仓库首页提供 macOS 与 Windows 的完整安装、启动、重连、更新、卸载和故障排除说明：[layer-review-canvas](https://github.com/xiongrubing335100-beep/layer-review-canvas)。本目录是应用目录 `imvia-ui-layer-review-canvas`。
 
 ## 当前版本：v0.1.0
 

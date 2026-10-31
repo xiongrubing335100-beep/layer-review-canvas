@@ -128,3 +128,18 @@ test('generated results keep polling during validation until a completed report 
   assert.equal(completed.status, 'completed');
   assert.deepEqual(jobsForPolling([{ ...job, ...completed, completedAt: 1_000 }]), []);
 });
+
+test('the workbench presents transparent repair stages and polls at one second', async () => {
+  const source = await readFile(path.join(rootDirectory, 'src', 'main.jsx'), 'utf8');
+  assert.match(source, /repair_rgb: \{ label: '正在补全隐藏结构'/);
+  assert.match(source, /alpha_matte: \{ label: '正在生成透明蒙版'/);
+  assert.match(source, /finalizing: \{ label: '正在验收'/);
+  assert.match(source, /正在校验补全结果与透明蒙版/);
+  assert.match(source, /const interval = window\.setInterval\(refresh, 1000\);/);
+});
+
+test('transparent repair stages remain active lifecycle states', async () => {
+  const source = await readFile(path.join(rootDirectory, 'src', 'workbench-lifecycle.js'), 'utf8');
+  assert.match(source, /'repair_rgb'/);
+  assert.match(source, /'alpha_matte'/);
+});

@@ -245,6 +245,58 @@ test('a completed result refinement report finishes with its route-specific vali
   }), null);
 });
 
+test('an active transparent-repair report exposes its exact stage', () => {
+  assert.deepEqual(reconcileTurnStatus({
+    planStatus: 'processing',
+    reportStatus: 'repair_matte',
+    turnStatus: 'inProgress',
+    resultReady: false,
+    imageCount: 0,
+  }), {
+    status: 'repair_matte',
+    detail: null,
+  });
+});
+
+test('a completed Codex RGBA repair report finishes with its repair validation', () => {
+  const report = {
+    status: 'completed',
+    execution_route: 'codex_rgba_repair',
+    validation_results: {
+      dimensions: true,
+      alpha: true,
+      repair_scope_conformance: true,
+      repair_bundle_consistency: true,
+      source_pixel_lock: true,
+      structure_integrity: true,
+    },
+  };
+
+  assert.equal(resolveExecutionReportStatus(report, {
+    expectedCount: 1,
+    resultReady: true,
+  }), 'completed');
+  assert.equal(resolveExecutionReportStatus({
+    ...report,
+    validation_results: {
+      ...report.validation_results,
+      structure_integrity: false,
+    },
+  }, {
+    expectedCount: 1,
+    resultReady: true,
+  }), null);
+  const { repair_bundle_consistency, ...incompleteValidation } = report.validation_results;
+  assert.equal(repair_bundle_consistency, true);
+  assert.equal(resolveExecutionReportStatus({
+    ...report,
+    validation_results: incompleteValidation,
+  }, {
+    expectedCount: 1,
+    resultReady: true,
+  }), null);
+});
+
 test('a confirmation request is not shown as processing', () => {
   assert.deepEqual(reconcileTurnStatus({
     planStatus: 'needs_confirmation',
@@ -261,12 +313,13 @@ test('a failed executor report overrides an active turn and existing PNGs', () =
   assert.deepEqual(reconcileTurnStatus({
     planStatus: 'sent_to_codex',
     reportStatus: 'failed',
+    reportError: '补全蒙版超出已提交遮挡区域',
     turnStatus: 'inProgress',
     resultReady: true,
     imageCount: 1,
   }), {
     status: 'failed',
-    detail: null,
+    detail: '补全蒙版超出已提交遮挡区域',
   });
 });
 
@@ -306,6 +359,23 @@ test('a cancelled queued split is terminal and stops polling', () => {
     completedAt: Date.now(),
     snapshotVerified: false,
   }), false);
+});
+
+test('a recent failed job keeps polling so a successful retry can replace stale state', () => {
+  const submittedAt = Date.parse('2026-08-17T07:40:00.000Z');
+  const completedAt = Date.parse('2026-08-17T08:50:00.000Z');
+  const now = Date.parse('2026-08-17T08:55:00.000Z');
+
+  assert.equal(jobState.shouldPollJob({ status: 'failed', submittedAt, completedAt }, now), true);
+});
+
+test('initial reconciliation includes an old failed job without polling it forever', () => {
+  const submittedAt = Date.parse('2026-08-17T08:00:00.000Z');
+  const now = Date.parse('2026-08-17T09:00:00.000Z');
+  const jobs = [{ id: 'job-old-failure', status: 'failed', submittedAt }];
+
+  assert.deepEqual(jobState.jobsForPolling(jobs, { reconcileAll: true, now }), jobs);
+  assert.deepEqual(jobState.jobsForPolling(jobs, { now }), []);
 });
 
 test('elapsed time stops at report completion timing when available', () => {

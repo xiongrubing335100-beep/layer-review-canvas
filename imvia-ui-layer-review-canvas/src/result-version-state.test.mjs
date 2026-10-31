@@ -177,3 +177,13 @@ test('guided result panel shows a failed revision detail while retaining the com
     'the completed image branch must remain before revision failure detail',
   );
 });
+
+test('guided result panel renders the terminal executor error instead of an empty result placeholder', () => {
+  const guidedResultPanel = mainSource.slice(
+    mainSource.indexOf('<section className={`guided-result-panel'),
+    mainSource.indexOf('</section>', mainSource.indexOf('<section className={`guided-result-panel')),
+  );
+
+  assert.match(guidedResultPanel, /guided-result-panel__failure/);
+  assert.match(guidedResultPanel, /activeSelectedJob\.statusDetail \|\| '终态校验未通过，请调整遮挡标注后重试'/);
+});

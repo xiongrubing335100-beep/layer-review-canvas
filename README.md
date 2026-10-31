@@ -50,7 +50,7 @@ Imvia Layer 是运行在 Codex Desktop 右侧浏览器面板中的本地 UI 拆�
 在 macOS Terminal 或 Windows PowerShell 中运行：
 
 ```sh
-git clone --branch codex/v2-preview-publication-20261030 https://github.com/xiongrubing335100-beep/layer-review-canvas.git
+git clone https://github.com/xiongrubing335100-beep/layer-review-canvas.git
 cd layer-review-canvas/imvia-ui-layer-review-canvas
 npm run setup
 ```
@@ -59,7 +59,7 @@ npm run setup
 
 ### 使用 ZIP（macOS / Windows）
 
-在 GitHub 选择 `codex/v2-preview-publication-20261030` 分支，下载并解压该分支的 ZIP，进入解压目录中的 `imvia-ui-layer-review-canvas`，然后运行：
+在仓库首页点击 **Code → Download ZIP**，下载并解压默认分支的 ZIP，进入解压目录中的 `imvia-ui-layer-review-canvas`，然后运行：
 
 ```sh
 npm run setup

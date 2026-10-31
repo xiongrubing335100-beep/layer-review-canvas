@@ -99,15 +99,15 @@ test('package and plugin metadata credit Qingmu', async () => {
   assert.equal(packageLock.packages[''].license, packageJson.license);
   assert.equal(packageLock.packages[''].engines.node, packageJson.engines.node);
   assert.equal(packageJson.repository.type, 'git');
-  assert.equal(packageJson.repository.url, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas.git');
-  assert.equal(packageJson.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas#readme');
+  assert.equal(packageJson.repository.url, 'https://github.com/xiongrubing335100-beep/layer-review-canvas.git');
+  assert.equal(packageJson.homepage, 'https://github.com/xiongrubing335100-beep/layer-review-canvas#readme');
   assert.equal(plugin.author.name, '青木');
   assert.equal(plugin.author.url, authorUrl);
   assert.equal(plugin.interface.developerName, '青木');
   assert.equal(plugin.license, 'SEE LICENSE IN LICENSE');
-  assert.equal(plugin.homepage, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
-  assert.equal(plugin.repository, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
-  assert.equal(plugin.interface.websiteURL, 'https://github.com/xiongrubing335100-beep/imvia-layer-review-canvas');
+  assert.equal(plugin.homepage, 'https://github.com/xiongrubing335100-beep/layer-review-canvas');
+  assert.equal(plugin.repository, 'https://github.com/xiongrubing335100-beep/layer-review-canvas');
+  assert.equal(plugin.interface.websiteURL, 'https://github.com/xiongrubing335100-beep/layer-review-canvas');
 });
 
 const copyrightLine = 'Imvia Layer © 2026 青木';
@@ -306,8 +306,8 @@ test('pixel generation, composition, and direct-download paths contain no author
 });
 
 test('public docs expose the final install path and author license', () => {
-  assert.match(rootReadme, /git clone https:\/\/github\.com\/xiongrubing335100-beep\/imvia-layer-review-canvas\.git/);
-  assert.match(rootReadme, /cd imvia-layer-review-canvas\/imvia-ui-layer-review-canvas/);
+  assert.match(rootReadme, /git clone https:\/\/github\.com\/xiongrubing335100-beep\/layer-review-canvas\.git/);
+  assert.match(rootReadme, /cd layer-review-canvas\/imvia-ui-layer-review-canvas/);
   assert.match(rootReadme, /npm run setup/);
   assert.match(rootReadme, /个人非商业使用免费/);
   assert.match(rootReadme, /商业使用需事先取得付费授权/);
@@ -333,7 +333,7 @@ test('the distributed license and notice preserve the author terms', () => {
 
 test('application documentation preserves the final Imvia distribution terms', () => {
   for (const document of [appReadme, releaseGuide]) {
-    assert.match(document, /https:\/\/github\.com\/xiongrubing335100-beep\/imvia-layer-review-canvas/);
+    assert.match(document, /https:\/\/github\.com\/xiongrubing335100-beep\/layer-review-canvas/);
     assert.match(document, /imvia-ui-layer-review-canvas/);
     assert.doesNotMatch(document, /MIT License|<你的 GitHub 仓库地址>/);
     assert.match(document, new RegExp(`\\[青木\\]\\(${authorUrl.replaceAll('.', '\\.')}\\)`));
@@ -352,8 +352,9 @@ test('public install and release docs state the exact Node range and self-contai
   assert.doesNotMatch(appReadme, /Node\.js 20\+/);
 });
 
-test('the release guide renames the repository only after the release PR merges', () => {
-  assert.match(releaseGuide, /合并发布 PR 后[\s\S]*仓库名称切换为 `imvia-layer-review-canvas`/);
+test('the release guide preserves the canonical repository address after merging', () => {
+  assert.match(releaseGuide, /合并发布 PR 后[\s\S]*保留仓库名称 `layer-review-canvas`/);
+  assert.doesNotMatch(releaseGuide, /仓库名称切换为|仓库改名后/);
   assert.doesNotMatch(releaseGuide, /创建或重命名为空仓库/);
 });
 
