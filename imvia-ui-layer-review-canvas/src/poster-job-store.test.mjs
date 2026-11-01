@@ -13,6 +13,7 @@ import {
   authorizePosterFastPostprocessRetry,
   authorizePosterRetry,
   createPosterExportArchive,
+  fsyncDirectory,
   initializePosterFastJob,
   initializePosterJob,
   mutatePosterJob,
@@ -1453,4 +1454,64 @@ test('targeted-fast postprocess retry reuses retained raw PNG and the same Image
   assert.equal(retried.manifest.authorizations[0].finalized, false);
   assert.equal(retried.manifest.candidates.length, 0);
   assert.equal(retried.manifest.execution.postprocess_retries, 1);
+});
+
+
+test('directory fsync tolerates only Windows unsupported directory flushing', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-sync-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    for (const code of ['EPERM', 'EACCES', 'EIO', 'EINVAL']) {
+      const failure = Object.assign(new Error(`directory sync ${code}`), { code });
+      let openedHandle;
+      const operation = fsyncDirectory(root, {
+        platform,
+        openDirectory: async (...args) => {
+          openedHandle = await open(...args);
+          openedHandle.sync = async () => { throw failure; };
+          return openedHandle;
+        },
+      });
+      if (platform === 'win32' && code === 'EPERM') await operation;
+      else await assert.rejects(operation, (error) => error === failure);
+      await assert.rejects(openedHandle.stat(), { code: 'EBADF' });
+    }
+  }
+});
+
+test('Windows directory sync keeps open, stat and close failures visible', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-errors-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  for (const stage of ['open', 'stat', 'close']) {
+    const failure = Object.assign(new Error(`${stage} denied`), { code: 'EPERM' });
+    await assert.rejects(fsyncDirectory(root, {
+      platform: 'win32',
+      openDirectory: async (...args) => {
+        if (stage === 'open') throw failure;
+        const handle = await open(...args);
+        if (stage === 'stat') handle.stat = async () => { throw failure; };
+        if (stage === 'close') {
+          const close = handle.close.bind(handle);
+          handle.close = async () => { await close(); throw failure; };
+          handle.sync = async () => {};
+        }
+        return handle;
+      },
+    }), (error) => error === failure);
+  }
+});
+
+test('Windows directory sync rejects a regular file before unsupported flushing', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-type-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'ordinary.txt');
+  await writeFile(file, 'content');
+  await assert.rejects(fsyncDirectory(file, {
+    platform: 'win32',
+    openDirectory: async (target) => {
+      const handle = await open(target, fsConstants.O_RDONLY);
+      handle.sync = async () => { throw Object.assign(new Error('unsupported'), { code: 'EPERM' }); };
+      return handle;
+    },
+  }), /持久化目标必须是目录/);
 });

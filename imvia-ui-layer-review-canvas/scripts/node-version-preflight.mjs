@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,8 +28,7 @@ export function assertSupportedNodeVersion(version = process.version) {
   );
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   try {
     assertSupportedNodeVersion();
   } catch (error) {

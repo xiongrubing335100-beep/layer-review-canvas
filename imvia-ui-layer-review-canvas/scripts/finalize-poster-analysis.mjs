@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -168,7 +169,7 @@ function flagValue(flag) {
   return value;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   finalizePosterAnalysis({
     outputRoot: process.argv.includes('--output-root') ? flagValue('--output-root') : path.resolve('output'),
     jobId: flagValue('--job-id'), analysisPlanPath: flagValue('--analysis-plan'),

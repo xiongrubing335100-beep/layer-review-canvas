@@ -1,9 +1,10 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import { constants as fsConstants } from 'node:fs';
 import { copyFile, link, lstat, open, readFile, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertPosterFastAuthorizationBinding, assertPosterTargetedDispatchBinding, mutatePosterJob, readPosterJob, recordPosterGenerationFailure } from '../src/poster-job-store.js';
+import { assertPosterFastAuthorizationBinding, assertPosterTargetedDispatchBinding, fsyncDirectory, mutatePosterJob, readPosterJob, recordPosterGenerationFailure } from '../src/poster-job-store.js';
 import { validatePosterPlan } from '../src/poster-plan.js';
 import { candidateFileName } from '../src/poster-candidate-state.js';
 import { assertPosterSourceDimensions, readPosterPng, readPosterPngDimensions, validateKeyedPosterCandidate, validateKeyedPosterCandidateBytes } from '../src/poster-png.js';
@@ -71,17 +72,6 @@ function activeAuthorization(manifest, layerIndex, planVersion, candidateNumber)
 
 async function sha256(file) {
   return createHash('sha256').update(await readFile(file)).digest('hex');
-}
-
-async function fsyncDirectory(directory) {
-  const handle = await open(directory, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-  try {
-    const details = await handle.stat();
-    if (!details.isDirectory()) throw new Error('candidate directory must be a directory');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 async function readPinnedCandidate(root, target, label) {
@@ -443,7 +433,7 @@ function optionalFlagValue(flag) {
   return value;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   finalizePosterCandidate({
     outputRoot: process.argv.includes('--output-root') ? flagValue('--output-root') : path.resolve('output'),
     jobId: flagValue('--job-id'), layerIndex: Number(flagValue('--layer-index')),

@@ -1,4 +1,5 @@
 // Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
+import { isDirectExecution } from './scripts/direct-execution.mjs';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -883,7 +884,7 @@ const httpServer = createServer(async (request, response) => {
   response.writeHead(404).end('Not Found');
 });
 
-const isEntrypoint = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isEntrypoint = await isDirectExecution(import.meta.url);
 if (isEntrypoint && process.env.IMVIA_LAYER_MCP_TEST_MODE !== '1') {
   if (process.argv.includes('--stdio')) {
     const server = createLayerReviewBridgeServer();

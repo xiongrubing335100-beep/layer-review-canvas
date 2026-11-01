@@ -1049,12 +1049,18 @@ async function writeExclusiveNoFollow(targetPath, bytes) {
   }
 }
 
-async function fsyncDirectory(directoryPath) {
-  const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
+export async function fsyncDirectory(directoryPath, { platform = process.platform, openDirectory = open } = {}) {
+  const handle = await openDirectory(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
   try {
     const details = await handle.stat();
     if (!details.isDirectory()) throw new PosterJobPathError('持久化目标必须是目录');
-    await handle.sync();
+    try {
+      await handle.sync();
+    } catch (error) {
+      // Windows cannot flush a read-only directory handle. File fsync and
+      // directory open/stat/close errors must still fail publication.
+      if (platform !== 'win32' || error.code !== 'EPERM') throw error;
+    }
   } finally {
     await handle.close();
   }

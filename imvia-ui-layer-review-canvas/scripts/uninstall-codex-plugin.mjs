@@ -1,4 +1,5 @@
 // Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
+import { isDirectExecution } from './direct-execution.mjs';
 import * as realFileSystem from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,8 +33,7 @@ export async function uninstallLocalPlugin(options = {}) {
   });
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   uninstallLocalPlugin().then(() => {
     process.stdout.write('Imvia Layer 插件及其托管 Python 和 Node runtime 已卸载。\n');
   }).catch((error) => {
