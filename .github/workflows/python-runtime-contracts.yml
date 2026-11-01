@@ -45,5 +45,7 @@ jobs:
         run: node -e "const fs=require('node:fs'),os=require('node:os'),p=require('node:path');const r=JSON.parse(fs.readFileSync(p.join(os.homedir(),'plugins','imvia-layer','imvia-layer-runtime.json'),'utf8'));fs.appendFileSync(process.env.GITHUB_ENV,'PYTHON='+r.python.command+'\n');"
       - name: Run the complete Node suite
         run: npm test
+      - name: Open the installed V2 workbench through its real MCP launcher
+        run: node scripts/verify-installed-workbench.mjs
       - name: Run complete Python discovery with managed rembg
         run: node scripts/run-managed-python-tests.mjs
