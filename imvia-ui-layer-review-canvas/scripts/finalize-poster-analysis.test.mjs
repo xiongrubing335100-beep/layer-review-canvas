@@ -316,7 +316,7 @@ test('routed analysis finalization completes its dispatch and releases the next 
   assert.equal((await readForegroundDispatch(record.paths.root, { dispatchId, rootKind: 'poster' })).status, 'delivered');
   await acknowledgeForegroundDispatch(record.paths.root, undefined, { dispatchId, rootKind: 'poster', confirmationSource: 'codex_model_tool' });
   assert.equal((await readForegroundDispatch(record.paths.root, { dispatchId, rootKind: 'poster' })).status, 'sent');
-  await mkdir(path.join(record.paths.evidence, 'title.json').replace(/\/title\.json$/, ''), { recursive: true });
+  await mkdir(path.dirname(path.join(record.paths.evidence, 'title.json')), { recursive: true });
   await writeFile(path.join(record.paths.evidence, 'title.json'), '{}');
   const submitted = { ...plan(), output_directory: record.paths.root };
   const submittedPath = path.join(record.paths.evidence, 'poster-layer-plan.candidate.json');

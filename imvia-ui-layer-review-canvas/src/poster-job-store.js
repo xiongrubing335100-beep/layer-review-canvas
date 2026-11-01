@@ -1089,10 +1089,12 @@ async function acceptedReplay(record, layerIndex, candidateId) {
   return record;
 }
 
-async function syncPinnedCanonicalFile(targetPath, expectedDigest, lifecycle) {
+export async function syncPinnedCanonicalFile(targetPath, expectedDigest, lifecycle, { platform = process.platform, openFile = open } = {}) {
   let handle;
   try {
-    handle = await open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    // Windows FlushFileBuffers needs write access; no bytes are written here.
+    const access = platform === 'win32' ? fsConstants.O_RDWR : fsConstants.O_RDONLY;
+    handle = await openFile(targetPath, access | fsConstants.O_NOFOLLOW);
     const opened = await handle.stat();
     if (!opened.isFile()) throw new PosterJobPathError('正式图层必须是安全的普通文件');
     const current = await lstat(targetPath);

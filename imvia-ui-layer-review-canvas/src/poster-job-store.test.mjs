@@ -14,6 +14,7 @@ import {
   authorizePosterRetry,
   createPosterExportArchive,
   fsyncDirectory,
+  syncPinnedCanonicalFile,
   initializePosterFastJob,
   initializePosterJob,
   mutatePosterJob,
@@ -694,16 +695,14 @@ test('acceptance durability ordering syncs canonical inode and layers before man
       afterCanonicalFileSynced: () => events.push('canonical-file:after'),
       syncLayersDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterCanonicalDirectorySynced: () => events.push('canonical-directory:after'),
       afterManifestTemporarySynced: () => events.push('manifest-temp:after'),
       afterManifestRenamed: () => events.push('manifest-rename:after'),
       syncManifestDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterManifestParentSynced: () => events.push('manifest-parent:after'),
     },
@@ -1056,8 +1055,7 @@ test('audit remediation syncs history metadata and rename destination before the
     hooks: {
       syncDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterHistoryMetadataFileSynced: () => events.push('metadata-file-synced'),
       afterHistoryParentSynced: () => events.push('metadata-parent-synced'),
@@ -1514,4 +1512,41 @@ test('Windows directory sync rejects a regular file before unsupported flushing'
       return handle;
     },
   }), /持久化目标必须是目录/);
+});
+
+
+test('Windows pinned file flush uses a writable verified handle and preserves bytes', async (context) => {
+  const { syncPinnedCandidate } = await import('../scripts/finalize-poster-candidate.mjs');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-file-flush-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'candidate.png');
+  const bytes = Buffer.from('immutable candidate bytes');
+  await writeFile(target, bytes);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  for (const kind of ['canonical', 'candidate']) {
+    for (const failSync of [false, true]) {
+      const failure = Object.assign(new Error('file flush denied'), { code: 'EPERM' });
+      let opened;
+      const options = {
+        platform: 'win32',
+        openFile: async (file, flags) => {
+          opened = await open(file, flags);
+          const sync = opened.sync.bind(opened);
+          opened.sync = async () => {
+            // FlushFileBuffers requires write access on the Windows handle.
+            if ((flags & fsConstants.O_RDWR) !== fsConstants.O_RDWR || failSync) throw failure;
+            await sync();
+          };
+          return opened;
+        },
+      };
+      const operation = kind === 'canonical'
+        ? syncPinnedCanonicalFile(target, digest, {}, options)
+        : syncPinnedCandidate(root, target, 'candidate', options);
+      if (failSync) await assert.rejects(operation, (error) => error === failure);
+      else await operation;
+      assert.deepEqual(await readFile(target), bytes);
+      await assert.rejects(opened.stat(), { code: 'EBADF' });
+    }
+  }
 });

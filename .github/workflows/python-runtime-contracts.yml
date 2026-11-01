@@ -38,6 +38,7 @@ jobs:
           PYTHON: python
         run: node scripts/install-codex-plugin.mjs
       - name: Verify runtime, lock, executable, LICENSE, NOTICE, and manifest hashes
+        id: runtime_verify
         env:
           PYTHON: python
         run: node scripts/verify-installed-runtime.mjs
@@ -46,6 +47,8 @@ jobs:
       - name: Run the complete Node suite
         run: npm test
       - name: Open the installed V2 workbench through its real MCP launcher
+        if: ${{ !cancelled() && steps.runtime_verify.outcome == 'success' }}
         run: node scripts/verify-installed-workbench.mjs
       - name: Run complete Python discovery with managed rembg
+        if: ${{ !cancelled() && steps.runtime_verify.outcome == 'success' }}
         run: node scripts/run-managed-python-tests.mjs

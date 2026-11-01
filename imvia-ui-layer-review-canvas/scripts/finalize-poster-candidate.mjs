@@ -106,9 +106,11 @@ async function readPinnedCandidate(root, target, label) {
   }
 }
 
-async function syncPinnedCandidate(root, target, label) {
+export async function syncPinnedCandidate(root, target, label, { platform = process.platform, openFile = open } = {}) {
   const pinned = await readPinnedCandidate(root, target, label);
-  const handle = await open(pinned.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  // Windows FlushFileBuffers needs write access; retain the pinned identity check.
+  const access = platform === 'win32' ? fsConstants.O_RDWR : fsConstants.O_RDONLY;
+  const handle = await openFile(pinned.path, access | fsConstants.O_NOFOLLOW);
   try {
     const current = await handle.stat();
     if (current.dev !== pinned.identity.dev || current.ino !== pinned.identity.ino) {
