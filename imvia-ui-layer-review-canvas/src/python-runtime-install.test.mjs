@@ -364,6 +364,8 @@ print(json.dumps({
     await bootstrapClient.connect(bootstrapTransport, { timeout: 120_000 });
     const registered = await bootstrapClient.listTools();
     assert.ok(registered.tools.some(tool => tool.name === 'open_workbench_v2'));
+  } catch (error) {
+    throw new Error(`${error.message}\nRuntime repair diagnostics:\n${bootstrapDiagnostics}`, { cause: error });
   } finally {
     await bootstrapClient.close();
   }
