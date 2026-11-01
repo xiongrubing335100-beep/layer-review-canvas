@@ -463,12 +463,16 @@ class PosterAuditCliTests(unittest.TestCase):
         target = self.job / 'binary.png'
         payload = b'PNG\r\n\x1a\n'
         target.write_bytes(payload)
-        binary_flag = 0x8000
+        native_binary_flag = getattr(os, 'O_BINARY', 0)
+        binary_flag = native_binary_flag or 0x8000
         real_open = os.open
         observed = []
         def binary_open(path, flags, *args, **kwargs):
             observed.append(flags)
-            return real_open(path, flags & ~binary_flag, *args, **kwargs)
+            # Preserve the real CRT binary flag on Windows. Only remove the
+            # synthetic flag used to exercise the request on POSIX hosts.
+            forwarded_flags = flags if native_binary_flag else flags & ~binary_flag
+            return real_open(path, forwarded_flags, *args, **kwargs)
         with mock.patch.object(AUDIT_MODULE.os, 'O_BINARY', binary_flag, create=True), \
                 mock.patch.object(AUDIT_MODULE.os, 'open', binary_open):
             self.assertEqual(AUDIT_MODULE._read_pinned_regular(target), payload)
