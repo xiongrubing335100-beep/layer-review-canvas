@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -49,8 +50,7 @@ export async function setupImviaLayer({
   });
 }
 
-const invokedPath = process.argv[1] ? await realpath(path.resolve(process.argv[1])).catch(() => null) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   setupImviaLayer().catch((error) => {
     process.stderr.write(`Imvia Layer 初始化失败：${error.message}\n`);
     process.exitCode = 1;

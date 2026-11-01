@@ -1049,12 +1049,18 @@ async function writeExclusiveNoFollow(targetPath, bytes) {
   }
 }
 
-async function fsyncDirectory(directoryPath) {
-  const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
+export async function fsyncDirectory(directoryPath, { platform = process.platform, openDirectory = open } = {}) {
+  const handle = await openDirectory(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
   try {
     const details = await handle.stat();
     if (!details.isDirectory()) throw new PosterJobPathError('持久化目标必须是目录');
-    await handle.sync();
+    try {
+      await handle.sync();
+    } catch (error) {
+      // Windows cannot flush a read-only directory handle. File fsync and
+      // directory open/stat/close errors must still fail publication.
+      if (platform !== 'win32' || error.code !== 'EPERM') throw error;
+    }
   } finally {
     await handle.close();
   }
@@ -1083,10 +1089,12 @@ async function acceptedReplay(record, layerIndex, candidateId) {
   return record;
 }
 
-async function syncPinnedCanonicalFile(targetPath, expectedDigest, lifecycle) {
+export async function syncPinnedCanonicalFile(targetPath, expectedDigest, lifecycle, { platform = process.platform, openFile = open } = {}) {
   let handle;
   try {
-    handle = await open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    // Windows FlushFileBuffers needs write access; no bytes are written here.
+    const access = platform === 'win32' ? fsConstants.O_RDWR : fsConstants.O_RDONLY;
+    handle = await openFile(targetPath, access | fsConstants.O_NOFOLLOW);
     const opened = await handle.stat();
     if (!opened.isFile()) throw new PosterJobPathError('正式图层必须是安全的普通文件');
     const current = await lstat(targetPath);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -168,19 +168,26 @@ test('npm cache discovery does not require HOME or npm_config_cache', async () =
   assert.equal(cacheDirectory, '/var/tmp/npm-cache');
 });
 
-test('a clean current working tree release candidate runs real npm ci, setup, update and installed MCP', { timeout: 300_000 }, async (t) => {
+// Windows performs a real Python environment installation as well as two npm ci
+// runs here. The measured clean setup alone takes about 197 seconds on Actions;
+// allow both setup and update to finish while retaining a bounded end-to-end test.
+test('a clean current working tree release candidate runs real npm ci, setup, update and installed MCP', { timeout: process.platform === 'win32' ? 600_000 : 300_000 }, async (t) => {
+  const startedAt = Date.now();
+  const checkpoint = name => t.diagnostic(`fresh archive (${Date.now() - startedAt}ms): ${name}`);
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia clean archive-'));
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
   const archiveRoot = path.join(temporaryRoot, applicationDirectoryName);
   const homeRoot = path.join(temporaryRoot, 'home');
   const pluginRoot = path.join(homeRoot, 'plugins', 'imvia-layer');
   const fakePython = path.join(temporaryRoot, 'python', 'python3');
-  const npmCache = path.join(temporaryRoot, 'npm-cache');
   await copyReleaseCandidateApplication(archiveRoot);
+  checkpoint('source copied');
   if (process.platform !== 'win32') await writeFakePython(fakePython);
-  const sourceNpmCache = await resolveNpmCacheDirectory();
+  const npmCache = await resolveNpmCacheDirectory();
+  // The source archive is clean; copying an already warm cache does not make
+  // npm ci any fresher. Reuse its integrity-checked entries without a slow tree copy.
   await mkdir(npmCache, { recursive: true });
-  await cp(path.join(sourceNpmCache, '_cacache'), path.join(npmCache, '_cacache'), { recursive: true });
+  checkpoint('offline npm cache ready');
   await ensurePersistentNodeLauncher({
     pluginRoot,
     nodeExecutable: process.execPath,
@@ -204,14 +211,22 @@ test('a clean current working tree release candidate runs real npm ci, setup, up
     npm_config_cache: npmCache,
     npm_config_offline: 'true',
     ...(pipCache ? { PIP_CACHE_DIR: pipCache } : {}),
+    ...(process.env.IMVIA_TEST_WHEELHOUSE ? {
+      PIP_NO_INDEX: '1', PIP_FIND_LINKS: process.env.IMVIA_TEST_WHEELHOUSE,
+      PIP_DISABLE_PIP_VERSION_CHECK: '1',
+    } : {}),
     ...(process.platform === 'win32' ? { IMVIA_LAYER_SKIP_MODEL_PREWARM: '1' } : {}),
   };
-  await runNpmCommand(['run', 'setup'], { cwd: archiveRoot, env });
+  await runNpmCommand(['run', 'setup'], { cwd: archiveRoot, env,
+    onOutput: chunk => process.stdout.write(`[fresh setup] ${chunk}`) });
+  checkpoint('setup finished');
   const distIndexPath = path.join(archiveRoot, 'dist', 'index.html');
   assert.match(await readFile(distIndexPath, 'utf8'), /<script[^>]+assets\/index-/);
 
   await writeFile(distIndexPath, 'STALE-BUNDLE-MUST-NOT-SURVIVE');
-  await runNpmCommand(['run', 'update'], { cwd: archiveRoot, env });
+  await runNpmCommand(['run', 'update'], { cwd: archiveRoot, env,
+    onOutput: chunk => process.stdout.write(`[fresh update] ${chunk}`) });
+  checkpoint('update finished');
   assert.doesNotMatch(await readFile(distIndexPath, 'utf8'), /STALE-BUNDLE-MUST-NOT-SURVIVE/);
 
   const hash = (contents) => createHash('sha256').update(contents).digest('hex');
@@ -232,4 +247,5 @@ test('a clean current working tree release candidate runs real npm ci, setup, up
   assert.equal(runtimeConfig.workbenchRoot, path.join(pluginRoot, 'runtime'));
   await rename(archiveRoot, `${archiveRoot}-unavailable`);
   await initializeMcp(mcpConfig.command, mcpConfig.args, temporaryRoot, env);
+  checkpoint('installed MCP initialized after source removal');
 });

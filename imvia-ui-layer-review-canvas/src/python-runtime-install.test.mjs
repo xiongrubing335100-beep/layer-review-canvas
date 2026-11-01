@@ -7,6 +7,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as nodeRuntime from '../scripts/node-runtime.mjs';
 import * as pythonRuntime from '../scripts/python-runtime.mjs';
 import { removeRuntimeTestTree } from './fixtures/runtime-test-cleanup.mjs';
@@ -339,7 +341,11 @@ print(json.dumps({
 
   await rm(expectedPython);
   const replacementPythonEnvironment = await writeFakePython(replacementPython);
-  const bootstrapResult = run(expectedNode, [path.join(pluginRoot, 'scripts', 'start-mcp.mjs')], {
+  const bootstrapTransport = new StdioClientTransport({
+    command: expectedNode,
+    args: [path.join(pluginRoot, 'scripts', 'start-mcp.mjs')],
+    cwd: root,
+    stderr: 'pipe',
     env: {
       ...process.env,
       ...replacementPythonEnvironment,
@@ -348,11 +354,22 @@ print(json.dumps({
       PYTHON: replacementPython,
       FAKE_PYTHON_LOG: logPath,
     },
-    timeout: 20_000,
   });
-  assert.equal(bootstrapResult.status, 0, bootstrapResult.stderr || bootstrapResult.stdout);
-  assert.equal(bootstrapResult.stdout, '');
-  assert.match(bootstrapResult.stderr, /Imvia Layer 插件已安装/);
+  let bootstrapDiagnostics = '';
+  bootstrapTransport.stderr.on('data', chunk => { bootstrapDiagnostics += chunk; });
+  const bootstrapClient = new Client({ name: 'runtime-repair-verification', version: '1.0.0' });
+  try {
+    // Repair republishes the runtime before starting MCP. Wait for protocol
+    // readiness rather than treating a silent exit or a 20s process wait as success.
+    await bootstrapClient.connect(bootstrapTransport, { timeout: 120_000 });
+    const registered = await bootstrapClient.listTools();
+    assert.ok(registered.tools.some(tool => tool.name === 'open_workbench_v2'));
+  } catch (error) {
+    throw new Error(`${error.message}\nRuntime repair diagnostics:\n${bootstrapDiagnostics}`, { cause: error });
+  } finally {
+    await bootstrapClient.close();
+  }
+  assert.match(bootstrapDiagnostics, /Imvia Layer 插件已安装/);
   await access(expectedPython);
 });
 

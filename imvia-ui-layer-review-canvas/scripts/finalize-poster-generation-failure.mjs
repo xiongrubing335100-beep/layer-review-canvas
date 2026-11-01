@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstat, readFile } from 'node:fs/promises';
@@ -172,7 +173,7 @@ async function runCli() {
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   runCli().then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)).catch((error) => {
     process.stderr.write(`Poster generation failure finalization failed: ${error.message}\n`); process.exitCode = 1;
   });

@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import { constants as fsConstants } from 'node:fs';
 import { access, copyFile, lstat, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -343,7 +344,7 @@ function flagValue(flag) {
   return value;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   finalizePosterFastRmbgCandidate({
     ...(process.argv.includes('--job-directory')
       ? { jobDirectory: flagValue('--job-directory') }
