@@ -168,7 +168,10 @@ test('npm cache discovery does not require HOME or npm_config_cache', async () =
   assert.equal(cacheDirectory, '/var/tmp/npm-cache');
 });
 
-test('a clean current working tree release candidate runs real npm ci, setup, update and installed MCP', { timeout: 300_000 }, async (t) => {
+// Windows performs a real Python environment installation as well as two npm ci
+// runs here. The measured clean setup alone takes about 197 seconds on Actions;
+// allow both setup and update to finish while retaining a bounded end-to-end test.
+test('a clean current working tree release candidate runs real npm ci, setup, update and installed MCP', { timeout: process.platform === 'win32' ? 600_000 : 300_000 }, async (t) => {
   const startedAt = Date.now();
   const checkpoint = name => t.diagnostic(`fresh archive (${Date.now() - startedAt}ms): ${name}`);
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'imvia clean archive-'));
