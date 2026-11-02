@@ -1,6 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import os
+from contextlib import contextmanager
+from unittest import mock
 import subprocess
 import sys
 import tempfile
@@ -14,6 +17,21 @@ SCRIPT = Path(__file__).with_name('audit-poster-recomposition.py')
 SPEC = importlib.util.spec_from_file_location('audit_poster_recomposition', SCRIPT)
 AUDIT_MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AUDIT_MODULE)
+
+
+@contextmanager
+def windows_path_io():
+    """Exercise path I/O on real files; native no-delete handles need Windows CI."""
+    def opened(instance, path):
+        instance.path = Path(path)
+        details = os.lstat(path)
+        if AUDIT_MODULE._reject_link(details):
+            raise OSError('reparse point')
+        instance.identity = (details.st_dev, details.st_ino)
+    with mock.patch.object(AUDIT_MODULE._WindowsDirectory, '__init__', opened), \
+            mock.patch.object(AUDIT_MODULE._WindowsDirectory, 'close', lambda self: None), \
+            mock.patch.object(AUDIT_MODULE, '_open_directory', AUDIT_MODULE._WindowsDirectory):
+        yield
 
 
 class PosterAuditCliTests(unittest.TestCase):
@@ -370,6 +388,103 @@ class PosterAuditCliTests(unittest.TestCase):
                 self.assertIn('AUDIT_DIRECTORY_UNSAFE', report['failure_codes'])
                 self.assertEqual(sentinel.read_bytes(), b'outside-sentinel')
 
+
+    def test_windows_path_io_delivers_identical_binary_preview_and_bindings(self):
+        self.write_reconstructing_fixture()
+        expected = AUDIT_MODULE.audit_job(self.job)
+        with windows_path_io():
+            report = AUDIT_MODULE.audit_job(self.job)
+        self.assertEqual(report, expected)
+        self.assertEqual(report['status'], 'passed')
+        with Image.open(report['preview_path']) as preview, Image.open(self.job / 'source.png') as source:
+            self.assertEqual(preview.tobytes(), source.tobytes())
+
+    def test_windows_path_io_rejects_candidate_parent_replacement(self):
+        self.write_reconstructing_fixture()
+        def swap(_descriptor):
+            original = self.job / 'candidates'
+            original.rename(self.job / 'held')
+            original.mkdir()
+            for path in (self.job / 'held').iterdir():
+                (original / path.name).write_bytes(path.read_bytes())
+        with windows_path_io():
+            report = AUDIT_MODULE.audit_job(self.job, hooks={'after_candidates_directory_opened': swap})
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('MISSING_ACCEPTED_CANDIDATE', report['failure_codes'])
+
+    def test_windows_path_io_rejects_candidate_symlink_and_changed_hash(self):
+        for mutation in ('symlink', 'bytes'):
+            with self.subTest(mutation=mutation):
+                self.write_reconstructing_fixture()
+                candidate = self.job / 'candidates' / 'layer_1.png'
+                if mutation == 'symlink':
+                    target = self.job / 'target.png'
+                    target.write_bytes(candidate.read_bytes())
+                    candidate.unlink()
+                    candidate.symlink_to(target)
+                else:
+                    candidate.write_bytes(b'changed\r\n\x1a')
+                with windows_path_io():
+                    report = AUDIT_MODULE.audit_job(self.job)
+                self.assertIn('MISSING_ACCEPTED_CANDIDATE', report['failure_codes'])
+                if candidate.is_symlink():
+                    candidate.unlink()
+
+    def test_windows_path_preview_publish_and_cleanup_reject_replaced_directory(self):
+        audit = self.job / 'audit'
+        audit.mkdir()
+        external = self.job / 'external'
+        external.mkdir()
+        sentinel = external / 'recomposition-preview.png'
+        sentinel.write_bytes(b'protected')
+        with windows_path_io():
+            handle = AUDIT_MODULE._open_directory(audit)
+            audit.rename(self.job / 'held-audit')
+            audit.symlink_to(external, target_is_directory=True)
+            with self.assertRaises(OSError):
+                AUDIT_MODULE._write_preview(handle, Image.new('RGB', (4, 3)))
+            AUDIT_MODULE._unlink_preview(handle)
+        self.assertEqual(sentinel.read_bytes(), b'protected')
+        self.assertEqual(list(external.iterdir()), [sentinel])
+
+    def test_pinned_regular_rejects_identity_changed_during_open(self):
+        target = self.job / 'binary.png'
+        target.write_bytes(b'first\r\n\x1a')
+        real_open = os.open
+        def replacing_open(path, flags, *args, **kwargs):
+            Path(path).rename(self.job / 'old.png')
+            Path(path).write_bytes(b'second')
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(AUDIT_MODULE.os, 'open', replacing_open):
+            with self.assertRaisesRegex(OSError, 'file changed'):
+                AUDIT_MODULE._read_pinned_regular(target)
+
+    def test_pinned_regular_requests_binary_and_preserves_control_bytes(self):
+        target = self.job / 'binary.png'
+        payload = b'PNG\r\n\x1a\n'
+        target.write_bytes(payload)
+        native_binary_flag = getattr(os, 'O_BINARY', 0)
+        binary_flag = native_binary_flag or 0x8000
+        real_open = os.open
+        observed = []
+        def binary_open(path, flags, *args, **kwargs):
+            observed.append(flags)
+            # Preserve the real CRT binary flag on Windows. Only remove the
+            # synthetic flag used to exercise the request on POSIX hosts.
+            forwarded_flags = flags if native_binary_flag else flags & ~binary_flag
+            return real_open(path, forwarded_flags, *args, **kwargs)
+        with mock.patch.object(AUDIT_MODULE.os, 'O_BINARY', binary_flag, create=True), \
+                mock.patch.object(AUDIT_MODULE.os, 'open', binary_open):
+            self.assertEqual(AUDIT_MODULE._read_pinned_regular(target), payload)
+        self.assertTrue(observed[0] & binary_flag)
+
+    def test_windows_path_reader_rejects_single_backslash_basename(self):
+        with self.assertRaisesRegex(OSError, 'invalid file basename'):
+            AUDIT_MODULE._read_pinned_regular_at(None, r'..\outside.png')
+
+    def test_reparse_attribute_is_rejected_without_symlink_mode(self):
+        details = mock.Mock(st_mode=0o040755, st_file_attributes=0x400)
+        self.assertTrue(AUDIT_MODULE._reject_link(details))
 
 if __name__ == '__main__':
     unittest.main()

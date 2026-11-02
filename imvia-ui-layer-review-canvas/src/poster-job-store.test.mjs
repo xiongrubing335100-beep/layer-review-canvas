@@ -13,6 +13,8 @@ import {
   authorizePosterFastPostprocessRetry,
   authorizePosterRetry,
   createPosterExportArchive,
+  fsyncDirectory,
+  syncPinnedCanonicalFile,
   initializePosterFastJob,
   initializePosterJob,
   mutatePosterJob,
@@ -693,16 +695,14 @@ test('acceptance durability ordering syncs canonical inode and layers before man
       afterCanonicalFileSynced: () => events.push('canonical-file:after'),
       syncLayersDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterCanonicalDirectorySynced: () => events.push('canonical-directory:after'),
       afterManifestTemporarySynced: () => events.push('manifest-temp:after'),
       afterManifestRenamed: () => events.push('manifest-rename:after'),
       syncManifestDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterManifestParentSynced: () => events.push('manifest-parent:after'),
     },
@@ -1055,8 +1055,7 @@ test('audit remediation syncs history metadata and rename destination before the
     hooks: {
       syncDirectory: async (directoryPath) => {
         events.push(`sync:${path.basename(directoryPath)}`);
-        const handle = await open(directoryPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY || 0));
-        try { await handle.sync(); } finally { await handle.close(); }
+        await fsyncDirectory(directoryPath);
       },
       afterHistoryMetadataFileSynced: () => events.push('metadata-file-synced'),
       afterHistoryParentSynced: () => events.push('metadata-parent-synced'),
@@ -1453,4 +1452,101 @@ test('targeted-fast postprocess retry reuses retained raw PNG and the same Image
   assert.equal(retried.manifest.authorizations[0].finalized, false);
   assert.equal(retried.manifest.candidates.length, 0);
   assert.equal(retried.manifest.execution.postprocess_retries, 1);
+});
+
+
+test('directory fsync tolerates only Windows unsupported directory flushing', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-sync-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    for (const code of ['EPERM', 'EACCES', 'EIO', 'EINVAL']) {
+      const failure = Object.assign(new Error(`directory sync ${code}`), { code });
+      let openedHandle;
+      const operation = fsyncDirectory(root, {
+        platform,
+        openDirectory: async (...args) => {
+          openedHandle = await open(...args);
+          openedHandle.sync = async () => { throw failure; };
+          return openedHandle;
+        },
+      });
+      if (platform === 'win32' && code === 'EPERM') await operation;
+      else await assert.rejects(operation, (error) => error === failure);
+      await assert.rejects(openedHandle.stat(), { code: 'EBADF' });
+    }
+  }
+});
+
+test('Windows directory sync keeps open, stat and close failures visible', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-errors-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  for (const stage of ['open', 'stat', 'close']) {
+    const failure = Object.assign(new Error(`${stage} denied`), { code: 'EPERM' });
+    await assert.rejects(fsyncDirectory(root, {
+      platform: 'win32',
+      openDirectory: async (...args) => {
+        if (stage === 'open') throw failure;
+        const handle = await open(...args);
+        if (stage === 'stat') handle.stat = async () => { throw failure; };
+        if (stage === 'close') {
+          const close = handle.close.bind(handle);
+          handle.close = async () => { await close(); throw failure; };
+          handle.sync = async () => {};
+        }
+        return handle;
+      },
+    }), (error) => error === failure);
+  }
+});
+
+test('Windows directory sync rejects a regular file before unsupported flushing', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-directory-type-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'ordinary.txt');
+  await writeFile(file, 'content');
+  await assert.rejects(fsyncDirectory(file, {
+    platform: 'win32',
+    openDirectory: async (target) => {
+      const handle = await open(target, fsConstants.O_RDONLY);
+      handle.sync = async () => { throw Object.assign(new Error('unsupported'), { code: 'EPERM' }); };
+      return handle;
+    },
+  }), /持久化目标必须是目录/);
+});
+
+
+test('Windows pinned file flush uses a writable verified handle and preserves bytes', async (context) => {
+  const { syncPinnedCandidate } = await import('../scripts/finalize-poster-candidate.mjs');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'poster-file-flush-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'candidate.png');
+  const bytes = Buffer.from('immutable candidate bytes');
+  await writeFile(target, bytes);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  for (const kind of ['canonical', 'candidate']) {
+    for (const failSync of [false, true]) {
+      const failure = Object.assign(new Error('file flush denied'), { code: 'EPERM' });
+      let opened;
+      const options = {
+        platform: 'win32',
+        openFile: async (file, flags) => {
+          opened = await open(file, flags);
+          const sync = opened.sync.bind(opened);
+          opened.sync = async () => {
+            // FlushFileBuffers requires write access on the Windows handle.
+            if ((flags & fsConstants.O_RDWR) !== fsConstants.O_RDWR || failSync) throw failure;
+            await sync();
+          };
+          return opened;
+        },
+      };
+      const operation = kind === 'canonical'
+        ? syncPinnedCanonicalFile(target, digest, {}, options)
+        : syncPinnedCandidate(root, target, 'candidate', options);
+      if (failSync) await assert.rejects(operation, (error) => error === failure);
+      else await operation;
+      assert.deepEqual(await readFile(target), bytes);
+      await assert.rejects(opened.stat(), { code: 'EBADF' });
+    }
+  }
 });

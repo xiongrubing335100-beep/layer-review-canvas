@@ -62,7 +62,9 @@ export async function resolveVerifiedRuntimeConfig({
     const installerPath = path.join(config.workbenchRoot, 'scripts', 'install-codex-plugin.mjs');
     try {
       const repairResult = await runCommandImpl(processExecPath, [installerPath], {
-        cwd: config.workbenchRoot,
+        // Windows locks a process's working directory against rename. The
+        // installer replaces workbenchRoot, so run it from the stable plugin root.
+        cwd: pluginRoot,
         stdio: 'pipe',
         env: {
           ...environment,

@@ -12,10 +12,11 @@ const result = await runCommand(runtime.python.command, [
   '-m',
   'unittest',
   'discover',
+  '-v',
   '-s',
   'scripts',
   '-p',
   'test_*.py',
-], { cwd: repositoryRoot });
+], { cwd: repositoryRoot, stdio: 'inherit' });
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);

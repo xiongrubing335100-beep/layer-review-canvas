@@ -3,14 +3,15 @@ import path from 'node:path';
 
 function runProcess(command, args, options) {
   return new Promise((resolve, reject) => {
+    const { onOutput, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      ...options,
+      ...spawnOptions,
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); onOutput?.(chunk.toString('utf8')); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); onOutput?.(chunk.toString('utf8')); });
     child.once('error', reject);
     child.once('exit', (code) => {
       if (code === 0) resolve({ stdout, stderr });
@@ -24,12 +25,14 @@ export function runNpmCommand(args, {
   env = process.env,
   platform = process.platform,
   runCommand = runProcess,
+  onOutput,
 } = {}) {
   const command = platform === 'win32' ? 'npm.cmd' : 'npm';
   return runCommand(command, args, {
     ...(cwd !== undefined ? { cwd } : {}),
     env,
     shell: platform === 'win32',
+    ...(onOutput ? { onOutput } : {}),
   });
 }
 

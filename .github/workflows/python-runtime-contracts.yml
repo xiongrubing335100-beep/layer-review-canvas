@@ -33,15 +33,27 @@ jobs:
         run: npm run build
       - name: Verify every production bundle has exactly one legal banner
         run: node scripts/verify-production-build.mjs
-      - name: Run the complete Node suite
-        run: npm test
       - name: Install real managed runtimes without downloading the model
         env:
           PYTHON: python
         run: node scripts/install-codex-plugin.mjs
       - name: Verify runtime, lock, executable, LICENSE, NOTICE, and manifest hashes
+        id: runtime_verify
         env:
           PYTHON: python
         run: node scripts/verify-installed-runtime.mjs
+      - name: Use the installed Python for integration tests
+        run: node -e "const fs=require('node:fs'),os=require('node:os'),p=require('node:path');const r=JSON.parse(fs.readFileSync(p.join(os.homedir(),'plugins','imvia-layer','imvia-layer-runtime.json'),'utf8'));fs.appendFileSync(process.env.GITHUB_ENV,'PYTHON='+r.python.command+'\n');"
+      - name: Prepare locked wheels for real offline Windows installation tests
+        if: runner.os == 'Windows'
+        run: node scripts/prepare-test-wheelhouse.mjs
+      - name: Run the complete Node suite
+        # Python installation tests retain real venvs and hash checks while
+        # avoiding a second network dependency inside their bounded test window.
+        run: npm test
+      - name: Open the installed V2 workbench through its real MCP launcher
+        if: ${{ !cancelled() && steps.runtime_verify.outcome == 'success' }}
+        run: node scripts/verify-installed-workbench.mjs
       - name: Run complete Python discovery with managed rembg
+        if: ${{ !cancelled() && steps.runtime_verify.outcome == 'success' }}
         run: node scripts/run-managed-python-tests.mjs

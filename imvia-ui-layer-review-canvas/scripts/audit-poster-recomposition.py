@@ -73,11 +73,74 @@ def _key_mask(image, fill):
     return mask
 
 
+def _reject_link(details):
+    return (stat.S_ISLNK(details.st_mode)
+            or bool(getattr(details, 'st_file_attributes', 0) & 0x400))
+
+
+class _WindowsDirectory:
+    """Pin a real Windows directory without granting rename/delete sharing."""
+    def __init__(self, path):
+        import ctypes
+        from ctypes import wintypes
+        self.path = Path(path)
+        self.identity = None
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        before = os.lstat(self.path)
+        if _reject_link(before) or not stat.S_ISDIR(before.st_mode):
+            raise OSError('directory is not a real directory')
+        # FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT.
+        self.handle = kernel.CreateFileW(str(self.path), 0, 3, None, 3, 0x02200000, None)
+        if self.handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.kernel = kernel
+        try:
+            self.identity = (before.st_dev, before.st_ino)
+            self.validate()
+        except BaseException:
+            self.close()
+            raise
+
+    def validate(self):
+        details = os.lstat(self.path)
+        if (_reject_link(details) or not stat.S_ISDIR(details.st_mode)
+                or (details.st_dev, details.st_ino) != self.identity):
+            raise OSError('pinned directory changed')
+
+    def close(self):
+        self.kernel.CloseHandle(self.handle)
+
+
+def _open_directory(path):
+    if os.name == 'nt':
+        return _WindowsDirectory(path)
+    flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    return os.open(path, flags)
+
+
+def _close_directory(descriptor):
+    if isinstance(descriptor, _WindowsDirectory):
+        descriptor.close()
+    else:
+        os.close(descriptor)
+
+
 def _read_pinned_regular(path):
-    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
+    before = os.lstat(path)
+    if _reject_link(before):
+        raise OSError('not a regular non-link file')
     descriptor = os.open(path, flags)
     try:
         details = os.fstat(descriptor)
+        if (details.st_dev, details.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError('file changed while opening')
         if not stat.S_ISREG(details.st_mode):
             raise OSError('not a regular file')
         chunks = []
@@ -94,7 +157,12 @@ def _read_pinned_regular(path):
 def _read_pinned_regular_at(directory_fd, basename):
     if not isinstance(basename, str) or not basename or basename in ('.', '..') or '/' in basename or '\\' in basename:
         raise OSError('invalid file basename')
-    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    if isinstance(directory_fd, _WindowsDirectory):
+        directory_fd.validate()
+        payload = _read_pinned_regular(directory_fd.path / basename)
+        directory_fd.validate()
+        return payload
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     descriptor = os.open(basename, flags, dir_fd=directory_fd)
     try:
         details = os.fstat(descriptor)
@@ -191,18 +259,17 @@ def _secure_audit_directory(job, failures):
     try:
         if os.path.lexists(audit_path):
             details = os.lstat(audit_path)
-            if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+            if _reject_link(details) or not stat.S_ISDIR(details.st_mode):
                 raise OSError('audit path is not a real directory')
         else:
             os.mkdir(audit_path, 0o700)
         physical = audit_path.resolve(strict=True)
         if physical.parent != job or not _inside(job, physical):
             raise OSError('audit directory escaped job')
-        flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
-        descriptor = os.open(audit_path, flags)
-        details = os.fstat(descriptor)
+        descriptor = _open_directory(audit_path)
+        details = os.lstat(audit_path) if isinstance(descriptor, _WindowsDirectory) else os.fstat(descriptor)
         if not stat.S_ISDIR(details.st_mode):
-            os.close(descriptor)
+            _close_directory(descriptor)
             raise OSError('audit path changed type')
         return descriptor
     except OSError:
@@ -214,7 +281,11 @@ def _unlink_preview(audit_fd):
     if audit_fd is None:
         return
     try:
-        os.unlink('recomposition-preview.png', dir_fd=audit_fd)
+        if isinstance(audit_fd, _WindowsDirectory):
+            audit_fd.validate()
+            (audit_fd.path / 'recomposition-preview.png').unlink()
+        else:
+            os.unlink('recomposition-preview.png', dir_fd=audit_fd)
     except FileNotFoundError:
         pass
     except OSError:
@@ -224,18 +295,35 @@ def _unlink_preview(audit_fd):
 def _write_preview(audit_fd, composite):
     temporary = f'.recomposition-preview.{uuid.uuid4().hex}.tmp.png'
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
-    descriptor = os.open(temporary, flags, 0o600, dir_fd=audit_fd)
+    windows = isinstance(audit_fd, _WindowsDirectory)
+    if windows:
+        audit_fd.validate()
+    descriptor = (os.open(audit_fd.path / temporary, flags | getattr(os, 'O_BINARY', 0), 0o600)
+                  if windows else os.open(temporary, flags, 0o600, dir_fd=audit_fd))
     try:
         with os.fdopen(descriptor, 'wb', closefd=False) as stream:
             composite.save(stream, format='PNG')
             stream.flush()
             os.fsync(descriptor)
-        os.replace(temporary, 'recomposition-preview.png', src_dir_fd=audit_fd, dst_dir_fd=audit_fd)
-        os.fsync(audit_fd)
+        if windows:
+            # CRT file descriptors do not grant delete sharing; close after fsync
+            # before the same-directory atomic replace. The directory stays pinned.
+            os.close(descriptor)
+            descriptor = None
+            audit_fd.validate()
+            os.replace(audit_fd.path / temporary, audit_fd.path / 'recomposition-preview.png')
+        else:
+            os.replace(temporary, 'recomposition-preview.png', src_dir_fd=audit_fd, dst_dir_fd=audit_fd)
+            os.fsync(audit_fd)
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
         try:
-            os.unlink(temporary, dir_fd=audit_fd)
+            if windows:
+                audit_fd.validate()
+                (audit_fd.path / temporary).unlink()
+            else:
+                os.unlink(temporary, dir_fd=audit_fd)
         except FileNotFoundError:
             pass
 
@@ -272,7 +360,7 @@ def audit_job(job_directory, hooks=None):
     try:
         try:
             layers_details = os.lstat(layers_root)
-            if stat.S_ISLNK(layers_details.st_mode) or not stat.S_ISDIR(layers_details.st_mode):
+            if _reject_link(layers_details) or not stat.S_ISDIR(layers_details.st_mode):
                 raise OSError('layers root is not a real directory')
             if layers_root.resolve(strict=True).parent != job:
                 raise OSError('layers root escaped job')
@@ -280,14 +368,13 @@ def audit_job(job_directory, hooks=None):
             _append_failure(failures, 'MANIFEST_INCONSISTENCY')
         try:
             candidates_details = os.lstat(candidates_root)
-            if stat.S_ISLNK(candidates_details.st_mode) or not stat.S_ISDIR(candidates_details.st_mode):
+            if _reject_link(candidates_details) or not stat.S_ISDIR(candidates_details.st_mode):
                 raise OSError('candidates root is not a real directory')
             physical_candidates = candidates_root.resolve(strict=True)
             if physical_candidates.parent != job:
                 raise OSError('candidates root escaped job')
-            flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
-            candidates_fd = os.open(candidates_root, flags)
-            pinned_details = os.fstat(candidates_fd)
+            candidates_fd = _open_directory(candidates_root)
+            pinned_details = os.lstat(candidates_root) if isinstance(candidates_fd, _WindowsDirectory) else os.fstat(candidates_fd)
             current_details = os.lstat(candidates_root)
             if (not stat.S_ISDIR(pinned_details.st_mode)
                     or pinned_details.st_dev != current_details.st_dev
@@ -300,7 +387,7 @@ def audit_job(job_directory, hooks=None):
                 callback(candidates_fd)
         except OSError:
             if candidates_fd is not None:
-                os.close(candidates_fd)
+                _close_directory(candidates_fd)
                 candidates_fd = None
             _append_failure(failures, 'MANIFEST_INCONSISTENCY')
         try:
@@ -601,9 +688,9 @@ def audit_job(job_directory, hooks=None):
         }
     finally:
         if audit_fd is not None:
-            os.close(audit_fd)
+            _close_directory(audit_fd)
         if candidates_fd is not None:
-            os.close(candidates_fd)
+            _close_directory(candidates_fd)
 
 
 def main(argv=None):

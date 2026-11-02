@@ -1,3 +1,4 @@
+import { isDirectExecution } from './direct-execution.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
@@ -374,6 +375,6 @@ async function main() {
   process.stdout.write(`${JSON.stringify(spec, null, 2)}\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   main().catch((error) => { process.stderr.write(`Poster preflight failed: ${error.message}\n`); process.exitCode = 1; });
 }

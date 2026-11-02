@@ -53,6 +53,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
       throw error;
     }
     if (command === '/Applications/Codex App/node') {
+      assert.equal(options.cwd, pluginRoot, 'repair must not hold the replaceable runtime as its working directory');
       await writeFile(runtimePath, `${JSON.stringify(repairedConfig)}\n`);
       return { stdout: 'installer status on stdout\n', stderr: 'installer detail on stderr\n' };
     }
@@ -73,7 +74,7 @@ test('broken installed Python triggers repo installer repair and reloads verifie
     repairedConfig.python.command,
   ]);
   assert.deepEqual(calls[1].args, [path.join(repositoryRoot, 'scripts', 'install-codex-plugin.mjs')]);
-  assert.equal(calls[1].options.cwd, repositoryRoot);
+  assert.equal(calls[1].options.cwd, pluginRoot);
   assert.equal(calls[1].options.stdio, 'pipe');
   assert.equal(calls[1].options.env.IMVIA_LAYER_PLUGIN_DIRECTORY, pluginRoot);
   assert.equal(calls[1].options.env.IMVIA_LAYER_MARKETPLACE_PATH, brokenConfig.marketplacePath);

@@ -1,4 +1,5 @@
 // Imvia Layer © 2026 青木. Personal non-commercial use is free; commercial use requires a paid license. See LICENSE and NOTICE.md.
+import { isDirectExecution } from './direct-execution.mjs';
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -183,8 +184,7 @@ export async function installCodexPlugin(options = {}) {
   });
 }
 
-const invokedPath = process.argv[1] ? await realpath(path.resolve(process.argv[1])).catch(() => null) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (await isDirectExecution(import.meta.url)) {
   installCodexPlugin().catch((error) => {
     process.stderr.write(`安装 Imvia Layer 失败：${error.message}\n`);
     process.exitCode = 1;
